@@ -1,0 +1,85 @@
+# Current handoff — Phase 3
+
+Baseline: `feature/live-workbench-v2@2d9083533a2e367e6543748f97753da02b1a0713`.
+Working branch: `feature/scientific-workbench-portable-v3`.
+The owner deferred original-code licensing. Keep public release pending.
+
+Software implementation and offline validation continue independently of hardware.
+See [review matrix](REVIEW_PHASE3.md), [user entry](../../README.md),
+[release evidence](RELEASE_PLAN.md) and [scientific contract](PHYSICS_AND_DATA.md).
+This document supersedes the [Phase 2 handoff](archive/PHASE2_HANDOFF.md).
+Do not execute archived requests to replug hardware during Phase 3.
+
+## Evidence timeline (UTC, 2026-09-05)
+
+All required prior files were checked for existence; none was missing. The original
+receipts were not rewritten. Local `phase3/prior-evidence-inventory.json` records
+the paths, sizes and keys; the historical RGB NPY was opened read-only and retains
+1216×1936×3 uint8 with save/reopen verification.
+
+| Time / event | Observed result and cleanup |
+|---|---|
+| 14:53:27–14:53:30, pre-v2 single RGB frame | PASS historical; normal stop and device release true; no sustained-performance claim |
+| 15:15:21, persistent attempt 1 | ICategory direct .name failed before streaming; zero frames; session closed, release true |
+| 15:23:28, attempt 2 interruption record | Native all-node read before camera.start did not return; specified process 15220 terminated in Phase 2; zero frames, graceful release NOT_CONFIRMED |
+| 15:24:02–15:24:31, attempt 3 | AccessDenied / GenCP MaxDeviceResponseTime during Open; zero frames; release false/not confirmed |
+| 16:43:54, v2 desktop acceptance | English REPLAY workflows at 125%; no new persistent physical pass |
+| 16:46:29, v2 final receipt | 189 Windows tests and exact-head Linux CI passed; physical status separately blocked |
+| Later owner report and Phase 3 entry screenshot | Owner had already power-cycled/replugged and reported LIVE. Existing v2 screenshot shows LIVE #5895, BayerRG12/50 ms/gain 0; instantaneous UI-reported rates are not a benchmark |
+| Subsequent window inventory | The previously observed app window was no longer present. No close/stop/kill/input action was performed by Phase 3 before its disappearance; cause unconfirmed |
+
+Historical receipt roots under local/diagnostics: phase2-final-delivery.json,
+phase2-camera-smoke/receipt.json, phase2-camera-smoke-v2/interruption.json,
+phase2-camera-smoke-v3/receipt.json and ui-phase2/acceptance.json. The historical
+frame is under local/exports/raw_frame_20260905T155322198944/.
+Before screenshot: local/diagnostics/ui-phase3/before-live.png. UIA text was stale;
+the actual screenshot and owner report are the point-observation evidence. No
+cable cause is diagnosed from this chronology.
+
+## Hardware boundary
+
+| Gate | State |
+|---|---|
+| H0 enclosure/interface identity | PARTIAL; OEM module known, body label/second lead association unknown |
+| H1 sensor imaging | Historical single-frame/occlusion PASS; recovered LIVE point observation; persistent/record/Stop/stability revalidation DEFERRED |
+| H2 raw controlled FP scan | BLOCKED: no verified protocol, state acknowledgement/settling/frame association |
+| H3 spectral reconstruction | BLOCKED: no matching response matrix/runtime and independent wavelength check |
+| H4 physical reflectance | BLOCKED: H3 and matched references/conditions/independent validation absent |
+
+Phase 3 performed no hardware acquisition, reset, replug, power cycle, device
+restart, disable/enable, driver reinstall, unknown serial open or permanent write.
+New application windows were launched only for offline synthetic UI verification.
+
+## Next physical acceptance, not executed and not requested now
+
+After a separately authorized hardware phase: one unique-target normal connection,
+minimum readback and a fresh frame; bounded preview with increasing epoch/identity;
+one displayed-frame save/reopen; a short bounded recording with full accounting;
+normal Stop/close and settings readback; then format/exposure restart and a longer
+stability test if preceding steps pass. Log every failure and release uncertainty.
+Do not make all-node export a first-frame prerequisite. No retry/reset is implied.
+H2/H3/H4 remain separate from imaging and require actual matching assets.
+
+## Build and verification closeout
+
+The source suite passed 216 tests (16.38 s, offscreen Qt). A preceding native-Qt
+test run passed 215 tests while emitting 0x8001010d; the cause is unconfirmed and
+its log is retained. Native 125% desktop actions exercised synthetic loading,
+three ROIs, rename, amplitude/L2 comparison, PC2/loadings, figure export, save,
+reopen and reference registration. A normal close saved these items in config.
+Automated restore regression passed. After native restart the desktop helper
+repeatedly reported "foreground window did not report a process id"; final native
+restart screenshot is NOT_CAPTURED. Do not relabel the Qt offscreen render as one.
+
+Simulated 100/125/150/200% Qt layouts were exercised separately. At 200%, stacked
+plots were too short; parallel amplitude/shape panels corrected the height issue.
+Image ROI labels can overlap when zoomed far out; zoom/pan and named ROI controls
+remain available. Public README uses an explicitly identified synthetic Qt render.
+All six example/native-export PDFs yielded selectable text; SVG text nodes and
+numerical CSV/NPY/PlotSpec regressions passed. No physical precision is inferred.
+
+Final exact source SHA, tests, Windows installation scope, screenshots and hosted
+CI are recorded in RELEASE_PLAN.md and the ignored phase3 final-delivery receipt.
+A true second clean Windows computer/VM and physical driver installation remain
+NOT_TESTED. The staged public scope is source, tests, English docs and synthetic
+examples only; no calibration, raw frames, identifiers or build binaries.

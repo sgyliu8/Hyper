@@ -2,7 +2,7 @@
 
 This is the working scientific contract, not a calibration certificate. The
 sensor has demonstrated real single-frame imaging; current persistent-session
-acceptance is blocked by a USB communication failure. No measured response matrix for this
+acceptance is deferred after an owner-reported recovered LIVE observation. No measured response matrix for this
 instrument has been recovered. Scanner state, wavelength, time and colour are
 different axes. Evidence and source applicability are recorded in [SOURCES](SOURCES.md).
 

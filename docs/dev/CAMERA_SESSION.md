@@ -92,7 +92,7 @@ automatic features are restored last. Stop, each restore, destroy, Harvester
 reset and DLL-directory close have independent attempted/succeeded/error receipts.
 The first acquisition error remains primary if a cleanup or receipt write fails.
 
-Frame identity is `session_id:sequence`; device frame IDs may restart after a
+Frame identity is `session_id:stream_epoch:sequence`; device frame IDs may restart after a
 stream restart. Device timestamp, host monotonic receipt time and host UTC remain
 separate. Frame age is host-monotonic-now minus host-monotonic-receipt, not an
 uncalibrated device-to-host transport latency. Capture/display FPS, preview
@@ -147,7 +147,15 @@ preservation, independent cleanup, no access after buffer return, one owner,
 state/restart/close, exact snapshots, queue overflow, disk failure, time-axis
 semantics, partial prefixes, device frame gaps and file-handle release.
 These tests establish software behavior; they are not hardware acceptance.
-Root HANDOFF and private hardware receipts hold current physical-test outcomes.
+[Current handoff](HANDOFF.md) and private hardware receipts hold current physical-test outcomes.
+
+Phase 3 clears latest/rate history on every new epoch and requires a fresh epoch
+frame before recording. Extended diagnostics run separately from essential open
+readback; typed transport errors are not optional absence. Deadline receipts are
+observations, not native cancellation. Supported automatic controls that cannot
+be frozen leave preview available with explicit quantitative limitations.
+Admission and closing share a lock; every accepted frame is written or explicitly
+failed. A destroy exception cannot replace a preceding Stop exception.
 
 - [Harvester tutorial](https://harvesters.readthedocs.io/en/latest/TUTORIAL.html):
   read 2026-09-05; documented lifecycle/ownership, corroborated against installed

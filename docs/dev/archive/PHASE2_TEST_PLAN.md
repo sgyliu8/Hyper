@@ -116,5 +116,5 @@ evidence remains historical evidence, not proof of current link health.
 Closeout records exact revision, suite count/output, dependencies, real desktop
 artifacts, completed hardware duration/counts, cleanup, preserved failures and
 hosted CI status. Offline PASS does not upgrade H0–H4, and OEM Bayer/RGB frames
-do not establish spectroscopy. [SCANNER_RECOVERY](SCANNER_RECOVERY.md) identifies
+do not establish spectroscopy. [SCANNER_RECOVERY](../SCANNER_RECOVERY.md) identifies
 the smallest missing control/calibration assets.

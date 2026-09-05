@@ -115,4 +115,4 @@ resolution/scaling combinations are NOT_TESTED. Final paths/results belong in
 [HANDOFF](../HANDOFF.md). Offline Qt
 checks cover interaction/data semantics, not sustained camera/display timing,
 physical stop/close or high-DPI inspection. Hardware failures and outstanding
-checks are recorded in [TEST_PLAN](TEST_PLAN.md).
+checks are recorded in [TEST_PLAN](../TEST_PLAN.md).

@@ -1,5 +1,8 @@
 # FP controller investigation — Phase 2
 
+Historical investigation. [Current Phase 3 handoff](HANDOFF.md) supersedes the
+physical-reconnection checkpoint below. No such action is requested this phase.
+
 The imaging sensor is usable independently of FP scanning. H2 remains **BLOCKED**:
 no verified state command, acknowledgement, settling or frame-state association
 has been found. H3 additionally needs a matching response/reconstruction asset.
@@ -101,7 +104,7 @@ The finite public check revisited the supplied vendor documentation, official
 HinaLea product pages, and a vendor-site query for TruScope/4200/SDK/download.
 It did not locate a documented matching legacy FP command package. It does not
 establish that such a package does not exist. Research records, dates and limits
-are in the [Phase 2 source register](SOURCES.md#phase-2-source-recheck-2026-09-05).
+are in the [Phase 2 source register](archive/PHASE2_SOURCES.md#phase-2-source-recheck-2026-09-05).
 
 The 2019/2020 patents reinforce separate calibrated reconstruction. The 2024
 field-calibration patent uses prior full calibrations and reference measurements;

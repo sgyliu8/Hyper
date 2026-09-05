@@ -68,7 +68,7 @@ partial output, cooperative close and cancelled snapshot slot release.
 These are offline lifecycle contracts, not proof that every native operation
 returns or that this firmware releases successfully under every fault. The
 actual broad-node native hang and later camera-open failure remain separate
-failed receipts in [TEST_PLAN](TEST_PLAN.md) and [HANDOFF](../HANDOFF.md).
+failed receipts in [TEST_PLAN](TEST_PLAN.md) and [HANDOFF](HANDOFF.md).
 
 ## R5 — ENVI interoperability
 
@@ -161,7 +161,7 @@ cover durable prefixes, overflow/disk failure, manifest validation, budget
 rejection, source provenance and reopened content.
 
 The final integrated suite count, revision, actual Windows interaction artifacts
-and hosted CI status are recorded in [HANDOFF](../HANDOFF.md); intermediate subset
+and hosted CI status are recorded in [HANDOFF](HANDOFF.md); intermediate subset
 counts are not the final acceptance result. The current-turn Tk baseline really
 captured one single frame, whereas three later persistent-session benchmark
 attempts produced no frames. Continuous preview, real bounded recording and

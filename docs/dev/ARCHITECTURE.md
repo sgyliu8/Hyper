@@ -1,6 +1,6 @@
-# HyperLab architecture — Phase 2
+# HyperLab architecture — Phase 3
 
-HyperLab 0.2 uses PySide6 6.10.3 and pyqtgraph 0.14.0 for its default local
+HyperLab 0.3 uses PySide6 6.10.3 and pyqtgraph 0.14.0 for its default local
 workbench. `python -m hyperlab app` launches it; `app --legacy` explicitly opens
 the earlier Tk/Matplotlib interface. The UI language is English. Neither startup
 nor offline analysis implicitly opens a camera. No server, cloud service, model
@@ -10,7 +10,7 @@ weights or reconstruction SDK is required for the implemented workbench.
 
 `probe.py` and `scripts/Probe-Devices.ps1` perform read-only Windows inventory.
 `devices.py` selects the healthy, exact OEM imaging interface and persists a
-private profile under `local/config/`. Inventory does not load CTI/DLLs, open
+private profile under Qt GenericConfigLocation/HyperLab. Inventory does not load CTI/DLLs, open
 serial or stream. Bounded asset investigation is an explicit
 `hyperlab.controller.diagnostics` operation, separate from Connect.
 
@@ -113,4 +113,23 @@ There is no guessed serial protocol, trained model, spectral inverse solver or
 temperature estimator behind an enabled control. Controller recovery, matching
 reconstruction assets and physical reflectance validation remain separate gates.
 Current acceptance and failures belong in [TEST_PLAN](TEST_PLAN.md) and the final
-[HANDOFF](../HANDOFF.md), not an inferred claim from this architecture.
+[HANDOFF](HANDOFF.md), not an inferred claim from this architecture.
+
+## Phase 3 contracts
+
+`plots.py` defines PlotSpec, unique-frame TemporalTrace, source-clock sequence
+coordinates and a Matplotlib figure renderer over precomputed numbers. Qt uses
+the same arrays. ROI/source analysis versions discard obsolete asynchronous
+results. The live preview slot is cleared on each stream epoch; recording and
+benchmark admission require a fresh epoch-relative receive time. Writer admission
+and finalization share an explicit closing lock and auditable loss accounting.
+
+`paths.py` owns per-user config and writable workspace resolution. `ui/state.py`
+persists ROI/view/reference/recent/profile state; restore never opens hardware.
+`resources/Probe-Devices.ps1` is package-data accessed with importlib.resources;
+the source launcher is only a wrapper. `calibration.py` exchanges private hashed
+reference bundles; `support.py` builds an explicit redacted whitelist.
+
+`diagnostics.py` isolates optional extended reads in an owned process. Native
+GIL-wait injection is a non-device test. Cooperative camera operations record
+phase deadlines but cannot claim native cancellation or release on timeout.

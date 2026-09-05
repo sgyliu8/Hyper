@@ -1,3 +1,5 @@
+> Historical Phase 2 record, preserved verbatim where possible. Superseded by [current handoff](../HANDOFF.md). Do not execute its physical-recovery instruction in Phase 3.
+
 # HyperLab Phase 2 handoff — 2026-09-05
 
 ## 当前状态
@@ -45,7 +47,7 @@ Bypass 仅作用于子进程，不更改永久执行策略。路径是 `.\.venv`
 读回。Save current frame 保存显示的同一个 Frame；Freeze display 不停止
 采集；Stop acquisition 才停止；Record 有帧数/时长/磁盘预算。记录使用
 `sequence.npy` + `sequence.npy.json`，THW/THWC 时间轴不冒充光谱轴。
-完整可复制的诊断、单帧、分析和测试命令见 [README](README.md)。
+完整可复制的诊断、单帧、分析和测试命令见 [README](../../../README.md)。
 
 ## Phase 2 已实现范围
 
@@ -65,9 +67,9 @@ Bypass 仅作用于子进程，不更改永久执行策略。路径是 `.\.venv`
 - 单独的有界控制器资产/拓扑诊断，官方资料复核及物理数据模型说明。没有找到
   可执行的匹配 FP 协议资产，未打开 NXP 口。
 
-详细契约：[ARCHITECTURE](docs/ARCHITECTURE.md)、[UI_SPEC](docs/UI_SPEC.md)、
-[CAMERA_SESSION](docs/CAMERA_SESSION.md)、[REVIEW_FIXES](docs/REVIEW_FIXES.md)、
-[PHYSICS_AND_DATA](docs/PHYSICS_AND_DATA.md)。
+详细契约：[ARCHITECTURE](../ARCHITECTURE.md)、[UI_SPEC](../UI_SPEC.md)、
+[CAMERA_SESSION](../CAMERA_SESSION.md)、[REVIEW_FIXES](../REVIEW_FIXES.md)、
+[PHYSICS_AND_DATA](../PHYSICS_AND_DATA.md)。
 
 ## 本轮基线与持久会话失败证据
 
@@ -108,8 +110,8 @@ AcquisitionFrameRate=4000 不等于实测 FPS。实际固件是 2.28.1323.0，�
 4. **H3：** 本机对应响应/重建矩阵或运行时，连同状态顺序、波长单位、几何/CFA/
    温度适用范围；缺失时需独立窄带/功率/光谱标准重新校准。
 
-详细事实、来源适用性和未做项目见 [SCANNER_RECOVERY](docs/SCANNER_RECOVERY.md)
-及 [SOURCES](docs/SOURCES.md)。无需通过重装驱动或猜串口命令绕过这些阻塞。
+详细事实、来源适用性和未做项目见 [SCANNER_RECOVERY](../SCANNER_RECOVERY.md)
+及 [SOURCES](../SOURCES.md)。无需通过重装驱动或猜串口命令绕过这些阻塞。
 
 ## 软件与桌面验证回执
 
@@ -151,7 +153,7 @@ Qt 前后比较基线保留在 `local/diagnostics/ui-phase2/before-tk.png`、
 其余明确限制：ROI 是两个固定槽位；参考列表/近期列表不跨重启恢复；反射率校正
 仅通过科学 API；真实 FP 扫描与重建没有可用协议/标定资产。不能据此称仪器已完整恢复。
 Headless benchmark 不代表显示 FPS，GUI timer 间隔也不是相机 FPS。
-[TEST_PLAN](docs/TEST_PLAN.md) 记录验收要求和软件/物理证据的区分。
+[TEST_PLAN](../TEST_PLAN.md) 记录验收要求和软件/物理证据的区分。
 
 ## 历史证据附录：Phase 1 / 启动修复
 
@@ -181,7 +183,7 @@ Headless benchmark 不代表显示 FPS，GUI timer 间隔也不是相机 FPS。
   成功；child Bypass 捕获参数检查在故意缺失的 CTI 处停止，没有新采集。
   回执 `local/diagnostics/startup-policy-fix.json`，永久策略未改。
 - 原 code 28、PowerShell 模块路径、RGB 轴解码、只读 Harvester stream 创建及
-  pythonw UTF8 失败均保留于 [HARDWARE_FINDINGS](docs/HARDWARE_FINDINGS.md) 和对应
+  pythonw UTF8 失败均保留于 [HARDWARE_FINDINGS](../HARDWARE_FINDINGS.md) 和对应
   私有日志。没有删除或重新命名失败以提高通过率。
 
 环境沿用项目 Python 3.11.9 x64 `.venv`；Phase 2 加入 PySide6 6.10.3、

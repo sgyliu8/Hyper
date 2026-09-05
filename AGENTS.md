@@ -1,34 +1,26 @@
 # HyperLab working rules
 
-Read this file and HANDOFF.md at the start of every task. Check Git state and
-the current physical/driver state; historical notes are not live device evidence.
-Update HANDOFF.md and relevant findings/tests when work changes the recovery state.
+Read [current handoff](docs/dev/HANDOFF.md), [architecture](docs/dev/ARCHITECTURE.md)
+and [Phase 3 review](docs/dev/REVIEW_PHASE3.md). Check actual branch/HEAD/worktree
+and preserve existing changes. User instructions and current phase scope supersede
+historical handoffs.
 
-Use the smallest implementation that solves the observed problem. Preserve user
-work. State assumptions and distinguish confirmed, inferred, unknown and failed.
+Use small, relevant changes with reproducible regressions. UI and public guides
+are English. Separate synthetic, replay, imaging and physical spectroscopy evidence.
+Raw data are immutable; preserve failed/partial cases and complete denominators.
 
-Inventory is read-only: no streaming, serial open/DTR/RTS, CTI/DLL loading, driver
-changes, USB writes, reset or exposure changes. Acquisition is a separate explicit
-operation with a uniquely identified target and a documented normal API.
-Phase 2 authorizes normal reversible sensor sessions: persistent free-run preview,
-stop/restart, current-frame saves, bounded recordings and documented session
-settings with readback and restoration. Keep one owner of the camera handle.
-This authorization does not establish an unknown FP protocol or calibration.
-Do not replace/uninstall drivers, install kernel drivers, flash firmware, alter
-EEPROM/UserSets/permanent calibration, reset to defaults, or guess FP commands.
-Driver installation requires separate owner approval under the original intake.
-Never scan or fuzz the NXP serial control lead. USB IDs do not establish protocol.
+Phase 3 is non-disturbing: no new native camera sessions/benchmarks, resets,
+disable/enable, power cycling, replugging, driver changes, firmware, EEPROM,
+UserSets or guessed FP/serial commands. Normal offline app save/exit/restart is
+allowed. Inventory is read-only and must not load a CTI or open any serial port.
+Future normal acquisition requires a unique verified target and one camera owner.
 
-Report H0-H4 separately from software. No synthetic/replay fallback for LIVE.
-Keep missing wavelengths null; scan states are not automatically nanometres.
-Never claim restored spectroscopy from an OEM camera frame or offline tests.
-Raw measurements are immutable. Preserve failed/partial frames and denominator.
+Keep acquired data, calibration, identifiers, logs and vendor assets in ignored
+local/ or the user's external workspace. Commit only reviewed source, tests,
+redacted English docs and explicitly synthetic examples; stage exact paths.
+Original-code license remains undecided. Draft PRs are allowed; no merge,
+default-branch change, public release, force push or visibility change.
 
-Keep real data, calibration, full identifiers, logs, downloads, binaries and licenses
-in ignored local/. Use .venv; do not change default Python. No full-disk searches.
-Only public source, redacted docs, tests and synthetic generators may be committed.
-Stage exact reviewed paths. No force-push, visibility changes or automatic merge.
-
-Run focused regressions and the offline suite after implementation. Phase 2 hardware
-validation is authorized locally and remains separate from CI; mark unexecuted
-checks NOT_TESTED. GUI evidence must be real. Preserve before/after evidence locally.
+Run meaningful focused regressions, offline suite and installation/UI checks.
+Record PASS/FAIL/NOT_TESTED separately from H0-H4. Do not equate offline success
+or an OEM sensor frame with restored spectroscopy. Update docs/dev/HANDOFF.md.

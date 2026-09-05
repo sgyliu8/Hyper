@@ -6,9 +6,9 @@ Checked: **2026-09-05**, Europe/London. Public sources below were read during th
 
 ## Initial recovery evidence
 
-This section records the pre-installation discovery. Later authorized installation and live acquisition results are tracked in [hardware findings](HARDWARE_FINDINGS.md) and the local execution receipts. `NOT_TESTED` in the static review below describes that review stage, not the final state of the recovery run.
+This section records the pre-installation discovery. Later authorized installation and live acquisition results are tracked in [hardware findings](../HARDWARE_FINDINGS.md) and the local execution receipts. `NOT_TESTED` in the static review below describes that review stage, not the final state of the recovery run.
 
-The initial local investigation reported a USB imaging parent with bus-reported model **mvBlueFOX3-M2024C**, `VID_164C&PID_5533`; its `MI_00` function reports compatible class/subclass/protocol `EF/05/00` and Windows problem code **28**. A second interface reports **NXP LPC13xx VCOM**, `VID_1FC9&PID_0003`, currently COM4. These are local observations, not facts derived from a vendor-ID website. See [hardware findings](HARDWARE_FINDINGS.md) and the private diagnostics for their receipts.
+The initial local investigation reported a USB imaging parent with bus-reported model **mvBlueFOX3-M2024C**, `VID_164C&PID_5533`; its `MI_00` function reports compatible class/subclass/protocol `EF/05/00` and Windows problem code **28**. A second interface reports **NXP LPC13xx VCOM**, `VID_1FC9&PID_0003`, currently COM4. These are local observations, not facts derived from a vendor-ID website. See [hardware findings](../HARDWARE_FINDINGS.md) and the private diagnostics for their receipts.
 
 - **confirmed, local + B1–B5:** the imaging module belongs to the MATRIX VISION/Balluff mvBlueFOX3 direction and reports a USB3 Vision function. An official acquisition-runtime/driver recovery route exists for that family.
 - **unknown from public specifications:** whether every feature of this customized M2024C hardware/firmware works with the runtime. The separate local acquisition receipts determine which features actually passed.
@@ -137,4 +137,4 @@ binaries and calibration remain local; this repository does not redistribute the
 The additional public FP query was `site:hinalea.ai TruScope SDK 4200 download`,
 along with the already supplied exact vendor/source pages. No verified matching
 legacy control asset appeared in that scope. The executed local search and
-smallest next asset are recorded in [SCANNER_RECOVERY](SCANNER_RECOVERY.md).
+smallest next asset are recorded in [SCANNER_RECOVERY](../SCANNER_RECOVERY.md).

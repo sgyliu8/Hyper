@@ -5,7 +5,7 @@ During Phase 2, a Tk baseline frame also succeeded, but three subsequent persist
 CameraSession benchmark attempts failed before streaming. The last could not read
 the GenCP MaxDeviceResponseTime register; physical USB reconnection is pending.
 Current persistent preview/recording is therefore BLOCKED, despite PnP code 0.
-See [HANDOFF](../HANDOFF.md) for current receipts. The historical results below do
+See [HANDOFF](HANDOFF.md) for current receipts. The historical results below do
 not establish current link health. Chassis/cable identity, scanner protocol and
 device-matched spectral calibration remain unresolved.
 
