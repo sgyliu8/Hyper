@@ -28,3 +28,8 @@ Each is reported PASS/PARTIAL/BLOCKED/NOT_TESTED. A blocked gate is not a failed
 physical experiment, and offline PASS does not upgrade any hardware gate. Hosted
 CI is a separate status: a workflow being written is not a successful remote run.
 See HANDOFF for the current actual test count, GUI and Git receipts.
+
+Final local result: 56 offline tests PASS. Actual normal desktop GUI Connect and
+Single frame also PASS after repairing pythonw UTF8 signature-output decoding;
+it saved and displayed a new real RGB8 frame. The exact code checkpoint 80d572d
+passed GitHub offline CI run 33967270876. Private receipts are linked from HANDOFF.

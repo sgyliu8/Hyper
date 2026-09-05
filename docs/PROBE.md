@@ -37,11 +37,15 @@ added, removed, and changed devices, including unrelated USB devices; it does
 not invent physical association between the imaging module and a serial bridge.
 Do not disconnect power or reset the device to produce a snapshot.
 
-The verified 2026-09-05 inventory found the Matrix Vision composite device and
+The initial pre-installation 2026-09-05 inventory found the Matrix Vision composite device and
 its USB3 Vision imaging interface, with code 28 and no interface driver, plus a
 working Windows NXP serial bridge. The full HinaLea model and the serial bridge's
 physical association remain unconfirmed. Static USB3 Vision evidence alone does
 not establish a working runtime, a scanning API, or spectral calibration.
+
+After separately approved OEM installation, the imaging interface reports code 0
+and real raw-frame/occlusion acceptance passed. The inventory remains read-only;
+acquisition and its evidence are separate, as recorded in HARDWARE_FINDINGS.md.
 
 Validation: parser/selection/static-classification/diff tests pass; the Python
 wrapper and PowerShell inventory ran on this Windows computer. An early probe

@@ -106,3 +106,24 @@ Work branch: `recovery/hinalea-local`. Only reviewed source, redacted docs, test
 and synthetic generators are staged. All raw frames, serials, logs, proprietary
 binaries, installer components and .venv remain ignored in local/. Publication
 and hosted CI result are recorded in the closing addendum; no merge/force-push.
+
+## Closing addendum
+
+The final normal GUI was restarted with the repaired UTF8 signature-reader path.
+Computer Use clicked Connect (read-only) and Single frame on the actual window.
+It acquired a new real RGB8 frame and reopened/displayed it successfully:
+`local/exports/raw_frame_20260905T135317666950/frame.npy` with complete raw payload,
+metadata and preview. Receipt confirms stop/release/reopen, original RGB8/20ms/0dB,
+test patterns Off and a new device timestamp. GUI shows R/G/B color channels,
+REPLAY of the saved LIVE image, and disabled spectroscopy. The actual screen is
+saved privately as `local/diagnostics/gui-real-capture.png`. **GUI real capture PASS**.
+The earlier pythonw failure was a text-decoding fault before device access; the
+fixed explicit UTF8 path was verified both in pythonw and through this actual click.
+
+Code checkpoint **80d572d** was pushed to `origin/recovery/hinalea-local`.
+GitHub offline validation passed at
+https://github.com/sgyliu8/Hyper/actions/runs/33967270876 . The following handoff-only
+checkpoint records these receipts without changing the tested acquisition code.
+This was an empty remote: the first pushed branch became its default; there is no
+separate base branch for a Draft PR. No branch was merged and visibility stays public.
+Live hardware evidence and binary assets remain local and were not uploaded.
