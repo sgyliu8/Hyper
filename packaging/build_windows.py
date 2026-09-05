@@ -43,11 +43,14 @@ def main():
     notices = output/'licenses'
     notices.mkdir()
     from urllib.request import urlopen
-    for name,url in {'LGPL-3.0.txt':'https://www.gnu.org/licenses/lgpl-3.0.txt',
-                     'GPL-3.0.txt':'https://www.gnu.org/licenses/gpl-3.0.txt',
-                     'GPL-2.0.txt':'https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt'}.items():
+    license_root = 'https://raw.githubusercontent.com/qt/qtbase/v6.10.3/LICENSES/'
+    for name in ('LGPL-3.0-only.txt','GPL-3.0-only.txt','GPL-2.0-only.txt'):
+        url = license_root + name
         with urlopen(url,timeout=30) as response:
-            (notices/name).write_bytes(response.read())
+            license_text = response.read()
+        if b'PUBLIC LICENSE' not in license_text[:100]:
+            raise RuntimeError('Expected the version-matched upstream license text')
+        (notices/name).write_bytes(license_text)
     dependencies = {}
     for name in packages + ['pyinstaller']:
         dist = distribution(name)
