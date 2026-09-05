@@ -68,7 +68,7 @@ H2/H3/H4 remain separate from imaging and require actual matching assets.
 
 ## Build and verification closeout
 
-The final source suite passed 218 tests (16.71 s, offscreen Qt). A preceding native-Qt
+The final source suite passed 219 tests (18.17 s, offscreen Qt). A preceding native-Qt
 test run passed 215 tests while emitting 0x8001010d; the cause is unconfirmed and
 its log is retained. Native 125% desktop actions exercised synthetic loading,
 three ROIs, rename, amplitude/L2 comparison, PC2/loadings, figure export, save,

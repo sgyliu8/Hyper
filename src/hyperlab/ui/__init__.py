@@ -1,5 +1,5 @@
 """Minimal local desktop interface."""
 
-from .app import launch
+from .workbench import launch
 
 __all__ = ["launch"]

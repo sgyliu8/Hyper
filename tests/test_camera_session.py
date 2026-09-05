@@ -495,7 +495,9 @@ def test_persistent_state_restart_latest_exact_snapshot_record(tmp_path):
 
 def test_fault_close_retains_primary_and_stops_recording(tmp_path):
     fake = StreamingFake(fail_after=12)
-    session = CameraSession("fixture", "fixture", backend_factory=lambda *args: fake)
+    # Isolate the injected acquisition failure from writer startup scheduling.
+    # At most 12 fixture frames fit; separate tests exercise bounded overflow.
+    session = CameraSession("fixture", "fixture", backend_factory=lambda *args: fake, writer_capacity=32)
     try:
         session.connect().result(5)
         session.start_preview().result(5)

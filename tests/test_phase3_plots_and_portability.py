@@ -249,3 +249,22 @@ def test_missing_package_error_survives_worker_string_transport():
     from hyperlab.devices import connection_error_kind
     assert connection_error_kind("No module named 'harvesters'")=='Python acquisition package missing'
     assert connection_error_kind('GenCP timeout')=='Communication fault'
+
+
+def test_default_qt_entry_does_not_require_legacy_tk():
+    import subprocess
+    import sys
+    code = """
+import importlib.abc, sys
+class NoTk(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.startswith('tkinter'):
+            raise ModuleNotFoundError('Tk deliberately absent')
+sys.meta_path.insert(0, NoTk())
+import hyperlab.ui
+from hyperlab.ui.workbench import launch
+assert hyperlab.ui.launch is launch
+assert 'tkinter' not in sys.modules
+"""
+    result=subprocess.run([sys.executable,'-c',code],capture_output=True,text=True,timeout=15)
+    assert result.returncode==0,result.stderr

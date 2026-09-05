@@ -3,6 +3,7 @@ import argparse
 import hashlib
 from importlib.metadata import distribution, version
 import json
+import os
 from pathlib import Path
 import platform
 import shutil
@@ -72,26 +73,38 @@ def main():
                '--specpath',str(output),'--collect-data','hyperlab.resources',
                '--add-data',str(checkout/'THIRD_PARTY_NOTICES.md')+':.',
                '--add-data',str(notices)+':licenses',
-               '--hidden-import','hyperlab.offline_smoke','--hidden-import','harvesters.core']
+               '--hidden-import','hyperlab.offline_smoke','--hidden-import','harvesters.core',
+               '--hidden-import','matplotlib.backends.backend_svg',
+               '--hidden-import','matplotlib.backends.backend_pdf']
     for name in packages:
         command += ['--copy-metadata',name]
     for name in ('tkinter','PyQt5','PyQt6','PySide2','IPython','pytest','scipy','pandas'):
         command += ['--exclude-module',name]
     command += [str(checkout/'packaging'/'launch.py')]
-    run(command,cwd=checkout)
+    # Do not collect an unrelated application's incompatible ICU/OpenSSL from PATH.
+    windows = Path(os.environ['SystemRoot'])
+    build_env = dict(os.environ, PATH=os.pathsep.join((str(Path(sys.executable).parent),
+                       sys.base_prefix,str(windows/'System32'),str(windows))))
+    run(command,cwd=checkout,env=build_env)
     import ast
     analysis = ast.literal_eval((output/'build'/'HyperLab'/'Analysis-00.toc').read_text(encoding='utf-8'))
     modules = []
+    binaries = []
     def inspect_modules(value):
         if isinstance(value,(tuple,list)):
             if len(value)==3 and isinstance(value[0],str) and value[0].startswith('hyperlab') and value[2]=='PYMODULE':
                 modules.append(value)
+            elif len(value)==3 and isinstance(value[0],str) and value[2]=='BINARY':
+                binaries.append(value)
             else:
                 for item in value:
                     inspect_modules(item)
     inspect_modules(analysis)
     if not modules or any(not Path(item[1]).resolve().is_relative_to(checkout/'src') for item in modules):
         raise RuntimeError('Frozen HyperLab modules did not all come from the exact archived source')
+    allowed = [Path(sys.prefix).resolve(),Path(sys.base_prefix).resolve(),windows.resolve()]
+    if any(not any(Path(item[1]).resolve().is_relative_to(root) for root in allowed) for item in binaries):
+        raise RuntimeError('A binary from an unrelated application entered the build')
     desktop = output/'desktop'/'HyperLab'
     forbidden = [p for p in desktop.rglob('*') if p.is_file() and
                  (p.suffix.casefold() in ('.cti','.sys') or p.name.casefold().startswith(('mvimpact','mvgentl','mvbluefox')))]

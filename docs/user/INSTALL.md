@@ -49,6 +49,9 @@ working directory does not create an accidental `local/` folder there.
 
 ## Windows desktop evaluation ZIP
 
+The desktop ZIP contains the Qt workbench. The optional legacy Tk interface is
+available only in a source/Python installation with Tk installed.
+
 Extract the entire HyperLab folder and keep `_internal` beside `HyperLab.exe`.
 Run `Start-HyperLab.cmd` or `HyperLab.exe app`. No Python installation is required.
 `HyperLab.exe doctor` prints runtime and workspace information. The ZIP contains
