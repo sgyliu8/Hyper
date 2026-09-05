@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.2.0 — Phase 2 implementation, 2026-09-05
+
+- Added the default English PySide6/pyqtgraph workbench; retained Tk only through
+  explicit `app --legacy`. CMD and process-scoped PowerShell Bypass startup remain
+  available without changing permanent execution policy.
+- Added one-owner persistent CameraSession, finite preview fetch, bounded latest/
+  command/writer/snapshot queues, exact displayed-frame saving, transient settings
+  readback/restoration and independent cleanup receipts. GUI exposure/gain are enabled.
+- Added bounded THW/THWC raw time recording with durable-prefix checkpoints,
+  partial failure evidence, content reopen checks and explicit Windows mmap close.
+  A time sequence never becomes an FP raw scan or wavelength cube.
+- Added draggable ROI and raw-pixel precision controls, saved-frame comparison,
+  ROI/quality/CFA analysis, numeric map exports, matching-reference records
+  and temporal summaries. Fixed common-feature PCA/SAM, derived metadata, shared
+  capability gates, ENVI interoperability, validity policy, precision and large
+  output memory behavior; added independent numerical and lifecycle regressions.
+- Added bounded controller asset/topology diagnostics and primary-source/physical
+  data documentation. No verified matching FP protocol or reconstruction asset
+  was found; NXP serial remains unopened and H2–H4 remain blocked.
+- Preserved three actual persistent-session zero-frame failures: typed node-name exception,
+  interrupted native all-node read, and subsequent GenCP register/open failure.
+  Limited corrected diagnostics to cached names/types and reviewed feature values;
+  real corrected export is pending and XML is NOT_EXPORTED.
+- Current real preview/recording benchmark is BLOCKED pending USB reconnection.
+  Historical H1 imaging PASS is retained separately. Offline, actual desktop,
+  source and CI receipts are recorded in HANDOFF; no performance PASS is claimed.
+
 ## Startup fix — 2026-09-05
 
 - Added a double-clickable CMD GUI launcher that works from Windows PowerShell
