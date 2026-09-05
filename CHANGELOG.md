@@ -13,6 +13,8 @@
   legends, consistent dashed lines and translucent SD ribbons. Reserve usable
   chart height and distinguish excluded image pixels with a slate background.
 - Export single-plane distribution counts, bin edges and densities with figures.
+- Match PCA/difference maps to white publication figures, with blue-white-red
+  scales, readable numerical colorbars and a separate grey invalid-pixel layer.
 
 ## 0.3.0 — research preview, 2026-09-05
 

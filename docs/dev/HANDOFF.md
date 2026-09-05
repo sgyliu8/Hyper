@@ -15,6 +15,9 @@ The final 0.3.1 package (source e809135) passed 229 offline tests and its own
 1,803-frame native imaging check, 20/20 recording, real ROI/figure export and normal
 settings restoration/release. The delivered window shows actual frame 1261 with
 ROI plots in REPLAY. The earlier e06345b 2,512-frame run remains separate evidence.
+The later owner-selected heatmap style adds a white map background, blue-white-red
+PCA/difference display, grey invalid layer/key and readable unscaled colorbar.
+It changes presentation only; the real-session receipts above remain unchanged.
 
 Baseline: `feature/live-workbench-v2@2d9083533a2e367e6543748f97753da02b1a0713`.
 Working branch: `feature/scientific-workbench-portable-v3`.

@@ -102,6 +102,30 @@ def test_multiband_spatial_sd_has_renderable_fill_path(qtbot):
     assert ribbon.brush().color().alpha() == 44
 
 
+def test_native_map_distinguishes_masked_pixels_and_preserves_signed_scale(qtbot):
+    window = Workbench(); qtbot.addWidget(window)
+    cube = Cube(np.zeros((2,3,2)),{'data_level':'raw_frame','units':'DN'})
+    data = np.array([[-5000.,0.,5000.],[100.,200.,300.]])
+    valid = np.array([[True,True,True],[True,False,True]])
+    result = {'data':data,'valid_mask':valid,'metadata':{'operation':'difference','units':'DN'}}
+    window.set_cube(cube); window.roi_timer.stop(); window.show()
+    for _ in range(2):
+        window.show_product(result,cube); qtbot.wait(40)
+        np.testing.assert_equal(window.derived_invalid.image,~valid)
+        assert window.derived_invalid.lut[1].tolist() == [220,225,229,255]
+        assert window.derived_invalid.lut[0,3] == 0
+        assert window.map_spec.colormap == 'RdBu_r'
+        assert window.map_spec.limits == (-5000,5000)
+        assert window.colorbar.axis.autoSIPrefixScale == 1
+        assert np.isnan(window.derived_image.image[1,1])
+        assert window.derived_image.image[0,1] == 0
+    assert window.derived_graphics.backgroundBrush().color().name() == '#ffffff'
+    legend_item = window.derived_plot.legend.items[0][0].item
+    import pyqtgraph as pg
+    assert pg.mkBrush(legend_item.opts['brush']).color().name() == '#dce1e5'
+    np.testing.assert_equal(result['data'],[[-5000,0,5000],[100,200,300]])
+
+
 @pytest.mark.parametrize('policy,left_count',[('diagnostic',4),('quantitative',3)])
 def test_single_plane_distributions_share_bins_and_preserve_counts(policy,left_count,tmp_path):
     data = np.array([[10,20,4095,20,30,40],[-9999,np.nan,30,30,40,50]],float)[...,None]

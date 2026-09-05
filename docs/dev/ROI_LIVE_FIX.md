@@ -127,7 +127,7 @@ These results validate sensor DN and the imaging/UI workflow; wavelength control
 device-matched reconstruction and calibrated reflectance remain unavailable.
 The exact HinaLea body label and the second connection still lack confirmation.
 
-## Final local package
+## ROI camera candidate and installation evidence
 
 Build source: e8091351aa7d7eb3e6d137b22750ce4fb6678f72, HyperLab 0.3.1.
 The build verified all 30 frozen HyperLab modules against that archived source.
@@ -171,3 +171,21 @@ unchanged; real-session evidence is recorded separately.
 Use the project-root Start-HyperLab.cmd with the existing project venv, or
 desktop/HyperLab/Start-HyperLab.cmd inside the final local package. These launchers
 avoid the PowerShell script execution-policy issue without changing Windows policy.
+
+## Heatmap style completion
+
+The owner also selected the PCA PC2 and ROI amplitude/L2 figure examples as
+preferred styles. Numerical map exports already use RdBu_r, symmetric zero-centred
+PCA/difference limits and a grey invalid mask. The native map now matches that
+white background, dark labelled axes and colorbar, and grey invalid-pixel key.
+A separate two-entry transparent/grey overlay preserves the numerical NaNs and
+distinguishes masked pixels from valid zero. Repeated map labels disable hidden
+SI tick scaling. No PCA algorithm, validity policy or camera operation changed.
+
+The map regression checks signed limits, true zero versus invalid NaN, overlay
+alpha/grey, legend color, repeated colorbar scaling and unchanged input data.
+Native synthetic PC1/PC2 inspection confirms the style; synthetic PCA is not a
+physical camera validation. Actual Bayer frame 1261 and the 1,803-frame imaging
+receipt above remain the real acquisition evidence for the unchanged camera path.
+The full revised offline suite passed 230 tests in 42.73 s; the strengthened
+unchanged-input assertion also passed its focused check before the build.
