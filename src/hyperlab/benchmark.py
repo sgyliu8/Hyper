@@ -26,9 +26,9 @@ def run(output, *, seconds=10, cycles=1, record_frames=0, exposure_us=50000, pix
         report['profile'] = profile
         session = CameraSession(profile['cti'], profile['serial'], settings=report['settings'], mode='measurement')
         session.connect().result(timeout=60)
-        session.export_diagnostics(directory/'nodes').result(timeout=30)
         for cycle in range(cycles):
             session.start_preview().result(timeout=30)
+            start_state = session.status()
             deadline = time.monotonic() + (seconds if cycle == 0 else 1)
             last_report = 0
             last_identity = None
@@ -37,7 +37,7 @@ def run(output, *, seconds=10, cycles=1, record_frames=0, exposure_us=50000, pix
                 if state['error']:
                     raise RuntimeError(state['error'])
                 frame = session.latest_frame()
-                if frame is not None:
+                if frame_belongs_to_start(frame, start_state):
                     last_identity = frame.identity
                 # This is a headless poll, deliberately not marked as displayed.
                 if time.monotonic() - last_report >= 1:
@@ -78,6 +78,7 @@ def run(output, *, seconds=10, cycles=1, record_frames=0, exposure_us=50000, pix
             session.stop_preview().result(timeout=max(10, exposure_us/1e6 + 5))
             report['cycles'].append({'cycle':cycle,'stop_seconds':time.monotonic()-stop_begin,
                                       'state':session.state,'last_frame_identity':last_identity,
+                                      'stream_epoch':start_state['stream_epoch'],
                                       'cleanup':session.status()['cleanup']})
         report['status'] = 'PASS'
     except Exception as error:
@@ -95,6 +96,11 @@ def run(output, *, seconds=10, cycles=1, record_frames=0, exposure_us=50000, pix
     if primary:
         raise primary
     return report
+
+
+def frame_belongs_to_start(frame, start_state):
+    return (frame is not None and frame.metadata.get('stream_epoch') == start_state['stream_epoch']
+            and frame.metadata.get('host_monotonic_ns', -1) >= start_state['stream_started_ns'])
 
 
 def main():

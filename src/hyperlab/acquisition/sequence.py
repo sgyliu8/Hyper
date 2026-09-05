@@ -252,6 +252,7 @@ class SequenceRecorder:
         self.started = time.monotonic()
         self.ended = None
         self.stop_event = threading.Event()
+        self._admission = threading.RLock()
         self.done = threading.Event()
         self.error = None
         self.stopped = False
@@ -259,39 +260,59 @@ class SequenceRecorder:
         self.accepted = 0
         self.written = 0
         self.overflow = 0
+        self.explicitly_failed = 0
+        self.rejected = 0
         self.failed_frame = None
         self.failed_payload = None
         self.path = self.directory / "sequence.npy"
         self.metadata = None
         self._frame = frame
+        self._template = (frame.data.shape, frame.data.dtype.str,
+                          *(frame.metadata.get(key) for key in
+                            ('session_id', 'stream_epoch', 'pixel_format', 'readback_settings')))
         self._writer_factory = writer_factory
         self.thread = threading.Thread(target=self._run, name="HyperLabWriter", daemon=True)
         self.thread.start()
 
     def submit(self, frame):
-        if self.stop_event.is_set():
-            return False
-        if self.duration_s is not None and time.monotonic() - self.started >= self.duration_s:
-            self.duration_complete = True
-            self.stop_event.set()
-            return False
-        try:
-            self.queue.put_nowait(frame)
-        except queue.Full:
-            self.overflow += 1
-            self.failed_frame = dict(frame.metadata)
-            self.error = "Writer queue overflow: recording stopped; no silent frame drop"
-            self.stop_event.set()
-            return False
-        self.accepted += 1
-        if self.accepted >= self.max_frames:
-            self.stop_event.set()
-        return True
+        # Admission and finalization share one lock. A true return guarantees
+        # either a persisted frame or an explicitly failed accepted frame.
+        with self._admission:
+            if self.stop_event.is_set():
+                self.rejected += 1
+                return False
+            if self.duration_s is not None and time.monotonic() - self.started >= self.duration_s:
+                self.duration_complete = True
+                self.stop_event.set()
+                self.rejected += 1
+                return False
+            template = (frame.data.shape, frame.data.dtype.str,
+                        *(frame.metadata.get(key) for key in
+                          ('session_id', 'stream_epoch', 'pixel_format', 'readback_settings')))
+            if template != self._template:
+                self.rejected += 1
+                self.failed_frame = dict(frame.metadata)
+                self.stop(error='Frame shape, format, stream or setting epoch changed during recording')
+                return False
+            try:
+                self.queue.put_nowait(frame)
+            except queue.Full:
+                self.overflow += 1
+                self.rejected += 1
+                self.failed_frame = dict(frame.metadata)
+                self.error = "Writer queue overflow: recording stopped; no silent frame drop"
+                self.stop_event.set()
+                return False
+            self.accepted += 1
+            if self.accepted >= self.max_frames:
+                self.stop_event.set()
+            return True
 
     def stop(self, *, error=None):
-        self.stopped = self.accepted < self.max_frames and not self.duration_complete
-        self.error = self.error or error
-        self.stop_event.set()
+        with self._admission:
+            self.stopped = self.accepted < self.max_frames and not self.duration_complete
+            self.error = self.error or error
+            self.stop_event.set()
 
     def _run(self):
         writer = None
@@ -307,23 +328,33 @@ class SequenceRecorder:
             writer = self._writer_factory(self.directory, self._frame.data.shape, self._frame.data.dtype,
                                           self.max_frames, metadata=metadata)
             self._frame = None
-            while not self.stop_event.is_set() or not self.queue.empty():
-                try:
-                    frame = self.queue.get(timeout=0.05)
-                except queue.Empty:
+            while True:
+                with self._admission:
                     if self.duration_s is not None and time.monotonic() - self.started >= self.duration_s:
                         self.duration_complete = True
                         self.stop_event.set()
+                    if self.stop_event.is_set() and self.queue.empty():
+                        break
+                try:
+                    frame = self.queue.get(timeout=0.05)
+                except queue.Empty:
                     continue
                 writer.append(frame.data, dict(frame.metadata))
                 self.written += 1
                 self.queue.task_done()
         except Exception as exc:
-            self.error = self.error or str(exc)
-            self.stop_event.set()
+            self.stop(error=str(exc))
         finally:
+            with self._admission:
+                self.stop_event.set()
+                self.explicitly_failed = self.accepted - self.written
+                if self.explicitly_failed:
+                    self.error = self.error or 'Accepted frames could not be written'
             if writer is not None:
                 writer.meta.update(writer_overflow=self.overflow, accepted_frames=self.accepted,
+                                   written_frames=self.written, explicitly_failed_frames=self.explicitly_failed,
+                                   rejected_frames=self.rejected,
+                                   accounting='accepted = written + explicitly_failed',
                                    failed_frame=self.failed_frame, writer_error=self.error)
                 if self.failed_payload is not None:
                     try:
@@ -350,6 +381,7 @@ class SequenceRecorder:
     def status(self):
         metadata = self.metadata or {}
         return {"path": str(self.path), "accepted_frames": self.accepted, "written_frames": self.written,
+                "explicitly_failed_frames": self.explicitly_failed, "rejected_frames": self.rejected,
                 "max_frames": self.max_frames, "queue_length": self.queue.qsize(), "queue_capacity": self.queue.maxsize,
                 "overflow": self.overflow, "error": self.error, "done": self.done.is_set(),
                 "completed": metadata.get("completed", False), "partial": metadata.get("partial", True),

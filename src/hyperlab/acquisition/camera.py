@@ -13,7 +13,7 @@ from .session import utc_now
 
 class CameraSession:
     def __init__(self, cti, serial, *, settings=None, mode="measurement", backend_factory=None,
-                 writer_capacity=8, recorder_factory=SequenceRecorder, fetch_timeout=0.25):
+                 writer_capacity=8, recorder_factory=SequenceRecorder, fetch_timeout=0.25, phase_log=None):
         if not 0 < fetch_timeout <= 1:
             raise ValueError("Fetch timeout must be in (0,1] seconds")
         self.cti, self.serial = str(cti), str(serial)
@@ -49,6 +49,10 @@ class CameraSession:
         self._fetch_timeouts = 0
         self._last_received = None
         self._stream_started = None
+        self.stream_epoch = 0
+        self._stream_started_ns = None
+        self._phases = deque(maxlen=200)
+        self.phase_log = Path(phase_log) if phase_log else None
         self._last_stop_seconds = None
         self._stop_request_time = None
         self._capabilities = {}
@@ -183,6 +187,8 @@ class CameraSession:
 
     @staticmethod
     def _fps(times):
+        cutoff = time.monotonic() - 2.0
+        times = [value for value in times if value >= cutoff]
         if len(times) < 2:
             return 0.0
         return (len(times) - 1) / max(times[-1] - times[0], 1e-6)
@@ -193,6 +199,9 @@ class CameraSession:
             age = ((time.monotonic_ns() - current.metadata["host_monotonic_ns"]) / 1e9) if current else None
             recording = self._recording.status() if self._recording else self._last_recording
             return {"state": self._state, "error": self._error, "session_id": self.session_id,
+                    "stream_epoch": self.stream_epoch, "stream_started_ns": self._stream_started_ns,
+                    "has_current_frame": current is not None and current.metadata.get('stream_epoch') == self.stream_epoch,
+                    "phases": list(self._phases),
                     "closed": self.closed, "worker_alive": self._worker.is_alive(),
                     "camera_released": self._camera_released,
                     "capture_fps": self._fps(self._capture_times) if self._state in ("streaming", "recording") else 0,
@@ -202,7 +211,7 @@ class CameraSession:
                     "fetch_timeouts": self._fetch_timeouts, "latest_queue_length": int(current is not None),
                     "latest_queue_capacity": 1, "frame_age_s": age,
                     "frame_age_definition": "host monotonic now minus host buffer receive; excludes uncalibrated device clock",
-                    "stale": age is not None and age > max(1.0, 3 * (self.settings.get("ExposureTime", 100000) or 100000) / 1e6),
+                    "stale": (age if age is not None else time.monotonic() - (self._stream_started or time.monotonic())) > max(1.0, 3 * (self.settings.get("ExposureTime", 100000) or 100000) / 1e6),
                     "last_stop_seconds": self._last_stop_seconds, "recording": recording,
                     "snapshot_pending": self._snapshot_pending, "settings": dict(self.settings), "mode": self.mode,
                     "capabilities": dict(self._capabilities), "connection_metadata": dict(self._connection_metadata),
@@ -221,7 +230,7 @@ class CameraSession:
             factory = GenTLBackend
         self._backend = factory(self.cti, self.serial)
         self._camera_released = False
-        self._connection_metadata = dict(self._backend.open() or {})
+        self._connection_metadata = dict(self._phase('open', self._backend.open, 30) or {})
         self._capabilities = dict(self._backend.capabilities)
         self.session_id = str(uuid4())
         self._sequence = 0
@@ -237,16 +246,51 @@ class CameraSession:
         if self.state != "ready":
             raise RuntimeError("Preview requires a ready camera session")
         self._stop_requested.clear()
-        self._backend.configure(self.settings, mode=self.mode)
+        with self._lock:
+            self.stream_epoch += 1
+            self._latest = None
+            self._display_identity = None
+            self._capture_times.clear()
+            self._display_times.clear()
+        self._phase('configure', lambda: self._backend.configure(self.settings, mode=self.mode), 15)
         self._capabilities = dict(self._backend.capabilities)
         self._connection_metadata = dict(self._backend.metadata)
-        self._backend.start()
-        self._capture_times.clear()
-        self._display_times.clear()
+        self._stream_started_ns = time.monotonic_ns()
+        self._phase('start', self._backend.start, 10)
         self._previous_device_id = None
         self._stream_started = time.monotonic()
         self._last_received = None
         self._set_state("streaming")
+
+    def _phase(self, name, operation, deadline_s):
+        """Deadlines are observations, never a claim of native cancellation."""
+        started = time.monotonic_ns()
+        event = {'phase': name, 'entered_utc': utc_now(), 'entered_ns': started,
+                 'deadline_ns': started + int(deadline_s * 1e9), 'status': 'ENTERED',
+                 'cancellation': 'native call is not cancellable by Future timeout'}
+        self._phases.append(event)
+        self._emit('phase', **event)
+        self._save_phases()
+        try:
+            result = operation()
+            event['status'] = 'RETURNED'
+            return result
+        except Exception as exc:
+            event.update(status='FAILED', exception_type=type(exc).__name__, error=str(exc))
+            raise
+        finally:
+            event.update(exited_ns=time.monotonic_ns(), exited_utc=utc_now())
+            event['deadline_exceeded'] = event['exited_ns'] > event['deadline_ns']
+            self._emit('phase', **event)
+            self._save_phases()
+
+    def _save_phases(self):
+        if self.phase_log:
+            try:
+                self.phase_log.parent.mkdir(parents=True, exist_ok=True)
+                atomic_json(self.phase_log, {'phases':list(self._phases), 'session_id':self.session_id})
+            except OSError as error:
+                self._emit('phase_log_error', error=str(error))
 
     def _stop(self):
         self._stop_requested.clear()
@@ -257,7 +301,7 @@ class CameraSession:
         if self.state in ("streaming", "recording", "stopping") or self._backend.original or self._backend.start_attempted:
             self._set_state("stopping")
             started = time.monotonic()
-            events = self._backend.stop_restore()
+            events = self._phase('stop_restore', self._backend.stop_restore, 10)
             self._cleanup.extend(events)
             self._last_stop_seconds = time.monotonic() - (self._stop_request_time or started)
             self._stop_request_time = None
@@ -273,13 +317,20 @@ class CameraSession:
             primary = exc
         finally:
             if self._backend is not None:
-                events = self._backend.close()
-                self._cleanup.extend(events)
-                released = [item for item in events if item["step"] == "destroy"]
-                self._camera_released = bool(released and released[-1]["succeeded"])
-                if any(not item["succeeded"] for item in events) and primary is None:
-                    primary = RuntimeError("Camera release failed; inspect cleanup evidence")
-                self._backend = None
+                try:
+                    events = self._phase('destroy', self._backend.close, 10)
+                    self._cleanup.extend(events)
+                    released = [item for item in events if item["step"] == "destroy"]
+                    self._camera_released = bool(released and released[-1]["succeeded"])
+                    if any(not item["succeeded"] for item in events) and primary is None:
+                        primary = RuntimeError("Camera release failed; inspect cleanup evidence")
+                except Exception as exc:
+                    self._camera_released = False
+                    self._cleanup.append({'step':'destroy', 'attempted':True, 'succeeded':False,
+                                          'exception_type':type(exc).__name__, 'error':str(exc)})
+                    primary = primary or exc
+                finally:
+                    self._backend = None
         if primary is not None:
             raise primary
         self._set_state("disconnected")
@@ -301,8 +352,8 @@ class CameraSession:
             self.settings = values["settings"]
             self.mode = values["mode"]
         elif operation == "record":
-            if self.state != "streaming" or self._latest is None:
-                raise ValueError("Start preview and receive a valid frame before recording")
+            if self.state != "streaming" or self._latest is None or self._latest.metadata.get('stream_epoch') != self.stream_epoch:
+                raise ValueError("Receive a valid frame from the current stream epoch before recording")
             if self._recording and not self._recording.done.is_set():
                 raise ValueError("Previous recording is still draining to disk")
             self._recording = self._recorder_factory(values["directory"], self._latest, values["max_frames"],
@@ -339,7 +390,11 @@ class CameraSession:
                 self._recording.failed_payload = getattr(self._backend, "failed_payload", None)
             self._recording.stop(error=self._error)
         if self._backend is not None:
-            self._cleanup.extend(self._backend.close())
+            try:
+                self._cleanup.extend(self._phase('error_cleanup', self._backend.close, 10))
+            except Exception as cleanup_error:
+                self._cleanup.append({'step':'error_cleanup', 'attempted':True, 'succeeded':False,
+                                      'error':str(cleanup_error)})
             destroy = [item for item in self._backend.cleanup if item["step"] == "destroy"]
             self._camera_released = bool(destroy and destroy[-1]["succeeded"])
             self._backend = None
@@ -371,7 +426,8 @@ class CameraSession:
                 return
             raise
         self._last_received = time.monotonic()
-        metadata.update(session_id=self.session_id, sequence=self._sequence)
+        metadata.update(session_id=self.session_id, sequence=self._sequence,
+                        stream_epoch=self.stream_epoch, stream_started_ns=self._stream_started_ns)
         self._sequence += 1
         frame = Frame(raw, metadata)
         device_id = metadata.get("frame_id")

@@ -258,6 +258,22 @@ def test_requeue_secondary_never_hides_decode_error(tmp_path, monkeypatch):
     assert camera.buffer.returns == 1
 
 
+def test_buffer_identity_read_error_preserves_primary_and_requeues(tmp_path, monkeypatch):
+    backend,camera,_ = make_backend(tmp_path,monkeypatch,['decode'])
+    def identity_timeout(self):
+        raise TimeoutError('identity transport failure')
+    monkeypatch.setattr(FakeBuffer,'frame_id',property(identity_timeout))
+    backend.open(); backend.configure({}); backend.start()
+    try:
+        with pytest.raises(RuntimeError,match='Unmapped pixel format'):
+            backend.fetch(.2)
+        assert backend.failed_frame_metadata['frame_id'] is None
+        assert 'TimeoutError' in backend.failed_frame_metadata['frame_id_read_error']
+    finally:
+        backend.close()
+    assert camera.buffer.returns==1
+
+
 def test_genicam_typed_category_name_uses_inode_property(tmp_path, monkeypatch):
     backend, camera, harvester = make_backend(tmp_path, monkeypatch)
     backend.open()
@@ -476,6 +492,26 @@ def test_close_during_stream_cooperative_and_settings_only_ready():
     assert session.close(wait=True, timeout=2)
     assert time.monotonic() - started < 2
     assert session.status()["camera_released"]
+
+
+def test_disconnect_stop_error_survives_destroy_exception():
+    class CleanupFault(StreamingFake):
+        def stop_restore(self):
+            raise TimeoutError('primary stop timeout')
+        def close(self):
+            raise ConnectionError('secondary destroy fault')
+    fake=CleanupFault()
+    session=CameraSession('fixture','fixture',backend_factory=lambda *args:fake)
+    try:
+        session.start_preview().result(5)
+        with pytest.raises(TimeoutError,match='primary stop timeout'):
+            session.disconnect().result(5)
+        session.wait_for_state('error',timeout=5)
+        assert session.status()['error']=='primary stop timeout'
+        assert not session.status()['camera_released']
+        assert any('secondary destroy fault' in str(item) for item in session.status()['cleanup'])
+    finally:
+        assert session.close(wait=True)
 
 
 def test_device_frame_gap_makes_recording_partial(tmp_path):

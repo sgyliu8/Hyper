@@ -36,7 +36,7 @@ class Frame:
 
     @property
     def identity(self):
-        return f"{self.metadata['session_id']}:{self.metadata['sequence']}"
+        return f"{self.metadata['session_id']}:{self.metadata.get('stream_epoch', 0)}:{self.metadata['sequence']}"
 
 
 def save_frame(directory, frame, *, transport_payload=None):

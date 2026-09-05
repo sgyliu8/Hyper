@@ -54,12 +54,14 @@ FEATURES = (
     "DeviceFirmwareVersion", "DeviceVersion", "TestPattern", "TestImageSelector", "ChunkModeActive",
 )
 AUTOMATIC = ("ExposureAuto", "GainAuto", "BalanceWhiteAuto", "BlackLevelAuto")
+ESSENTIAL_FEATURES = ('Width', 'Height', 'PixelFormat', 'ExposureTime', 'Gain',
+                      'AcquisitionMode', 'TriggerMode')
 
 
 def _attribute(obj, name, default=None):
     try:
         return getattr(obj, name)
-    except Exception:
+    except AttributeError:
         return default
 
 
@@ -99,6 +101,7 @@ class GenTLBackend:
         self.failed_payload = None
         self.failed_frame_metadata = None
         self.owner = None
+        self.node_evidence = {}
 
     def _owner(self):
         import threading
@@ -134,9 +137,43 @@ class GenTLBackend:
         self.metadata.update(model=info.model, vendor=info.vendor, tl_type=info.tl_type)
         self.camera = self.harvester.create({"serial_number": self.serial})
         self.nodes = self.camera.remote_device.node_map
-        self.capabilities = self.describe_nodes()
-        self.metadata["current_settings"] = self.read_settings()
+        self.capabilities = self.describe_nodes(names=ESSENTIAL_FEATURES)
+        self.metadata["current_settings"] = self.read_settings(names=ESSENTIAL_FEATURES)
         return self.metadata
+
+    def probe_node(self, name, *, required=False, describe=False, raise_read_error=False):
+        """Unsupported, unavailable and transport/read errors are distinct."""
+        stage = 'lookup'
+        result = {'supported': False, 'readable': False, 'status': 'unsupported'}
+        try:
+            node = _attribute(self.nodes, name)
+            if node is None:
+                if required:
+                    raise ValueError(f'Required node {name} is unsupported')
+                return result
+            stage = 'access'
+            readable = bool(self._api.is_readable(node))
+            result.update(supported=True, readable=readable,
+                          status='value' if readable else 'unavailable')
+            if not readable:
+                if required:
+                    raise ValueError(f'Required node {name} is unavailable')
+                return result
+            stage = 'value'
+            result['value'] = _json_scalar(node.value)
+            if describe:
+                stage = 'description'
+                result.update(self._describe(node))
+            return result
+        except Exception as exc:
+            result.update(status='read_error', exception_type=type(exc).__name__,
+                          read_error=str(exc), stage=stage)
+            if required or raise_read_error:
+                exc.add_note(f'Required GenICam read: {name}; stage={stage}')
+                raise
+            return result
+        finally:
+            self.node_evidence[name] = result
 
     def _describe(self, node):
         result = {"readable": bool(self._api.is_readable(node)), "writable": bool(self._api.is_writable(node))}
@@ -153,7 +190,7 @@ class GenTLBackend:
             result["entries"] = [str(entry.symbolic) for entry in entries if self._api.is_available(entry)]
         return result
 
-    def describe_nodes(self, *, all_nodes=False):
+    def describe_nodes(self, *, all_nodes=False, names=FEATURES):
         """Read feature descriptions without commands or selector changes."""
         self._owner()
         # genicam 1.6 NodeMap.nodes returns typed IValue/ICategory/IPort
@@ -166,7 +203,8 @@ class GenTLBackend:
                 if name is not None:
                     candidates[str(name)] = interface
         else:
-            candidates = {name: _attribute(self.nodes, name) for name in FEATURES}
+            return {name: self.probe_node(name, required=name in ESSENTIAL_FEATURES, describe=True)
+                    for name in names}
         result = {}
         for name, node in candidates.items():
             if node is None:
@@ -182,13 +220,20 @@ class GenTLBackend:
                 result[name] = {"node_type": type(node).__name__, "value_status": "NOT_READ_UNREVIEWED_NODE"}
                 continue
             try:
-                result[name] = self._describe(node)
+                result[name] = self.probe_node(name, describe=True)
             except Exception as exc:
                 result[name] = {"read_error": str(exc)}
         return result
 
-    def read_settings(self):
-        return {name: _json_scalar(_attribute(_attribute(self.nodes, name), "value")) for name in FEATURES}
+    def read_settings(self, names=FEATURES):
+        values = {}
+        for name in names:
+            evidence = self.probe_node(name, required=name in ESSENTIAL_FEATURES, raise_read_error=True)
+            # Optional absence is safe to leave unknown. A failed communication
+            # is never silently converted into an unsupported optional feature.
+            values[name] = evidence.get('value')
+        self.metadata['node_evidence'] = dict(self.node_evidence)
+        return values
 
     def configure(self, settings, mode="measurement"):
         self._owner()
@@ -202,6 +247,8 @@ class GenTLBackend:
             if current[test_name] not in (None, "Off"):
                 raise RuntimeError(f"{test_name} is enabled; cannot label this a real scene")
         requested = {}
+        qualification = []
+        manual_unavailable = set()
         # Auto controls are disabled before setting manual values, and restored last.
         for name in AUTOMATIC:
             if mode == "measurement" or (name == "ExposureAuto" and "ExposureTime" in settings) or (name == "GainAuto" and "Gain" in settings):
@@ -209,14 +256,19 @@ class GenTLBackend:
                 if node is not None and self._api.is_writable(node):
                     requested[name] = "Off"
                 elif current[name] not in (None, "Off"):
-                    raise RuntimeError(f"Cannot freeze {name}; manual measurement is unavailable")
+                    qualification.append(f'{name} remains active and cannot be frozen')
+                    if name in ('ExposureAuto', 'GainAuto'):
+                        manual_unavailable.add('ExposureTime' if name == 'ExposureAuto' else 'Gain')
+                elif current[name] is None:
+                    qualification.append(f'{name} state is unknown')
         if mode == "measurement":
             for name in ("GammaEnable", "LUTEnable"):
                 node = _attribute(self.nodes, name)
                 if node is not None and self._api.is_writable(node):
                     requested[name] = False
         requested.update({"AcquisitionMode": "Continuous", "TriggerMode": "Off"})
-        requested.update({name: value for name, value in settings.items() if value is not None})
+        requested.update({name: value for name, value in settings.items()
+                          if value is not None and name not in manual_unavailable})
         self.requested = dict(requested)
         for name, value in requested.items():
             node = _attribute(self.nodes, name)
@@ -246,9 +298,15 @@ class GenTLBackend:
             if readback != value and not (isinstance(value, (float, int)) and isinstance(readback, (float, int)) and np.isclose(readback, value, rtol=1e-7, atol=1e-6)):
                 raise RuntimeError(f"{name} readback differs from requested value")
         self.readback = self.read_settings()
+        for name in ('GammaEnable', 'LUTEnable'):
+            if self.readback.get(name) is not False:
+                qualification.append(f'{name} is active or unknown')
         self.capabilities = self.describe_nodes()
         self.metadata.update(configuration_mode=mode, requested_settings=dict(self.requested),
                              readback_settings=dict(self.readback),
+                             quantitative_eligible=not qualification and mode == 'measurement',
+                             quantitative_limitations=qualification,
+                             node_evidence=dict(self.node_evidence),
                              setting_evidence="session node readback; per-frame chunk evidence is separate")
 
     def start(self):
@@ -316,10 +374,15 @@ class GenTLBackend:
                 except Exception:
                     pass
             self.failed_frame_metadata = {
-                "frame_id": _json_scalar(_attribute(buffer, "frame_id")),
-                "device_timestamp_ns": _json_scalar(_attribute(buffer, "timestamp_ns")),
                 "host_monotonic_ns": received, "host_utc": received_utc,
                 "valid": False, "error": str(exc), "acquisition_source": "LIVE"}
+            for attribute, key in (("frame_id", "frame_id"), ("timestamp_ns", "device_timestamp_ns")):
+                try:
+                    self.failed_frame_metadata[key] = _json_scalar(_attribute(buffer, attribute))
+                except Exception as identity_error:
+                    self.failed_frame_metadata[key] = None
+                    self.failed_frame_metadata[key + "_read_error"] = f"{type(identity_error).__name__}: {identity_error}"
+                    primary.add_note(f"Failed buffer identity read also failed: {identity_error}")
         finally:
             try:
                 buffer.queue()
