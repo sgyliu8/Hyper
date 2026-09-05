@@ -27,6 +27,7 @@ the paths, sizes and keys; the historical RGB NPY was opened read-only and retai
 | 16:46:29, v2 final receipt | 189 Windows tests and exact-head Linux CI passed; physical status separately blocked |
 | Later owner report and Phase 3 entry screenshot | Owner had already power-cycled/replugged and reported LIVE. Existing v2 screenshot shows LIVE #5895, BayerRG12/50 ms/gain 0; instantaneous UI-reported rates are not a benchmark |
 | Subsequent window inventory | The previously observed app window was no longer present. No close/stop/kill/input action was performed by Phase 3 before its disappearance; cause unconfirmed |
+| 20:17:40–20:17:46, unplanned Connect during desktop QA | Phase log confirms native Open failed while ExposureTime.GetInc() queried a continuous float; no start/fetch phase or frames. error_cleanup returned; the old phase log does not independently prove every release step. Trigger is unconfirmed. The test app was normally closed; no retry was made |
 
 Historical receipt roots under local/diagnostics: phase2-final-delivery.json,
 phase2-camera-smoke/receipt.json, phase2-camera-smoke-v2/interruption.json,
@@ -49,6 +50,11 @@ cable cause is diagnosed from this chronology.
 Phase 3 performed no hardware acquisition, reset, replug, power cycle, device
 restart, disable/enable, driver reinstall, unknown serial open or permanent write.
 New application windows were launched only for offline synthetic UI verification.
+One unplanned native Open occurred as recorded above, so this phase must not be
+described as having zero device-open attempts. This was not a hardware acceptance
+run. The error was reproduced offline and fixed using GenApi 1.6 IFloat.has_inc(),
+verified against the installed wrapper; a support-query timeout still propagates.
+Final phase receipts also persist cleanup outcomes and release uncertainty.
 
 ## Next physical acceptance, not executed and not requested now
 
@@ -62,14 +68,16 @@ H2/H3/H4 remain separate from imaging and require actual matching assets.
 
 ## Build and verification closeout
 
-The source suite passed 216 tests (16.38 s, offscreen Qt). A preceding native-Qt
+The final source suite passed 218 tests (16.71 s, offscreen Qt). A preceding native-Qt
 test run passed 215 tests while emitting 0x8001010d; the cause is unconfirmed and
 its log is retained. Native 125% desktop actions exercised synthetic loading,
 three ROIs, rename, amplitude/L2 comparison, PC2/loadings, figure export, save,
 reopen and reference registration. A normal close saved these items in config.
 Automated restore regression passed. After native restart the desktop helper
-repeatedly reported "foreground window did not report a process id"; final native
-restart screenshot is NOT_CAPTURED. Do not relabel the Qt offscreen render as one.
+repeatedly reported "foreground window did not report a process id". Resetting only
+the JavaScript helper session restored capture: restored-reference-native.jpg
+shows the same three named ROIs and registered sample. No PC/device reset was
+used. Do not relabel the separate Qt offscreen render as a desktop screenshot.
 
 Simulated 100/125/150/200% Qt layouts were exercised separately. At 200%, stacked
 plots were too short; parallel amplitude/shape panels corrected the height issue.

@@ -292,6 +292,36 @@ def test_genicam_typed_category_name_uses_inode_property(tmp_path, monkeypatch):
         backend.close()
 
 
+def test_continuous_float_has_no_fixed_increment(tmp_path, monkeypatch):
+    backend,camera,_=make_backend(tmp_path,monkeypatch)
+    class ContinuousFloat:
+        value=50000.0
+        min,max,unit=10.0,20_000_000.0,'us'
+        def has_inc(self): return False
+        @property
+        def inc(self): raise RuntimeError('node does not have an increment')
+    camera.nodes.ExposureTime=ContinuousFloat()
+    try:
+        backend.open()
+        assert backend.capabilities['ExposureTime']['inc'] is None
+        backend.configure({'ExposureTime':20000.0},mode='preview')
+        assert backend.readback['ExposureTime']==20000.0
+    finally:
+        backend.close()
+
+
+def test_increment_support_query_preserves_transport_error(tmp_path, monkeypatch):
+    backend,camera,_=make_backend(tmp_path,monkeypatch)
+    def broken_query(): raise TimeoutError('increment support communication timeout')
+    camera.nodes.ExposureTime.has_inc=broken_query
+    try:
+        with pytest.raises(TimeoutError,match='increment support communication'):
+            backend.open()
+        assert backend.node_evidence['ExposureTime']['status']=='read_error'
+    finally:
+        backend.close()
+
+
 def test_unreviewed_node_export_never_reads_value_or_access(tmp_path, monkeypatch):
     backend, camera, harvester = make_backend(tmp_path, monkeypatch)
     backend.open()
@@ -494,14 +524,15 @@ def test_close_during_stream_cooperative_and_settings_only_ready():
     assert session.status()["camera_released"]
 
 
-def test_disconnect_stop_error_survives_destroy_exception():
+def test_disconnect_stop_error_survives_destroy_exception(tmp_path):
     class CleanupFault(StreamingFake):
         def stop_restore(self):
             raise TimeoutError('primary stop timeout')
         def close(self):
             raise ConnectionError('secondary destroy fault')
     fake=CleanupFault()
-    session=CameraSession('fixture','fixture',backend_factory=lambda *args:fake)
+    log=tmp_path/'phases.json'
+    session=CameraSession('fixture','fixture',backend_factory=lambda *args:fake,phase_log=log)
     try:
         session.start_preview().result(5)
         with pytest.raises(TimeoutError,match='primary stop timeout'):
@@ -512,6 +543,9 @@ def test_disconnect_stop_error_survives_destroy_exception():
         assert any('secondary destroy fault' in str(item) for item in session.status()['cleanup'])
     finally:
         assert session.close(wait=True)
+    receipt=json.loads(log.read_text())
+    assert receipt['error']=='primary stop timeout' and not receipt['camera_released']
+    assert any('secondary destroy fault' in str(item) for item in receipt['cleanup'])
 
 
 def test_device_frame_gap_makes_recording_partial(tmp_path):

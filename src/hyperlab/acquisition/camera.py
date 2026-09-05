@@ -288,7 +288,9 @@ class CameraSession:
         if self.phase_log:
             try:
                 self.phase_log.parent.mkdir(parents=True, exist_ok=True)
-                atomic_json(self.phase_log, {'phases':list(self._phases), 'session_id':self.session_id})
+                atomic_json(self.phase_log, {'phases':list(self._phases), 'session_id':self.session_id,
+                                            'cleanup':list(self._cleanup), 'camera_released':self._camera_released,
+                                            'error':self._error})
             except OSError as error:
                 self._emit('phase_log_error', error=str(error))
 
@@ -334,6 +336,7 @@ class CameraSession:
         if primary is not None:
             raise primary
         self._set_state("disconnected")
+        self._save_phases()
 
     def _command(self, operation, values):
         if operation == "connect":
@@ -400,6 +403,7 @@ class CameraSession:
             self._backend = None
         self._set_state("error")
         self._emit("error", error=self._error, cleanup=list(self._cleanup))
+        self._save_phases()
 
     def _observe_recording(self):
         recording = self._recording

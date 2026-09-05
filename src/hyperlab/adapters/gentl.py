@@ -183,8 +183,12 @@ class GenTLBackend:
         result["node_type"] = type(node).__name__
         if result["readable"]:
             result["value"] = _json_scalar(_attribute(node, "value"))
-        for name in ("min", "max", "inc", "unit"):
+        for name in ("min", "max", "unit"):
             result[name] = _json_scalar(_attribute(node, name))
+        # GenApi 1.6 IFloat.has_inc() distinguishes continuous floats from a
+        # fixed increment. GetInc() legitimately throws for continuous floats.
+        has_inc = _attribute(node, 'has_inc')
+        result['inc'] = None if has_inc is not None and not has_inc() else _json_scalar(_attribute(node, 'inc'))
         entries = _attribute(node, "entries")
         if entries is not None:
             result["entries"] = [str(entry.symbolic) for entry in entries if self._api.is_available(entry)]
