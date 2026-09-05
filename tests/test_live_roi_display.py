@@ -85,6 +85,23 @@ def test_repeated_distribution_plot_keeps_actual_density_tick_units(qtbot):
         assert float(axis.tickStrings([.005],axis.autoSIPrefixScale,.005)[0]) == pytest.approx(.005)
 
 
+def test_multiband_spatial_sd_has_renderable_fill_path(qtbot):
+    import pyqtgraph as pg
+    from PySide6.QtCore import QPointF
+    from hyperlab.plots import PlotSpec
+
+    window = Workbench(); qtbot.addWidget(window)
+    spec = PlotSpec('lines','ROI amplitude','Wavelength (nm)','Mean (DN)',series=[
+        {'name':'ROI A','x':[500,600,700],'y':[10,12,10],'sd':[2,2,2],
+         'color':COLORS[0],'style':'-'}])
+    window.draw_plot(spec)
+    ribbon, = [item for item in window.chart.getPlotItem().items if isinstance(item,pg.FillBetweenItem)]
+    assert not ribbon.path().isEmpty()
+    assert ribbon.path().contains(QPointF(600,13))
+    assert not ribbon.path().contains(QPointF(600,20))
+    assert ribbon.brush().color().alpha() == 44
+
+
 @pytest.mark.parametrize('policy,left_count',[('diagnostic',4),('quantitative',3)])
 def test_single_plane_distributions_share_bins_and_preserve_counts(policy,left_count,tmp_path):
     data = np.array([[10,20,4095,20,30,40],[-9999,np.nan,30,30,40,50]],float)[...,None]

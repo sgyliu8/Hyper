@@ -79,8 +79,7 @@ empty polls while retaining the overall fetch deadline and transport errors.
 It retains one camera owner and returns/requeues each buffer exactly as before.
 The chart reuses the image's validity selection instead of recomputing it.
 Tests cover silence/deadline, later buffer delivery, transport failure and repeated
-density redraw. The complete revised suite passed 228 tests in 21.40 s.
-Final native performance and package results follow after the exact-code rebuild.
+density redraw. The complete intermediate suite passed 228 tests in 21.40 s.
 
 The intermediate 1 ms native wait candidate still displayed about 3 fps. A
 second bounded diagnostic compared 1 ms and nonblocking native event checks in
@@ -91,3 +90,39 @@ check, as specified by [GenTL 1.6, EventGetData, page 124](https://www.emva.org/
 and retains a finite Python deadline/yield. No device node or camera setting is
 changed by that host polling policy. Diagnostic frame-processing rates exclude
 Qt painting; final native UI rates are reported separately.
+
+The e06345b native candidate acquired 2,512 real BayerRG12 frames at 1936 x 1216,
+50,000 us exposure and gain 0. Across 80 eligible LIVE telemetry samples from
+22:10:00.699 to 22:11:25.635 UTC, median capture was 19.96 fps and median display
+was 7.84 fps (range 4.61–11.02). The first fixed candidate's 25 eligible samples
+had a 1.32 fps display median. Recording/frozen samples are excluded. This is a
+bounded interactive check, not a ten-minute benchmark or guaranteed frame rate.
+The preview replacement counter includes in-flight mailbox replacement and is
+not an exact count of uniquely lost images; device gaps and writer accounting
+are reported independently.
+
+That session had zero device frame gaps and zero fetch timeouts. All 20 accepted
+recording frames were written, with zero failure, rejection or overflow, and
+save/reopen passed. Normal Stop completed in about 0.61 s, restored the original
+settings, and Disconnect reported camera_released true. Frame 1799 was frozen,
+compared, saved and exported through the native English UI at Windows 125%.
+Independent NumPy checks matched all three means and population SDs, all 64
+shared histogram bins, density integrals and both ROI/figure CSV exports. The
+raw file hash was unchanged. Exported PNG/PDF/SVG and source data remain private.
+
+Final synthetic curve inspection also found that pyqtgraph PlotDataItem with
+pen=None never populated its internal curve path; the intended SD fills were
+empty. A regression reproduced an empty FillBetweenItem path. The renderer now
+uses direct PlotCurveItem boundaries, which retain their data without drawing
+an outline. The regression checks the filled region, its bounds and alpha. This
+chart-only correction does not modify camera polling or numerical statistics.
+The final full suite passed 229 tests in 40.77 s with QT_QPA_PLATFORM=offscreen.
+The preceding accidentally native-platform test run finished 229 tests but also
+printed a Windows 0x8001010d Qt event-loop diagnostic; its log is retained and is
+not used as clean desktop acceptance. Desktop acceptance uses the native packaged
+application separately from the offline test runner.
+
+GammaEnable remains unsupported/unknown, so quantitative_eligible remains false.
+These results validate sensor DN and the imaging/UI workflow; wavelength control,
+device-matched reconstruction and calibrated reflectance remain unavailable.
+The exact HinaLea body label and the second connection still lack confirmation.

@@ -1,5 +1,9 @@
 # Release candidate and installation evidence
 
+The newer **0.3.1** local candidate and actual camera/UI follow-up are documented
+in [ROI_LIVE_FIX](ROI_LIVE_FIX.md). The 0.3.0 artifacts and checks below remain
+historical. Original-code licensing and public binary release remain pending.
+
 Candidate: HyperLab 0.3.0, branch `feature/scientific-workbench-portable-v3`, based
 on `2d9083533a2e367e6543748f97753da02b1a0713`. The actual repository default is
 `recovery/hinalea-local`. Do not describe a default clone as the new workbench.

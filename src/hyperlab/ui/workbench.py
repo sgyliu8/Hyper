@@ -917,8 +917,9 @@ class Workbench(W.QMainWindow):
                         height=2*np.asarray(item['sd']),beam=.12,pen=pg.mkPen(item['color'],width=2))
                     self.chart.addItem(error); self.error_bars.append(error)
                 else:
-                    low = self.chart.plot(item['x'], np.asarray(item['y'])-item['sd'], pen=None, connect='finite')
-                    high = self.chart.plot(item['x'], np.asarray(item['y'])+item['sd'], pen=None, connect='finite')
+                    low = pg.PlotCurveItem(item['x'], np.asarray(item['y'])-item['sd'], pen=None, connect='finite')
+                    high = pg.PlotCurveItem(item['x'], np.asarray(item['y'])+item['sd'], pen=None, connect='finite')
+                    self.chart.addItem(low); self.chart.addItem(high)
                     color = pg.mkColor(item['color']); color.setAlpha(44)
                     ribbon = pg.FillBetweenItem(low,high,brush=color)
                     ribbon.setZValue(-1); self.chart.addItem(ribbon)

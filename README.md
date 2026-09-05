@@ -63,8 +63,10 @@ supported devices/runtimes and asks for a selection when there is more than one.
 See [Hardware and drivers](docs/user/HARDWARE_AND_DRIVERS.md).
 
 Historical RGB8/BayerRG12 sensor imaging and a user occlusion check passed.
-A subsequent recovered LIVE window was observed, but sustained acquisition,
-recording, Stop and recovery **remain pending revalidation** in this phase.
+The [0.3.1 real-camera follow-up](docs/dev/ROI_LIVE_FIX.md) exercised BayerRG12
+preview, named ROI comparison, exact-frame saving, bounded recording and normal
+Stop/settings restoration/release. Longer stability and recovery qualification
+remain separate from this bounded imaging/UI check.
 FP control and device-matched spectral reconstruction have not been recovered.
 A Bayer image or time sequence is not a hyperspectral cube. No temperature or
 defect-probability claim is derived from uncalibrated DN.

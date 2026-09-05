@@ -1,9 +1,16 @@
-# Current handoff — Phase 3
+# Current handoff — ROI/display follow-up; historical Phase 3 below
 
 The owner subsequently authorized a real imaging/UI follow-up for the Compare
 ROIs error and chart styling. See [0.3.1 live ROI follow-up](ROI_LIVE_FIX.md) for
 its separate results. The Phase 3 evidence below remains a historical closeout;
 its no-new-session scope does not cancel the newer explicit authorization.
+
+The follow-up fixes immutable live-frame ROI metadata copying and single-plane
+plots, verifies real saved-frame/figure numbers and 20-frame recording, and
+improves native event polling/display. Its source/package/test results and all
+normal camera releases are tracked in ROI_LIVE_FIX.md and ignored local evidence.
+H1 has new bounded imaging evidence; long-duration/recovery qualification and
+H2–H4 are still outstanding. The historical gate table below is not current H1.
 
 Baseline: `feature/live-workbench-v2@2d9083533a2e367e6543748f97753da02b1a0713`.
 Working branch: `feature/scientific-workbench-portable-v3`.
