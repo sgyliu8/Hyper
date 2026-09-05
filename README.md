@@ -18,11 +18,13 @@ public release remain pending; this is not a completed open-source license grant
 - NPY/NPZ/ENVI data, explicit source/axis metadata, private reference exchange,
   saved workspace, view and ROI configuration.
 
-![Synthetic example rendered by the actual Qt workbench](docs/assets/workbench-synthetic.png)
+![Synthetic ROI comparison in the native Windows workbench](docs/assets/workbench-synthetic-native.jpg)
 
-This is an offscreen Qt render of the running application with synthetic data,
-separate from native Windows desktop acceptance. It is not a camera acquisition
-or a material identification result. [Reproducible figure examples](docs/user/SCIENTIFIC_FIGURES.md)
+This is a native Windows desktop capture at 125% display scale, using the
+independently installed wheel and built-in synthetic data. It is not a camera
+acquisition or a material identification result. A separate
+[offscreen Qt layout render](docs/assets/workbench-synthetic.png) documents layout
+checks. [Reproducible figure examples](docs/user/SCIENTIFIC_FIGURES.md)
 retain their numerical data separately from display styling.
 
 ## Install and start

@@ -4,7 +4,8 @@ Baseline: `feature/live-workbench-v2@2d9083533a2e367e6543748f97753da02b1a0713`.
 Working branch: `feature/scientific-workbench-portable-v3`.
 The owner deferred original-code licensing. Keep public release pending.
 
-Software implementation and offline validation continue independently of hardware.
+Software implementation and the bounded offline delivery are complete; hardware
+qualification and public release remain separate, as recorded below.
 See [review matrix](REVIEW_PHASE3.md), [user entry](../../README.md),
 [release evidence](RELEASE_PLAN.md) and [scientific contract](PHYSICS_AND_DATA.md).
 This document supersedes the [Phase 2 handoff](archive/PHASE2_HANDOFF.md).
@@ -82,7 +83,12 @@ used. Do not relabel the separate Qt offscreen render as a desktop screenshot.
 Simulated 100/125/150/200% Qt layouts were exercised separately. At 200%, stacked
 plots were too short; parallel amplitude/shape panels corrected the height issue.
 Image ROI labels can overlap when zoomed far out; zoom/pan and named ROI controls
-remain available. Public README uses an explicitly identified synthetic Qt render.
+remain available. Public README now uses a native Windows synthetic screenshot
+from the independently installed final wheel (2048x1104 returned logical pixels,
+125% display scale). The earlier offscreen Qt render is separately linked.
+The final desktop check used an environment without Harvester or GenICam, loaded
+the synthetic example, compared amplitude/L2 curves and normally saved/closed.
+No session-phase log was created by that final offline check.
 All six example/native-export PDFs yielded selectable text; SVG text nodes and
 numerical CSV/NPY/PlotSpec regressions passed. No physical precision is inferred.
 
