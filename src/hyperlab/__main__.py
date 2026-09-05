@@ -1,0 +1,116 @@
+import argparse
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+import platform
+import shutil
+import sys
+
+
+def emit(value):
+    print(json.dumps(value, indent=2, ensure_ascii=False, default=str))
+
+
+def run_directory(kind):
+    return Path("local") / kind / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="HyperLab: instrument evidence and explicit offline analysis")
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("doctor", help="Python/runtime presence; does not load camera libraries")
+    probe = commands.add_parser("probe", help="Read-only Windows inventory")
+    probe.add_argument("--inventory", action="store_true")
+    probe.add_argument("--standard-interfaces", action="store_true", help="Static classification only; no CTI loading")
+    probe.add_argument("--snapshot", type=Path, help="Use a saved private snapshot instead of running a new probe")
+    probe.add_argument("--output", type=Path)
+    compare = commands.add_parser("compare-probes")
+    compare.add_argument("before", type=Path)
+    compare.add_argument("after", type=Path)
+    acquire = commands.add_parser("acquire", help="Explicit normal single-frame session; never a probe")
+    acquire.add_argument("--device", required=True, help="Exact PnP instance ID from local snapshot")
+    acquire.add_argument("--cti", type=Path, help="Reviewed installed Balluff x64 producer")
+    acquire.add_argument("--single-frame", action="store_true")
+    acquire.add_argument("--recipe", help="Rejected until a real scan protocol/recipe is verified")
+    acquire.add_argument("--output", type=Path)
+    acquire.add_argument("--pixel-format", choices=("RGB8", "BGR8", "BayerRG12"))
+    acquire.add_argument("--exposure-us", type=float, help="Session exposure; validate device range and restore afterwards")
+    acquire.add_argument("--gain", type=float, help="Session gain in device units; validate range and restore afterwards")
+    inspect = commands.add_parser("inspect")
+    inspect.add_argument("path", type=Path)
+    inspect.add_argument("--axis-order", help="Explicit NPY/NPZ mapping, e.g. HWK or KHW")
+    app = commands.add_parser("app")
+    app.add_argument("path", nargs="?", type=Path)
+    demo = commands.add_parser("demo")
+    demo.add_argument("--output", type=Path)
+    demo.add_argument("--no-gui", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "doctor":
+            from importlib.metadata import version, PackageNotFoundError
+            dependencies = {}
+            for name in ("numpy", "matplotlib", "Pillow", "harvesters", "genicam"):
+                try:
+                    dependencies[name] = version(name)
+                except PackageNotFoundError:
+                    dependencies[name] = "NOT_INSTALLED"
+            emit({"python": sys.version, "executable": sys.executable, "platform": platform.platform(),
+                  "architecture": platform.machine(), "dependencies": dependencies,
+                  "matlab_executable": shutil.which("matlab"), "hardware_validation": "NOT_TESTED",
+                  "note": "Library presence does not establish driver or camera readiness"})
+        elif args.command == "probe":
+            from hyperlab.probe import run_inventory, load_snapshot, standard_interfaces, candidates
+            path = args.snapshot or run_inventory(args.output)
+            data = load_snapshot(path)
+            emit({"snapshot": str(path), "mode": "READ_ONLY_STATIC",
+                  "results": standard_interfaces(data) if args.standard_interfaces else candidates(data)})
+        elif args.command == "compare-probes":
+            from hyperlab.probe import diff, load_snapshot
+            emit(diff(load_snapshot(args.before), load_snapshot(args.after)))
+        elif args.command == "acquire":
+            if args.recipe:
+                raise ValueError("BLOCKED: HinaLea scan protocol, state units/ranges and reconstruction are unverified; no scan command sent")
+            if not args.single_frame:
+                raise ValueError("Specify --single-frame; no verified real scan recipe exists")
+            from hyperlab.probe import run_inventory, load_snapshot, select_device
+            snapshot = load_snapshot(run_inventory())
+            device = select_device(snapshot, args.device)
+            if device.get("vid", "").upper() != "164C" or device.get("pid", "").upper() != "5533" or "MI_00" not in device["instance_id"].upper():
+                raise ValueError("Select the investigated USB3 Vision imaging interface, not the serial or composite parent")
+            if device.get("problem_code") != 0:
+                raise RuntimeError(f"BLOCKED: target Windows problem code {device.get('problem_code')}; driver must be repaired before acquisition")
+            if args.cti is None:
+                raise ValueError("Explicit --cti is required; use the reviewed installed x64 producer")
+            parent = next((d for d in snapshot["devices"] if d["instance_id"].casefold() == str(device.get("parent", "")).casefold()), None)
+            if parent is None or "mvBlueFOX3" not in parent.get("bus_reported_description", ""):
+                raise RuntimeError("PnP parent identity is unconfirmed")
+            serial = parent["instance_id"].rsplit("\\", 1)[-1]
+            from hyperlab.adapters.gentl import capture_single
+            result = capture_single(args.cti, serial, args.output or run_directory("acquisitions"),
+                                    pixel_format=args.pixel_format, exposure_us=args.exposure_us, gain=args.gain)
+            emit({"raw_frame": result, "scene_validation": "NOT_TESTED", "spectroscopy": "NOT_TESTED"})
+        elif args.command == "inspect":
+            from hyperlab.io import load_cube
+            cube = load_cube(args.path, axis_order=args.axis_order)
+            emit({"shape": cube.shape, "dtype": str(cube.data.dtype),
+                  "logical_bytes": int(cube.data.size * cube.data.dtype.itemsize), "metadata": cube.metadata})
+        elif args.command == "app":
+            from hyperlab.ui.app import launch
+            launch(args.path)
+        elif args.command == "demo":
+            from hyperlab.io import make_synthetic_cube, save_cube
+            output = args.output or run_directory("synthetic") / "demo.npy"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            save_cube(make_synthetic_cube(), output)
+            emit({"data_source": "SYNTHETIC", "path": output.resolve(), "hardware_validation": "NOT_TESTED"})
+            if not args.no_gui:
+                from hyperlab.ui.app import launch
+                launch(output)
+    except (ValueError, RuntimeError, OSError, ImportError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
