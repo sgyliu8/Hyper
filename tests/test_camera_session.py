@@ -122,7 +122,7 @@ class FakeCamera:
         if "start" in self.faults:
             raise RuntimeError("start primary")
 
-    def fetch(self, timeout):
+    def try_fetch(self, timeout):
         self.events.append("fetch")
         assert timeout > 0
         if "fetch" in self.faults:

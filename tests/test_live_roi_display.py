@@ -71,6 +71,20 @@ def test_workbench_compares_real_frame_contract_in_background(qtbot):
     np.testing.assert_allclose(window.error_bars[0].opts['height'],2*window.roi_results[0]['std'])
 
 
+def test_repeated_distribution_plot_keeps_actual_density_tick_units(qtbot):
+    window = Workbench(); qtbot.addWidget(window)
+    _,cube = live_frame()
+    results = roi_comparison(cube,[(0,0,8,12),(8,0,16,12)])
+    spec = roi_plot(results,['ROI A','ROI B'],COLORS,source=source_identity(cube))
+    window.show()
+    for _ in range(3):
+        window.draw_plot(spec)
+        qtbot.wait(40)
+        axis = window.shape_chart.getAxis('left')
+        assert axis.autoSIPrefixScale == 1
+        assert float(axis.tickStrings([.005],axis.autoSIPrefixScale,.005)[0]) == pytest.approx(.005)
+
+
 @pytest.mark.parametrize('policy,left_count',[('diagnostic',4),('quantitative',3)])
 def test_single_plane_distributions_share_bins_and_preserve_counts(policy,left_count,tmp_path):
     data = np.array([[10,20,4095,20,30,40],[-9999,np.nan,30,30,40,50]],float)[...,None]

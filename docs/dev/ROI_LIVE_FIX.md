@@ -58,5 +58,26 @@ documentation, accessed 2026-09-05.
 Private evidence is under local/diagnostics/roi-live-fix-20260905. It includes the
 before desktop image, original saved frame, user settings backup, original normal
 session-close receipt, failing regressions, saved-frame traceback and corrected
-results. New camera-session and final package results are recorded after the
-exact-code build and actual test; offline results do not substitute for them.
+results. A normal native session in the first 0.3.1 candidate received 3,220
+frames at about 20 fps with no device frame gaps or fetch timeouts. Frame 833
+was frozen, compared and saved; a bounded recording accepted and wrote all 20
+frames, with no rejection, overflow or explicit failure, and passed save/reopen.
+Stop restored the original settings and Disconnect confirmed camera release.
+
+This test also exposed density tick scaling on repeated redraw: pyqtgraph 0.14
+can retain a 1000x scale while the label omits it after disabling SI prefixes.
+The regression failed before the fix; each chart label now explicitly disables
+all SI scaling ranges. The native saved plot numbers were unaffected.
+
+Initial LIVE display was only about 1.3 fps despite 20 fps acquisition. A separate
+bounded, normally released diagnostic compared Harvester native event waits of
+1 and 5 ms; neither resolved the synchronous retry loop's contention. Replaying
+the exact frame without acquisition took about 46 ms including offscreen paint,
+whereas image selection during acquisition took about 259 ms. The adapter now
+polls the public try_fetch API for at most 3 ms, yielding Python for 1 ms between
+empty polls while retaining the overall fetch deadline and transport errors.
+It retains one camera owner and returns/requeues each buffer exactly as before.
+The chart reuses the image's validity selection instead of recomputing it.
+Tests cover silence/deadline, later buffer delivery, transport failure and repeated
+density redraw. The complete revised suite passed 228 tests in 21.40 s.
+Final native performance and package results follow after the exact-code rebuild.

@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 import shutil
+import time
 import numpy as np
 from hyperlab.acquisition.session import utc_now
 
@@ -315,13 +316,28 @@ class GenTLBackend:
 
     def start(self):
         self._owner()
+        # Bound each native wait; Harvester's synchronous retry loop otherwise
+        # repeatedly reacquires the GIL while the UI processes NumPy arrays.
+        self.camera.timeout_period_on_update_event_data_call = 1
         self.start_attempted = True  # Start can partially acquire resources before raising.
         self.camera.start(run_as_thread=False)
+
+    def _wait_for_buffer(self, timeout):
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('No camera buffer within the fetch deadline')
+            buffer = self.camera.try_fetch(timeout=min(.003, remaining))
+            if buffer is not None:
+                return buffer
+            # Cooperatively release Python between finite native polls.
+            time.sleep(min(.001, max(0, deadline - time.monotonic())))
 
     def fetch(self, timeout=0.25, *, keep_transport=False):
         self._owner()
         from time import monotonic_ns
-        buffer = self.camera.fetch(timeout=timeout)
+        buffer = self._wait_for_buffer(timeout)
         primary = None
         result = None
         try:

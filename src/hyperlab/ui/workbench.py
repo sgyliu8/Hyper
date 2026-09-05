@@ -683,7 +683,7 @@ class Workbench(W.QMainWindow):
             self.axis_label.setText(f'Fixed optical state · DN' if raw.shape[2] == 1 else f'Scan state index {band} · not nm')
         if time.monotonic() - self.last_quality > 0.5:
             self.last_quality = time.monotonic()
-            self.update_chart(shown)
+            self.update_chart(shown, selected=selected)
 
     def fit(self):
         if self.cube is not None:
@@ -811,17 +811,18 @@ class Workbench(W.QMainWindow):
             self.pixel_label.setText(f'Raw pixel x={x}, y={y} · {np.array2string(values, precision=7, threshold=8)} · {self.policy.currentData()} valid channels {np.count_nonzero(valid)}/{valid.size}')
             self.pixel_label.setToolTip(json_text({name: int(mask.sum()) for name,mask in counts.items()}))
 
-    def update_chart(self, shown):
+    def update_chart(self, shown, *, selected=None):
         if self.cube is None:
             return
         from hyperlab.analysis import roi_statistics
         cube, policy = self.cube, self.policy.currentData()
         band = min(self.band.value(), cube.shape[2]-1)
-        try:
-            selected = display_selection(cube, band, policy=policy,
-                                        cfa=self.view_mode.currentIndex() == 1 and not cube.metadata.get('channel_labels'))
-        except ValueError:
-            selected = display_selection(cube, band, policy=policy)
+        if selected is None:
+            try:
+                selected = display_selection(cube, band, policy=policy,
+                                            cfa=self.view_mode.currentIndex() == 1 and not cube.metadata.get('channel_labels'))
+            except ValueError:
+                selected = display_selection(cube, band, policy=policy)
         values = selected['values']
         counts = selected['raw_counts']
         eligible = counts['total'] - counts['invalid'] - counts['ignored']
@@ -895,7 +896,9 @@ class Workbench(W.QMainWindow):
         self.chart.setTitle(spec.title if any(np.any(np.isfinite(item['y'])) for item in spec.series) else spec.title+' · No valid samples',
                             color='#17212b',size='12pt')
         self.chart.setToolTip(spec.caption)
-        label_style = {'color':'#26313d','font-size':'11pt'}
+        # 0.14 can rescale ticks when disabling SI prefixes; empty ranges also
+        # survive each setLabel call, keeping density/L2 ticks in printed units.
+        label_style = {'color':'#26313d','font-size':'11pt','siPrefixEnableRanges':()}
         self.chart.setLabel('bottom', spec.xlabel,**label_style)
         self.chart.setLabel('left', spec.ylabel,**label_style)
         self.chart.getAxis('left').enableAutoSIPrefix(False)

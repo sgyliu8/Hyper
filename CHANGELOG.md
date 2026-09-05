@@ -2,6 +2,8 @@
 
 ## 0.3.1 — live ROI correction, 2026-09-05
 
+- Correct repeated density-axis scaling and let the display run between bounded
+  native buffer polls; preserve acquisition errors and immutable buffer evidence.
 - Fix Compare ROIs on live/stopped camera frames with nested immutable metadata;
   raw frame data and evidence remain protected.
 - Show single-plane ROI means with visible markers and spatial SD error bars,
