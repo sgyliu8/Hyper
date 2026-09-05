@@ -7,12 +7,12 @@ imaging module used in the investigated HinaLea system.
 
 ![Offline validation](https://github.com/sgyliu8/Hyper/actions/workflows/offline.yml/badge.svg?branch=feature%2Fscientific-workbench-portable-v3)
 
-**0.3.0 research preview:** install the explicit branch below. The repository's
+**0.3.1 research preview:** install the explicit branch below. The repository's
 default branch is still `recovery/hinalea-local`. Original-code licensing and
 public release remain pending; this is not a completed open-source license grant.
 
 - Multiple named rectangle ROIs, raw amplitude and optional L2 shape comparison,
-  spatial SD, validity masks and recorded-time trends.
+  spatial SD, single-plane intensity distributions, validity masks and recorded-time trends.
 - Difference, ratio and angle maps; PCA scores, explained variance and loadings.
 - Shared plot data for interactive Qt charts and SVG/PDF/PNG figure bundles.
 - NPY/NPZ/ENVI data, explicit source/axis metadata, private reference exchange,

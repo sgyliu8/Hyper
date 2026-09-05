@@ -1,5 +1,17 @@
 # Changes
 
+## 0.3.1 — live ROI correction, 2026-09-05
+
+- Fix Compare ROIs on live/stopped camera frames with nested immutable metadata;
+  raw frame data and evidence remain protected.
+- Show single-plane ROI means with visible markers and spatial SD error bars,
+  alongside policy-matched intensity distributions using shared bins. A single
+  plane does not produce an invented spectrum or a trivial L2 curve of ones.
+- Match the figure examples with orange/blue/green curves, darker axes, readable
+  legends, consistent dashed lines and translucent SD ribbons. Reserve usable
+  chart height and distinguish excluded image pixels with a slate background.
+- Export single-plane distribution counts, bin edges and densities with figures.
+
 ## 0.3.0 — research preview, 2026-09-05
 
 - Correct time trends to use unique source frames and recorded clock coordinates.

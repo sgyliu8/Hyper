@@ -6,6 +6,14 @@ import numpy as np
 
 
 class FrozenDict(dict):
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        # Frame metadata is a recursively frozen JSON tree; sharing is safe.
+        memo[id(self)] = self
+        return self
+
     def _immutable(self, *args, **kwargs):
         raise TypeError("Frame evidence is immutable")
 

@@ -9,6 +9,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tomllib
 
 
 def run(args, **kwargs):
@@ -35,6 +36,7 @@ def main():
     checkout = output/'source'
     with zipfile.ZipFile(source_zip) as archive:
         archive.extractall(checkout)
+    app_version = tomllib.loads((checkout/'pyproject.toml').read_text(encoding='utf-8'))['project']['version']
     wheel_dir = output/'wheel'
     run([sys.executable,'-m','build','--wheel','--outdir',str(wheel_dir)],cwd=checkout)
     packages = ['numpy','matplotlib','pillow','PySide6','PySide6_Essentials','PySide6_Addons',
@@ -112,12 +114,12 @@ def main():
         raise RuntimeError('Vendor runtime/driver unexpectedly entered the package')
     shutil.copy2(checkout/'THIRD_PARTY_NOTICES.md',desktop/'THIRD_PARTY_NOTICES.md')
     (desktop/'Start-HyperLab.cmd').write_text('@echo off\ncd /d "%~dp0"\nstart "" "%~dp0HyperLab.exe" app\n',encoding='utf-8')
-    record = {'commit':commit,'python':platform.python_version(),'pyinstaller':version('pyinstaller'),
+    record = {'commit':commit,'version':app_version,'python':platform.python_version(),'pyinstaller':version('pyinstaller'),
               'dependencies':dependencies,'hardware':'NOT_TESTED','public_release':'PENDING_LICENSE_AND_REVIEW',
               'archived_source_modules_verified':len(modules),
               'build_machine_scope':'Windows x64 development host; not a clean VM'}
     (desktop/'BUILD.json').write_text(json.dumps(record,indent=2),encoding='utf-8')
-    archive_path = Path(shutil.make_archive(str(output/f'HyperLab-0.3.0-{commit[:8]}-win-x64'),
+    archive_path = Path(shutil.make_archive(str(output/f'HyperLab-{app_version}-{commit[:8]}-win-x64'),
                                           'zip',root_dir=output/'desktop',base_dir='HyperLab'))
     artifacts = [archive_path,*wheel_dir.glob('*.whl')]
     record['artifacts'] = []

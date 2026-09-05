@@ -140,6 +140,36 @@ def roi_statistics(cube, rect, *, policy="diagnostic"):
                 "source_provenance": deepcopy(cube.metadata)}}
 
 
+def roi_comparison(cube, rectangles, *, policy="diagnostic"):
+    """ROI statistics, plus shared-bin DN distributions for a single plane."""
+    results = [roi_statistics(cube, rect, policy=policy) for rect in rectangles]
+    if cube.shape[2] != 1:
+        return results
+
+    def selected(rect):
+        x0,y0,x1,y1 = rect
+        selection = (slice(y0,y1),slice(x0,x1),slice(0,1))
+        raw = cube.data[selection]
+        good = _valid(cube,raw,selection,policy)
+        return _floating(raw[good],np.float64)
+
+    bounds = []
+    for rect in rectangles:
+        values = selected(rect)
+        if values.size:
+            bounds.append((values.min(),values.max()))
+    low,high = (min(b[0] for b in bounds),max(b[1] for b in bounds)) if bounds else (0.,1.)
+    if high == low:
+        low,high = low-.5,high+.5
+    edges = np.linspace(low,high,65)
+    for result,rect in zip(results,rectangles):
+        counts,_ = np.histogram(selected(rect),bins=edges)
+        density = counts/(counts.sum()*np.diff(edges)) if counts.sum() else np.full(64,np.nan)
+        result['distribution'] = {'x':(edges[:-1]+edges[1:])/2,'y':density,
+                                  'counts':counts,'bin_edges':edges,'sample_count':int(counts.sum())}
+    return results
+
+
 def export_roi_csv(stats, path, wavelengths=None):
     path = Path(path)
     wave = stats.get("wavelengths") if wavelengths is None else wavelengths

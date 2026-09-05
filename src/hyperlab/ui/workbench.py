@@ -167,6 +167,7 @@ class Workbench(W.QMainWindow):
         self.vertical = W.QSplitter(QtCore.Qt.Orientation.Vertical)
         self.images = W.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.graphics = pg.GraphicsLayoutWidget()
+        self.graphics.setBackground('#1c2634')
         self.plot = self.graphics.addPlot()
         self.plot.setLabel('bottom', 'Raw x', units='pixel')
         self.plot.setLabel('left', 'Raw y', units='pixel')
@@ -194,12 +195,15 @@ class Workbench(W.QMainWindow):
         self.derived_graphics.hide()
         self.vertical.addWidget(self.images)
         self.chart_row = W.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        self.chart_row.setMinimumHeight(180)
         self.chart = pg.PlotWidget(background='w')
         self.chart.setLabel('left', 'DN / descriptive value')
         self.chart.showGrid(x=True, y=True, alpha=0.15)
         self.curves = [self.chart.plot(pen=pg.mkPen(c, width=2)) for c in ('#d47e22', '#247dc4')]
         self.chart_row.addWidget(self.chart)
         self.shape_chart = pg.PlotWidget(background='w')
+        for chart in (self.chart,self.shape_chart):
+            self._style_scientific_chart(chart)
         self.shape_chart.hide()
         self.chart_row.addWidget(self.shape_chart)
         self.vertical.addWidget(self.chart_row)
@@ -860,7 +864,22 @@ class Workbench(W.QMainWindow):
         elif mode in (3,4) and self.product is not None and 'scores' in self.product:
             self.draw_plot(pca_diagnostics(self.product, self.product_source)[mode-3])
 
+    @staticmethod
+    def _style_scientific_chart(chart):
+        chart.showGrid(x=True,y=True,alpha=.12)
+        chart.plotItem.layout.setContentsMargins(8,8,12,8)
+        for name in ('left','bottom'):
+            axis = chart.getAxis(name)
+            axis.setPen(pg.mkPen('#26313d',width=1))
+            axis.setTextPen('#26313d')
+            axis.setTickFont(QtGui.QFont('Segoe UI',10))
+            axis.enableAutoSIPrefix(False)
+        chart.getAxis('left').setWidth(82)
+        chart.addLegend(offset=(-12,12),labelTextColor='#26313d',labelTextSize='10pt',
+                        brush=pg.mkBrush(255,255,255,225),pen=None)
+
     def draw_plot(self, spec):
+        was_comparison = bool(self.plot_spec and self.plot_spec.metadata.get('roi_comparison'))
         self.plot_spec = spec
         origin = spec.source.get('acquisition_source') or spec.source.get('data_source') or 'UNKNOWN'
         frame = spec.source.get('sequence')
@@ -868,52 +887,78 @@ class Workbench(W.QMainWindow):
                   else Path(spec.source.get('source_file') or 'in-memory example').name)
         self.analysis_label.setText(f'Pinned analysis: {source} · {origin} origin · {spec.caption}')
         self.chart.clear()
-        legend = self.chart.plotItem.legend or self.chart.addLegend(offset=(8,8))
+        legend = self.chart.plotItem.legend
         legend.clear()
-        legend.setColumnCount(min(4,max(1,len(spec.series))))
+        legend.setColumnCount(1 if len(spec.series)<=4 else 2)
         self.curves = []
-        self.chart.setTitle(spec.title if any(np.any(np.isfinite(item['y'])) for item in spec.series) else spec.title+' · No valid samples')
+        self.error_bars = []
+        self.chart.setTitle(spec.title if any(np.any(np.isfinite(item['y'])) for item in spec.series) else spec.title+' · No valid samples',
+                            color='#17212b',size='12pt')
         self.chart.setToolTip(spec.caption)
-        self.chart.setLabel('bottom', spec.xlabel)
-        self.chart.setLabel('left', spec.ylabel)
+        label_style = {'color':'#26313d','font-size':'11pt'}
+        self.chart.setLabel('bottom', spec.xlabel,**label_style)
+        self.chart.setLabel('left', spec.ylabel,**label_style)
         self.chart.getAxis('left').enableAutoSIPrefix(False)
         self.chart.getAxis('bottom').setTicks([list(enumerate(spec.categories))] if spec.categories else None)
         for item in spec.series:
-            pen = pg.mkPen(item['color'], width=2,
+            pen = pg.mkPen(item['color'], width=2.5,
                            style=QtCore.Qt.PenStyle.SolidLine if item.get('style','-') == '-' else QtCore.Qt.PenStyle.DashLine)
             curve = self.chart.plot(item['x'], item['y'], pen=pen, name=item['name'], connect='finite',
-                                    symbol='o' if spec.categories else None, symbolSize=5)
+                                    symbol='o' if spec.categories or len(item['x'])<5 else None,
+                                    symbolSize=8,symbolBrush=item['color'],symbolPen='w',antialias=True)
+            curve.setZValue(2)
             self.curves.append(curve)
             if item.get('sd') is not None:
-                low = self.chart.plot(item['x'], np.asarray(item['y'])-item['sd'], pen=None, connect='finite')
-                high = self.chart.plot(item['x'], np.asarray(item['y'])+item['sd'], pen=None, connect='finite')
-                color = pg.mkColor(item['color']); color.setAlpha(35)
-                self.chart.addItem(pg.FillBetweenItem(low, high, brush=color))
+                if len(item['x']) == 1:
+                    error = pg.ErrorBarItem(x=np.asarray(item['x']),y=np.asarray(item['y']),
+                        height=2*np.asarray(item['sd']),beam=.12,pen=pg.mkPen(item['color'],width=2))
+                    self.chart.addItem(error); self.error_bars.append(error)
+                else:
+                    low = self.chart.plot(item['x'], np.asarray(item['y'])-item['sd'], pen=None, connect='finite')
+                    high = self.chart.plot(item['x'], np.asarray(item['y'])+item['sd'], pen=None, connect='finite')
+                    color = pg.mkColor(item['color']); color.setAlpha(44)
+                    ribbon = pg.FillBetweenItem(low,high,brush=color)
+                    ribbon.setZValue(-1); self.chart.addItem(ribbon)
         # Preserve the two default curve handles for existing integrations.
         while len(self.curves) < 2:
             self.curves.append(self.chart.plot([],[],pen=None))
         xs = np.concatenate([np.asarray(item['x']) for item in spec.series]) if spec.series else np.array([])
         xs = xs[np.isfinite(xs)]
-        if xs.size and xs.max()>xs.min():
+        if spec.categories:
+            self.chart.setXRange(-.5,len(spec.categories)-.5,padding=0)
+        elif xs.size and xs.max()>xs.min():
             self.chart.setXRange(float(xs.min()),float(xs.max()),padding=.03)
         self.shape_chart.clear()
+        self.shape_chart.plotItem.legend.clear()
+        self.shape_chart.plotItem.legend.setColumnCount(1 if len(spec.series)<=4 else 2)
         self.shape_curves = []
         normalized = [item for item in spec.series if 'normalized' in item]
-        self.shape_chart.setVisible(bool(normalized))
-        if normalized:
-            self.shape_chart.setTitle('L2 normalized shape · dimensionless')
-            self.shape_chart.setLabel('bottom', spec.xlabel)
-            self.shape_chart.setLabel('left','Normalized mean')
+        distributions = [item for item in spec.series if 'distribution' in item]
+        self.shape_chart.setVisible(bool(normalized or distributions))
+        if normalized or distributions:
+            units = spec.ylabel.removeprefix('Mean (').removesuffix(')')
+            self.shape_chart.setTitle('ROI intensity distribution' if distributions else 'L2 normalized shape',
+                                      color='#17212b',size='12pt')
+            self.shape_chart.setLabel('bottom',f'Pixel intensity ({units})' if distributions else spec.xlabel,**label_style)
+            self.shape_chart.setLabel('left',f'Density (1/{units})' if distributions else 'Normalized mean',**label_style)
             self.shape_chart.getAxis('left').enableAutoSIPrefix(False)
-            self.shape_chart.getAxis('bottom').setTicks([list(enumerate(spec.categories))] if spec.categories else None)
-            for item in normalized:
-                self.shape_curves.append(self.shape_chart.plot(item['x'],item['normalized'],pen=pg.mkPen(item['color'],width=2), connect='finite'))
+            self.shape_chart.getAxis('bottom').setTicks([list(enumerate(spec.categories))] if spec.categories and not distributions else None)
+            for item in distributions or normalized:
+                x = item['distribution']['x'] if distributions else item['x']
+                y = item['distribution']['y'] if distributions else item['normalized']
+                pen = pg.mkPen(item['color'],width=2.5,
+                    style=QtCore.Qt.PenStyle.SolidLine if item.get('style','-')=='-' else QtCore.Qt.PenStyle.DashLine)
+                self.shape_curves.append(self.shape_chart.plot(x,y,pen=pen,name=item['name'],connect='finite',
+                    antialias=True,symbol='o' if len(x)<5 else None,symbolSize=7,symbolBrush=item['color']))
+            self.shape_chart.enableAutoRange()
+        if spec.metadata.get('roi_comparison') and not was_comparison:
             self.chart_row.setSizes([1,1])
             self.vertical.setSizes([400,280])
 
     def update_capabilities(self):
         from hyperlab.analysis import capabilities
         cap = capabilities(self.cube)
+        self.shape_normalize.setVisible(self.cube is None or self.cube.shape[2]>1)
         for op, button in self.analysis_buttons.items():
             button.setEnabled(cap['operations'].get(op, False))
             button.setToolTip(cap.get('reasons', {}).get(op, ''))
@@ -933,7 +978,7 @@ class Workbench(W.QMainWindow):
         if self.task_busy:
             self.roi_timer.start(180)
             return
-        from hyperlab.analysis import roi_statistics
+        from hyperlab.analysis import roi_comparison
         cube, context = self.cube, self.analysis_context()
         def completed(results):
             if context['version'] != self.analysis_version:
@@ -941,7 +986,7 @@ class Workbench(W.QMainWindow):
                 self.roi_timer.start(180)
                 return
             self.show_rois(results, context)
-        self.background(lambda: [roi_statistics(cube, rect, policy=context['policy']) for rect in context['rectangles']],
+        self.background(lambda: roi_comparison(cube,context['rectangles'],policy=context['policy']),
                         completed, 'Computing pinned ROI statistics…')
 
     def show_rois(self, results, context=None):

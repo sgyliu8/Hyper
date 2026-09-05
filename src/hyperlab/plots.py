@@ -58,6 +58,9 @@ def roi_plot(results, names, colors, *, source, normalized=False, spatial_sd=Tru
     labels = first.get('channel_labels')
     wave = first.get('wavelengths')
     units = first.get('wavelength_units')
+    single_plane = len(first['mean']) == 1
+    if single_plane:
+        normalized = False
     x = np.arange(len(first['mean'])) if wave is None or not units else np.asarray(wave)
     xlabel = ('Colour channel' if labels else f'Wavelength ({units})' if wave is not None and units
               else 'Scan state index' if len(x) > 1 else 'Sensor DN summary')
@@ -65,19 +68,28 @@ def roi_plot(results, names, colors, *, source, normalized=False, spatial_sd=Tru
     spec = PlotSpec('lines', 'ROI amplitude and spatial variation', xlabel,
                     f"Mean ({first.get('units', 'unknown')})", source=source, categories=labels,
                     metadata={'policy': first['policy'], 'spatial_sd': spatial_sd, 'std_ddof': 0,
+                              'roi_comparison':True, 'single_sensor_plane':single_plane,
                               'normalization': 'L2 on common finite features' if normalized else None,
                               'common_feature_indices': np.flatnonzero(common).tolist(),
                               'excluded_indices': np.flatnonzero(~common).tolist()},
                     caption='Mean ± 1 spatial SD when enabled; pixel dispersion, not a confidence interval.')
+    if single_plane:
+        spec.title = 'ROI mean and spatial variation'
+        spec.xlabel, spec.categories = 'Region of interest', list(names)
+        spec.caption += ' Single sensor plane: comparing ROI intensities, not a spectrum; L2 shape is unavailable.'
+        if any('distribution' in result for result in results):
+            spec.metadata['distribution'] = '64 shared bins; all policy-valid ROI pixels; density integrates to one'
     for i, result in enumerate(results):
         means = np.array(result['mean'], copy=True)
         sd = np.array(result['std'], copy=True)
         curve = {'name': names[i], 'color': colors[i], 'style': '-' if i % 2 == 0 else '--',
-                 'x': x.copy(), 'y': means, 'sd': sd if spatial_sd else None,
+                 'x': np.array([i]) if single_plane else x.copy(), 'y': means, 'sd': sd if spatial_sd else None,
                  'counts': result['counts'], 'rect': result['rect'], 'feature_indices': list(range(len(x)))}
         if normalized:
             norm = np.linalg.norm(means[common])
             curve['normalized'] = np.where(common, means / norm, np.nan) if norm > 0 else np.full(means.shape, np.nan)
+        if single_plane and 'distribution' in result:
+            curve['distribution'] = result['distribution']
         spec.series.append(curve)
     return spec
 
@@ -228,7 +240,8 @@ def render_figure(spec, *, width_mm=180, height_mm=115, dpi=300):
     from matplotlib.patches import Patch
     with mpl.rc_context({'font.family':'DejaVu Sans', 'font.size':9, 'svg.fonttype':'none',
                          'pdf.fonttype':42, 'axes.spines.top':False, 'axes.spines.right':False}):
-        shape_branch = any('normalized' in series for series in spec.series)
+        distributions = any('distribution' in series for series in spec.series)
+        shape_branch = distributions or any('normalized' in series for series in spec.series)
         figure = Figure(figsize=(width_mm/25.4, height_mm/25.4), dpi=dpi, layout='constrained')
         FigureCanvasAgg(figure)
         axes = figure.subplots(1, 2 if shape_branch else 1, squeeze=False)[0]
@@ -246,7 +259,14 @@ def render_figure(spec, *, width_mm=180, height_mm=115, dpi=300):
                     marker='o' if spec.categories or len(x) < 5 else None, markersize=3, linewidth=1.3)
             if item.get('sd') is not None:
                 sd = np.asarray(item['sd'])
-                ax.fill_between(x, y-sd, y+sd, color=item['color'], alpha=.17)
+                if len(x) == 1:
+                    ax.errorbar(x,y,yerr=sd,fmt='none',ecolor=item['color'],capsize=4,linewidth=1.3)
+                else:
+                    ax.fill_between(x, y-sd, y+sd, color=item['color'], alpha=.17)
+            if 'distribution' in item:
+                distribution = item['distribution']
+                axes[1].plot(distribution['x'],distribution['y'],item.get('style','-'),
+                             color=item['color'],label=item['name'],linewidth=1.3)
             if 'normalized' in item:
                 axes[1].plot(x, item['normalized'], item.get('style', '-'), color=item['color'], label=item['name'])
         if spec.series:
@@ -256,9 +276,14 @@ def render_figure(spec, *, width_mm=180, height_mm=115, dpi=300):
         for a in axes:
             if spec.image is None:
                 a.grid(alpha=.16)
-            if spec.categories:
+            if spec.categories and (a is ax or not distributions):
                 a.set_xticks(range(len(spec.categories)), spec.categories)
-        if shape_branch:
+        if distributions:
+            units = spec.ylabel.removeprefix('Mean (').removesuffix(')')
+            axes[1].set(title='ROI intensity distribution',xlabel=f'Pixel intensity ({units})',
+                        ylabel=f'Probability density (1/{units})')
+            axes[1].legend(fontsize=7,frameon=False)
+        elif shape_branch:
             axes[1].set(title='L2 normalized shape', xlabel=spec.xlabel, ylabel='Normalized mean (dimensionless)')
         origin = spec.source.get('acquisition_source') or spec.source.get('data_source') or 'UNKNOWN'
         figure.suptitle(f'HyperLab · {origin} origin', fontsize=10, fontweight='bold')
@@ -315,6 +340,14 @@ def export_figure_bundle(spec, directory, *, width_mm=180, height_mm=115, dpi=30
                 sd = item.get('sd')
                 writer.writerow([item['name'], i, x, y, sd[i] if sd is not None else '',
                                  item['normalized'][i] if 'normalized' in item else ''])
+    if any('distribution' in item for item in spec.series):
+        with (directory/'distributions.csv').open('x',newline='',encoding='utf-8') as stream:
+            writer = csv.writer(stream)
+            writer.writerow(['series','bin_left','bin_right','bin_center','count','density'])
+            for item in spec.series:
+                d = item['distribution']
+                for i,x in enumerate(d['x']):
+                    writer.writerow([item['name'],d['bin_edges'][i],d['bin_edges'][i+1],x,d['counts'][i],d['y'][i]])
     (directory/'plot.json').write_text(json.dumps(record, indent=2, allow_nan=False)+'\n', encoding='utf-8')
     figure = render_figure(spec, width_mm=width_mm, height_mm=height_mm, dpi=dpi)
     import matplotlib as mpl

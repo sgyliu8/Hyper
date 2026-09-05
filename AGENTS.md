@@ -15,6 +15,14 @@ UserSets or guessed FP/serial commands. Normal offline app save/exit/restart is
 allowed. Inventory is read-only and must not load a CTI or open any serial port.
 Future normal acquisition requires a unique verified target and one camera owner.
 
+Current follow-up (2026-09-05): the owner explicitly authorized a real camera/UI
+test to fix Compare ROIs and improve plotting/display. The completed Phase 3
+no-session restriction does not block this authorized normal imaging test.
+Preserve its old receipts. Save the current frame, normally release the previous
+owner, then use one verified session and record acquisition/cleanup outcomes.
+Keep resets, driver/firmware changes, permanent writes and unknown FP commands
+outside this scoped imaging/UI fix. Original-code licensing remains deferred.
+
 Keep acquired data, calibration, identifiers, logs and vendor assets in ignored
 local/ or the user's external workspace. Commit only reviewed source, tests,
 redacted English docs and explicitly synthetic examples; stage exact paths.

@@ -1,5 +1,15 @@
 # Scientific figures
 
+In 0.3.1, **Compare ROIs** on one raw sensor plane shows ROI means with
+mean +/- 1 spatial SD error bars and a second panel of intensity distributions.
+The distributions use 64 shared bins and all pixels admitted by the selected
+quality policy. Each nonempty density integrates to one, so ROIs of different
+sizes can be compared; bin edges, counts and densities are saved in
+`distributions.csv` and `plot.json`. Empty ROIs remain missing, not zero-valued.
+The L2 option is hidden for one plane because its normalized scalar would always
+be one. RGB channels and evidenced multi-band data keep their actual channel or
+wavelength axes and the optional L2 panel. These are descriptive comparisons.
+
 The interactive renderer (pyqtgraph) and publication renderer (Matplotlib) consume
 one computed PlotSpec. Export does not run a second scientific analysis. A figure
 records source artifact/session/stream/frame, ROI bounds and names, features,

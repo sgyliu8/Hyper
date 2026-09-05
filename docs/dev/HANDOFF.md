@@ -1,5 +1,10 @@
 # Current handoff — Phase 3
 
+The owner subsequently authorized a real imaging/UI follow-up for the Compare
+ROIs error and chart styling. See [0.3.1 live ROI follow-up](ROI_LIVE_FIX.md) for
+its separate results. The Phase 3 evidence below remains a historical closeout;
+its no-new-session scope does not cancel the newer explicit authorization.
+
 Baseline: `feature/live-workbench-v2@2d9083533a2e367e6543748f97753da02b1a0713`.
 Working branch: `feature/scientific-workbench-portable-v3`.
 The owner deferred original-code licensing. Keep public release pending.
