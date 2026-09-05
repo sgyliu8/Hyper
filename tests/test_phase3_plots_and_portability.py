@@ -10,7 +10,7 @@ import pytest
 from PySide6 import QtCore
 
 from hyperlab.io import Cube, make_synthetic_cube, save_cube
-from hyperlab.analysis import roi_statistics, pca, difference, spectral_angle
+from hyperlab.analysis import roi_statistics, pca, difference, ratio, spectral_angle
 from hyperlab.plots import (COLORS, TemporalTrace, sequence_coordinates, source_identity,
     roi_plot, map_plot, pca_diagnostics, export_figure_bundle)
 from hyperlab.ui.view import display_selection
@@ -97,6 +97,19 @@ def test_map_semantic_centres_angle_conversion_and_pca_features(tmp_path):
     assert np.isnan(loadings.series[0]['y'][3])
     np.testing.assert_equal(variance.series[0]['y'],pcs['explained_variance_ratio'])
     assert map_plot(pcs,source_identity(cube),component=1).title.endswith('PC2 score')
+
+
+@pytest.mark.parametrize('labels',[['R','G','B'],['B','G','R']])
+@pytest.mark.parametrize('operation,symbol',[(difference,'−'),(ratio,'/')])
+def test_color_map_names_follow_recorded_channel_order(labels,operation,symbol):
+    cube=Cube(np.array([[[20,10,5],[12,6,3]]],np.uint8),
+              {'data_level':'raw_frame','channel_labels':labels,'units':'DN'})
+    result=operation(cube,0,1)
+    spec=map_plot(result,source_identity(cube))
+    assert spec.title.endswith(f'{labels[0]} {symbol} G')
+    assert spec.title in spec.colour_label
+    assert spec.metadata['indices']==[0,1]
+    np.testing.assert_equal(spec.image,result['data'])
 
 
 def test_required_read_preserves_timeout_and_optional_absence(tmp_path,monkeypatch):

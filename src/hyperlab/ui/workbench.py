@@ -520,8 +520,9 @@ class Workbench(W.QMainWindow):
                     elif event.get('kind') == 'recording' and event.get('done') and event.get('save_reopen_verified'):
                         self.add_recent(Path(event['path']), partial=event.get('partial', True))
                 if event.get('kind') == 'error' or event.get('error'):
-                    from hyperlab.devices import connection_error_kind
-                    self.device_label.setText(connection_error_kind(event.get('error') or event))
+                    if event.get('kind') == 'error' and self.session.state == 'error':
+                        from hyperlab.devices import connection_error_kind
+                        self.device_label.setText(connection_error_kind(event.get('error') or event))
                     self.notify(str(event.get('error') or event))
                 if event.get('kind') == 'state':
                     self.notify(f"Device state: {event.get('state', self.session.state)}")

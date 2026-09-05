@@ -177,7 +177,9 @@ def test_sidebar_fits_viewport_without_hidden_controls(window, qtbot):
 
 def test_recording_start_is_not_saved_and_failure_remains_visible(window, tmp_path):
     session = FakeSession()
+    session.state = 'streaming'
     window.session = session
+    window.device_label.setText('Test camera')
     events = [{'kind':'recording','path':str(tmp_path/'sequence.npy'), 'done':False}]
     session.poll_events = lambda: events[:]
     window.tick()
@@ -188,6 +190,15 @@ def test_recording_start_is_not_saved_and_failure_remains_visible(window, tmp_pa
     assert window.recent_list.count() == 1
     assert window.recent_list.item(0).text().startswith('PARTIAL')
     assert window.message.text() == 'writer overflow'
+    assert window.device_label.text() == 'Test camera'
+    events[:] = [{'kind':'error', 'error':'snapshot disk full', 'operation':'snapshot'}]
+    window.tick()
+    assert window.message.text() == 'snapshot disk full'
+    assert window.device_label.text() == 'Test camera'
+    session.state = 'error'
+    events[:] = [{'kind':'error', 'error':'transport timeout'}]
+    window.tick()
+    assert window.device_label.text() == 'Communication fault'
 
 
 def test_linked_product_view_is_visible_without_range_feedback(window, qtbot):

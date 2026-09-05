@@ -189,3 +189,30 @@ physical camera validation. Actual Bayer frame 1261 and the 1,803-frame imaging
 receipt above remain the real acquisition evidence for the unchanged camera path.
 The full revised offline suite passed 230 tests in 42.73 s; the strengthened
 unchanged-input assertion also passed its focused check before the build.
+
+## Real RGB scene follow-up
+
+The owner requested real scenes in place of the displayed synthetic example.
+The c4d6ad7 native package acquired RGB8 at 20 ms and 5 ms, saved both actual
+frames, and compared frame 3321 with three named ROIs. Native amplitude/L2 plots
+use R/G/B categories, and the difference map uses channels 0 minus 1 (R minus G).
+RGB PCA remains unavailable under the existing scientific capability gate.
+
+The 20 ms scene showed a localized saturated reflection. Initial 5 ms preview
+had fewer saturated samples, but the scene/illumination subsequently changed;
+this is a display check, not a controlled exposure-response experiment.
+
+A native recording attempt retained the default 300-frame budget because the
+typed limit had not taken effect before confirmation. Its writer queue overflowed:
+64 frames were accepted and written, one was rejected, and the partial prefix was
+preserved and reopened. This attempt is FAIL, not a 20-frame success. A separate
+recording with a visually confirmed 20-frame limit completed and reopened 20/20,
+with zero rejected/failed frames or overflow. Sustained full-rate RGB recording
+is not qualified by this short sequence.
+
+That failure exposed an incorrect device label: a recording error changed the
+header to "Connection failed" while capture was still streaming. The UI now
+classifies connection faults only for camera error-state events, while retaining
+recording/snapshot errors and partial files visibly. Difference/ratio titles now
+use evidenced channel names, including BGR order, and retain numerical indices
+in provenance. The revised offline suite passed 234 tests in 49.40 s.

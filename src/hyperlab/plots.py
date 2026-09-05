@@ -28,7 +28,7 @@ def source_identity(cube):
     return {key: plain(meta.get(key)) for key in ('source_file', 'session_id', 'stream_epoch',
         'sequence', 'frame_id', 'host_monotonic_ns', 'host_utc', 'device_timestamp_ns',
         'acquisition_source', 'data_source', 'data_level', 'display_mode', 'readback_settings',
-        'quantitative_eligible', 'wavelength_evidence', 'wavelength_source')}
+        'quantitative_eligible', 'wavelength_evidence', 'wavelength_source', 'channel_labels')}
 
 
 @dataclass
@@ -107,11 +107,15 @@ def map_plot(result, source, *, component=0, degrees=False, limits=None):
     units = meta.get('units', source.get('units', 'score'))
     center, cmap = None, 'viridis'
     title = operation
+    pair = meta.get('indices', ['A', 'B'])
+    labels = source.get('channel_labels')
+    if labels and operation in ('difference', 'ratio'):
+        pair = [labels[index] for index in pair]
     if 'scores' in result:
         title = f'PCA · PC{component + 1} score'
         center, cmap = 0., 'RdBu_r'
     elif operation == 'difference':
-        title = f"Difference · {meta.get('indices', ['A', 'B'])[0]} − {meta.get('indices', ['A', 'B'])[1]}"
+        title = f"Difference · {pair[0]} − {pair[1]}"
         center, cmap = 0., 'RdBu_r'
     elif 'Angle' in operation:
         if degrees:
@@ -119,7 +123,7 @@ def map_plot(result, source, *, component=0, degrees=False, limits=None):
         units = 'deg' if degrees else 'rad'
         title = 'Spectral / state-vector angle'
     elif operation == 'ratio':
-        title = f"Ratio · {meta.get('indices', ['A', 'B'])[0]} / {meta.get('indices', ['A', 'B'])[1]}"
+        title = f"Ratio · {pair[0]} / {pair[1]}"
         center, cmap, units = 1., 'RdBu_r', 'dimensionless'
     values = data[valid]
     if limits is None:
