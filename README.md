@@ -26,9 +26,19 @@ Set-Location C:\Project\HyperSpectral
 .\.venv\Scripts\python.exe -X utf8 -m hyperlab doctor
 .\.venv\Scripts\python.exe -X utf8 -m hyperlab probe --inventory
 .\.venv\Scripts\python.exe -X utf8 -m hyperlab probe --standard-interfaces
-.\scripts\Start-HyperLab.ps1
+.\Start-HyperLab.cmd
 .\.venv\Scripts\python.exe -X utf8 -m hyperlab demo
 ```
+
+`Start-HyperLab.cmd` can also be double-clicked. It opens the GUI and returns the
+terminal immediately, without changing PowerShell execution policy. The Python
+path is `.\.venv\Scripts\python.exe` (not `..venv\Scripts\python.exe`).
+To run the GUI directly in the current terminal, use
+`.\.venv\Scripts\python.exe -X utf8 -m hyperlab app`.
+If using the PowerShell launcher, invoke it with
+`powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-HyperLab.ps1`;
+this policy applies only to that child process. Do not copy terminal prompts such
+as `PS C:\...>` or `>>` into commands.
 
 `demo` explicitly generates SYNTHETIC data. `app` starts without opening a camera.
 All new private diagnostics and outputs go under `local/` and stay out of Git.
@@ -56,8 +66,8 @@ Run from an ordinary PowerShell in the project directory; each command creates a
 new timestamped private output directory:
 
 ```powershell
-.\scripts\Capture-CandidateFrame.ps1 -CtiPath 'C:\Program Files\Balluff\ImpactAcquire\bin\x64\mvGenTLProducer.cti'
-.\scripts\Capture-CandidateFrame.ps1 -CtiPath 'C:\Program Files\Balluff\ImpactAcquire\bin\x64\mvGenTLProducer.cti' -PixelFormat BayerRG12 -ExposureUs 100000 -Gain 0
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Capture-CandidateFrame.ps1 -CtiPath 'C:\Program Files\Balluff\ImpactAcquire\bin\x64\mvGenTLProducer.cti'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Capture-CandidateFrame.ps1 -CtiPath 'C:\Program Files\Balluff\ImpactAcquire\bin\x64\mvGenTLProducer.cti' -PixelFormat BayerRG12 -ExposureUs 100000 -Gain 0
 ```
 
 The first command preserves current format/exposure/gain. The second requests one

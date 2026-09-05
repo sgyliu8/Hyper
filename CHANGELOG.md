@@ -1,5 +1,12 @@
 # Changelog
 
+## Startup fix — 2026-09-05
+
+- Added a double-clickable CMD GUI launcher that works from Windows PowerShell
+  with Restricted execution policy and returns the terminal immediately.
+- Corrected startup/capture examples to avoid persistent policy changes and
+  clarified the `.\.venv\Scripts\python.exe` path.
+
 ## 0.1.0 — 2026-09-05
 
 - Identified the mvBlueFOX3-M2024C imaging module and separate unassociated NXP

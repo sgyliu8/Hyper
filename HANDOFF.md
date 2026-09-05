@@ -74,10 +74,25 @@ pythonw without a console). No failure was relabelled as successful acquisition.
 
 ```powershell
 Set-Location C:\Project\HyperSpectral
-.\scripts\Start-HyperLab.ps1
-.\.venv\Scripts\python.exe -m hyperlab probe --inventory
-.\scripts\Capture-CandidateFrame.ps1 -CtiPath 'C:\Program Files\Balluff\ImpactAcquire\bin\x64\mvGenTLProducer.cti' -PixelFormat BayerRG12 -ExposureUs 50000 -Gain 0
+.\Start-HyperLab.cmd
+.\.venv\Scripts\python.exe -X utf8 -m hyperlab probe --inventory
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Capture-CandidateFrame.ps1 -CtiPath 'C:\Program Files\Balluff\ImpactAcquire\bin\x64\mvGenTLProducer.cti' -PixelFormat BayerRG12 -ExposureUs 50000 -Gain 0
 ```
+
+The CMD launcher avoids the default Restricted policy in Windows PowerShell 5.1
+and returns the terminal immediately. The capture command supplies a child-process
+policy override; no persistent execution policy is changed. The virtualenv path
+starts with `.\.venv`, not `..venv`.
+
+Startup fix verification: launched the actual GUI from `C:\Windows\System32`
+through Windows PowerShell 5.1 with process policy `Restricted`; CMD exit 0 and
+the HyperLab window was observed. The direct Python inventory also returned exit
+0 under Restricted policy; the imaging interface still reports problem code 0.
+The capture wrapper accepted BayerRG12/50000/0 arguments under a child-process
+Bypass policy and stopped at an intentionally absent CTI path before loading a
+producer. No new frame was taken for this startup fix. All 56 offline tests passed;
+Windows PowerShell's effective policy remains Restricted. The private receipt is
+`local/diagnostics/startup-policy-fix.json`.
 
 The GUI reads the installed CTI path; click Refresh, then select format and optional
 exposure/gain, then Single frame. Blank optional values preserve current settings.
