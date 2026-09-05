@@ -126,3 +126,48 @@ GammaEnable remains unsupported/unknown, so quantitative_eligible remains false.
 These results validate sensor DN and the imaging/UI workflow; wavelength control,
 device-matched reconstruction and calibrated reflectance remain unavailable.
 The exact HinaLea body label and the second connection still lack confirmation.
+
+## Final local package
+
+Build source: e8091351aa7d7eb3e6d137b22750ce4fb6678f72, HyperLab 0.3.1.
+The build verified all 30 frozen HyperLab modules against that archived source.
+The subsequent handoff/screenshot commit does not change executable code.
+
+| Artifact under local/distribution/roi-final-0.3.1 | Bytes | SHA-256 |
+|---|---:|---|
+| HyperLab-0.3.1-e8091351-win-x64.zip | 84,119,431 | e37ab9bd6343a5b96de2965b263a8460dff77cd1be80772572f3577f89cfd3f2 |
+| wheel/hyperlab-0.3.1-py3-none-any.whl | 120,574 | 41d308d687d1de55065a9ad0783a62863faaf29e73f20ba2b6b758b3f7d8d969 |
+
+The fresh extracted ZIP passed doctor and offline-smoke from an unrelated working
+directory, with all 729 installation files unchanged and no vendor CTI/SYS bundled.
+This is a same-host installation check, not a second clean PC or NTFS ACL test.
+The native packaged application then showed the corrected SD regions, amplitude
+and L2 plots at Windows 125%. README's new image uses only built-in synthetic data.
+
+The final e809135 package also completed its own normal real-camera session:
+
+| Final package check | Result |
+|---|---|
+| Connect/configure/start | PASS; BayerRG12, 1936 x 1216, 50 ms, gain 0 |
+| Acquisition | PASS; 1,803 frames, zero device gaps, zero fetch timeouts |
+| Bounded recording | PASS; 20 accepted, 20 written, zero failure/rejection/overflow; reopened as 20 x 1216 x 1936 uint16 |
+| Actual frame 1261 | PASS; Freeze, Compare ROIs, Save, ROI CSV and figure bundle through the native UI |
+| Numerical verification | PASS; three means/SDs, all shared histogram bins/densities and CSV values agree with independent NumPy; raw hash unchanged |
+| Normal Stop/disconnect | PASS; Stop about 0.56 s; original settings restored; camera_released true |
+| Delivered window | Open on the saved actual-frame comparison in REPLAY; camera normally released |
+
+Its 54 eligible LIVE samples (22:30:43.232–22:31:40.158 UTC) had median capture
+19.95 fps and display 8.30 fps (display range 4.49–10.30). This confirms the earlier
+bounded responsiveness result; neither series constitutes long-duration acceptance.
+The final actual PNG/PDF/SVG, raw frame, sequence, CSV, native screenshots and
+delivery-data-verification.json are in the ignored local follow-up directory.
+
+Source-head [push CI](https://github.com/sgyliu8/Hyper/actions/runs/33995833962)
+and [PR CI](https://github.com/sgyliu8/Hyper/actions/runs/33995835657) completed
+successfully, each with Linux offline and Windows independent-wheel jobs.
+The local build receipt's hardware NOT_TESTED is build-time scope and remains
+unchanged; real-session evidence is recorded separately.
+
+Use the project-root Start-HyperLab.cmd with the existing project venv, or
+desktop/HyperLab/Start-HyperLab.cmd inside the final local package. These launchers
+avoid the PowerShell script execution-policy issue without changing Windows policy.

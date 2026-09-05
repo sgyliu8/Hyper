@@ -11,6 +11,10 @@ improves native event polling/display. Its source/package/test results and all
 normal camera releases are tracked in ROI_LIVE_FIX.md and ignored local evidence.
 H1 has new bounded imaging evidence; long-duration/recovery qualification and
 H2–H4 are still outstanding. The historical gate table below is not current H1.
+The final 0.3.1 package (source e809135) passed 229 offline tests and its own
+1,803-frame native imaging check, 20/20 recording, real ROI/figure export and normal
+settings restoration/release. The delivered window shows actual frame 1261 with
+ROI plots in REPLAY. The earlier e06345b 2,512-frame run remains separate evidence.
 
 Baseline: `feature/live-workbench-v2@2d9083533a2e367e6543748f97753da02b1a0713`.
 Working branch: `feature/scientific-workbench-portable-v3`.

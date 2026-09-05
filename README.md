@@ -18,10 +18,10 @@ public release remain pending; this is not a completed open-source license grant
 - NPY/NPZ/ENVI data, explicit source/axis metadata, private reference exchange,
   saved workspace, view and ROI configuration.
 
-![Synthetic ROI comparison in the native Windows workbench](docs/assets/workbench-synthetic-native.jpg)
+![Synthetic ROI comparison in the native Windows workbench](docs/assets/workbench-roi-031-native.jpg)
 
 This is a native Windows desktop capture at 125% display scale, using the
-independently installed wheel and built-in synthetic data. It is not a camera
+0.3.1 Windows package and built-in synthetic data. It is not a camera
 acquisition or a material identification result. A separate
 [offscreen Qt layout render](docs/assets/workbench-synthetic.png) documents layout
 checks. [Reproducible figure examples](docs/user/SCIENTIFIC_FIGURES.md)
