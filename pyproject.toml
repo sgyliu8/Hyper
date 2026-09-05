@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hyperlab"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local evidence-based hyperspectral recovery and analysis"
 requires-python = ">=3.11"
 dependencies = ["numpy>=1.24,<3", "matplotlib>=3.7,<4", "Pillow>=10,<13",
@@ -19,6 +19,9 @@ hyperlab = "hyperlab.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"hyperlab.resources" = ["*.ps1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

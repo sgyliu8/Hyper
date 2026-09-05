@@ -50,7 +50,8 @@ def test_roi_shape_curves_use_common_finite_features(window):
     cube, rects = roi_fixture(window)
     window.shape_normalize.setChecked(True)
     window.show_rois([roi_statistics(cube, rect) for rect in rects])
-    for curve in window.curves:
+    # Phase 3 keeps amplitude and the normalized branch visible together.
+    for curve in window.shape_curves:
         _, values = curve.getData()
         assert values[0] == 1 and np.isnan(values[1])
 
@@ -61,7 +62,8 @@ def test_zero_norm_shape_is_unavailable_without_overwriting_raw_means(window):
     window.shape_normalize.setChecked(True)
     results = [roi_statistics(cube, rect) for rect in ((0, 0, 1, 1), (1, 0, 2, 1))]
     window.show_rois(results)
-    assert np.isnan(window.curves[0].getData()[1]).all()
+    assert np.isnan(window.shape_curves[0].getData()[1]).all()
+    np.testing.assert_array_equal(window.curves[0].getData()[1], [0, 0])
     np.testing.assert_array_equal(results[0]['mean'], [0, 0])
     assert 'unavailable' in window.message.text()
 

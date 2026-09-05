@@ -35,16 +35,17 @@ def run_inventory(output: str | Path | None = None) -> Path:
     shell = shutil.which("pwsh") or shutil.which("powershell")
     if shell is None:
         raise RuntimeError("PowerShell is unavailable")
-    script = Path(__file__).resolve().parents[2] / "scripts" / "Probe-Devices.ps1"
-    if not script.is_file():
-        raise RuntimeError("Run from the project checkout with scripts/Probe-Devices.ps1 available")
-    command = [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)]
-    if output is not None:
-        command.extend(["-OutputDirectory", str(Path(output).resolve())])
+    from importlib.resources import as_file, files
+    from datetime import datetime, timezone
+    from .paths import workspace
+    output = Path(output).resolve() if output is not None else workspace()/'diagnostics'/datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
     environment = {key: value for key, value in os.environ.items()
                    if key.upper() != "PSMODULEPATH" or Path(shell).stem.lower() == "pwsh"}
-    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
-                            env=environment, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    with as_file(files('hyperlab.resources').joinpath('Probe-Devices.ps1')) as script:
+        command = [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
+                   '-OutputDirectory', str(output)]
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
+                                env=environment, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if result.returncode:
         raise RuntimeError(f"Read-only inventory failed: {result.stderr.strip()}")
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]

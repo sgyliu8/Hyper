@@ -1,7 +1,6 @@
 """Local Qt instrument workbench. Camera and disk work never run on the GUI thread."""
 from __future__ import annotations
 
-from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import json
@@ -16,7 +15,9 @@ from PySide6 import QtCore, QtGui, QtWidgets as W
 import pyqtgraph as pg
 
 from hyperlab.io import Cube, load_cube, make_synthetic_cube, save_cube
-from hyperlab.ui.view import bayer_cell_rgb, display_levels, roi_rect
+from hyperlab.ui.view import display_selection, display_levels, roi_rect
+from hyperlab.plots import (COLORS, PlotSpec, TemporalTrace, source_identity,
+                           roi_plot, map_plot, pca_diagnostics, export_figure_bundle)
 
 
 def stamp():
@@ -29,14 +30,18 @@ def json_text(value):
 
 
 class Workbench(W.QMainWindow):
-    def __init__(self, path=None, *, session_factory=None, benchmark_log=None):
+    def __init__(self, path=None, *, session_factory=None, benchmark_log=None, workspace=None):
         super().__init__()
         self.setWindowTitle('HyperLab — Live workbench')
         self.resize(1220, 820)
         self.setMinimumSize(960, 620)
         self.session_factory = session_factory
         self.session = None
-        self.profile = None
+        from hyperlab.paths import load_config, workspace as resolve_workspace
+        self.config = load_config()
+        self.profile = self.config.get('device_profile')
+        self.workspace = resolve_workspace(workspace)
+        self._pending_state = self.config.get('ui', {})
         self.cube = None
         self.sequence = None
         self.displayed_frame = None
@@ -55,18 +60,39 @@ class Workbench(W.QMainWindow):
         self.last_log = 0.0
         self.last_frame_identity = None
         self.levels = None
-        self.temporal_plot = deque(maxlen=300)
-        self.output_dir = Path('local/experiments').resolve()
+        self.temporal_plot = TemporalTrace()
+        self.plot_spec = None
+        self.map_spec = None
+        self.analysis_version = 0
+        self.roi_colors = []
+        self.roi_rows = []
+        self.roi_labels = []
+        self.roi_visible = []
+        self._map_limits = {}
+        self.roi_timer = QtCore.QTimer(self)
+        self.roi_timer.setSingleShot(True)
+        self.roi_timer.timeout.connect(self.analyze_rois)
+        self.output_dir = self.workspace/'experiments'
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.benchmark_log = Path(benchmark_log) if benchmark_log else None
         if self.benchmark_log:
             self.benchmark_log.parent.mkdir(parents=True, exist_ok=True)
         self._build()
+        from hyperlab.ui.state import restore_controls
+        restore_controls(self, self._pending_state)
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.timer.start(33)
         if path:
             QtCore.QTimer.singleShot(0, lambda: self.open_path(Path(path)))
+        elif self._pending_state.get('last_path'):
+            saved = Path(self._pending_state['last_path'])
+            if saved.exists():
+                QtCore.QTimer.singleShot(0, lambda: self.open_path(saved))
+            else:
+                self.notify('Previous data file is missing. Select it in Recent files and use Locate.')
+        elif self._pending_state.get('synthetic'):
+            QtCore.QTimer.singleShot(0,self.synthetic)
 
     def button(self, text, callback, name=None):
         button = W.QPushButton(text)
@@ -96,6 +122,7 @@ class Workbench(W.QMainWindow):
         self.disconnect_button = self.button('Disconnect', self.disconnect, 'disconnect')
         header.addWidget(self.disconnect_button)
         header.addWidget(self.button('Open data…', self.open_dialog, 'open'))
+        header.addWidget(self.button('Workspace…', self.choose_output, 'workspace'))
         header.addWidget(self.button('Diagnostics', lambda: self.diagnostics.setVisible(not self.diagnostics.isVisible())))
         layout.addLayout(header)
         self.tabs = W.QTabBar()
@@ -126,7 +153,6 @@ class Workbench(W.QMainWindow):
         self.sidebar = W.QStackedWidget()
         self.sidebar.setSizePolicy(W.QSizePolicy.Policy.Ignored, W.QSizePolicy.Policy.Preferred)
         self.side_scroll.setWidget(self.sidebar)
-        split.addWidget(self.side_scroll)
         self._capture_panel()
         self._analysis_panel()
         self._calibration_panel()
@@ -160,20 +186,28 @@ class Workbench(W.QMainWindow):
         self.derived_plot.invertY(True)
         self.derived_image = pg.ImageItem(axisOrder='row-major')
         self.derived_plot.addItem(self.derived_image)
-        self.colorbar = pg.ColorBarItem(values=(0, 1), colorMap=pg.colormap.get('viridis'))
+        self.colorbar = pg.ColorBarItem(values=(0, 1), colorMap=pg.colormap.get('viridis'), interactive=False)
+        self.colorbar.axis.setWidth(85)
+        self.colorbar.axis.enableAutoSIPrefix(False)
         self.colorbar.setImageItem(self.derived_image, insert_in=self.derived_plot)
         self.images.addWidget(self.derived_graphics)
         self.derived_graphics.hide()
         self.vertical.addWidget(self.images)
+        self.chart_row = W.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.chart = pg.PlotWidget(background='w')
         self.chart.setLabel('left', 'DN / descriptive value')
         self.chart.showGrid(x=True, y=True, alpha=0.15)
         self.curves = [self.chart.plot(pen=pg.mkPen(c, width=2)) for c in ('#d47e22', '#247dc4')]
-        self.vertical.addWidget(self.chart)
+        self.chart_row.addWidget(self.chart)
+        self.shape_chart = pg.PlotWidget(background='w')
+        self.shape_chart.hide()
+        self.chart_row.addWidget(self.shape_chart)
+        self.vertical.addWidget(self.chart_row)
         self.vertical.setSizes([570, 140])
         split.addWidget(self.vertical)
-        split.setStretchFactor(1, 1)
-        split.setSizes([275, 920])
+        split.addWidget(self.side_scroll)
+        split.setStretchFactor(0, 1)
+        split.setSizes([920, 275])
         layout.addWidget(split, 1)
         axis = W.QHBoxLayout()
         self.axis_label = W.QLabel('Fixed optical state · no data loaded')
@@ -183,7 +217,11 @@ class Workbench(W.QMainWindow):
         axis.addWidget(self.axis_label)
         axis.addWidget(self.band, 1)
         layout.addLayout(axis)
+        self.analysis_label = W.QLabel('Analysis source: no computed chart')
+        self.analysis_label.setWordWrap(True)
+        layout.addWidget(self.analysis_label)
         self.pixel_label = W.QLabel('Pixel: —')
+        self.pixel_label.setWordWrap(True)
         self.metrics_label = W.QLabel('Capture —  |  Display —  |  Writer —  |  Age —')
         self.metrics_label.setWordWrap(True)
         layout.addWidget(self.pixel_label)
@@ -202,6 +240,8 @@ class Workbench(W.QMainWindow):
         dl.addWidget(self.output_edit)
         dl.addWidget(self.button('Choose output folder', self.choose_output))
         dl.addWidget(self.button('Export session evidence', self.export_evidence))
+        dl.addWidget(self.button('Preview redacted support report…', self.support_report))
+        dl.addWidget(self.button('Hardware setup / About…', self.hardware_help))
         self.diagnostics.setWidget(detail)
         self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.diagnostics)
         self.diagnostics.hide()
@@ -268,16 +308,20 @@ class Workbench(W.QMainWindow):
         form.addWidget(self.overlay)
         self.plot_mode = W.QComboBox()
         self.plot_mode.addItems(['Histogram (sampled)', 'ROI time trend', 'ROI channel / state curves'])
+        self.plot_mode.addItems(['PCA explained variance', 'PCA loadings'])
+        self.plot_mode.currentIndexChanged.connect(lambda: self.update_chart(self.image.image) if self.cube else None)
         form.addWidget(self.plot_mode)
         self.quality_label = W.QLabel('Quality: —')
         self.quality_label.setWordWrap(True)
         form.addWidget(self.quality_label)
+        form.addWidget(self.button('View quality / ROI counts…', self.quality_details))
         form.addWidget(W.QLabel('Recent saves · double-click to reopen'))
         self.recent_list = W.QListWidget()
         self.recent_list.setSelectionMode(W.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.recent_list.setMaximumHeight(130)
         self.recent_list.itemDoubleClicked.connect(lambda item: self.open_path(Path(item.data(QtCore.Qt.ItemDataRole.UserRole))))
         form.addWidget(self.recent_list)
+        form.addWidget(self.button('Locate selected file…', self.locate_recent))
         form.addWidget(self.button('Compare two saved frames', self.compare_recent))
         form.addWidget(self.button('Open output folder', lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(self.output_dir)))))
         form.addStretch()
@@ -286,7 +330,7 @@ class Workbench(W.QMainWindow):
         self.message.setText(str(text))
 
     def background(self, function, callback, label):
-        if self.task_busy:
+        if self.closing or self.task_busy:
             self.notify('A background operation is still running.')
             return
         self.task_busy = True
@@ -306,24 +350,46 @@ class Workbench(W.QMainWindow):
     def connect_camera(self):
         if self.session and self.session.state not in ('disconnected', 'error'):
             return
-        from hyperlab.devices import discover_profile
+        from hyperlab.devices import discover_profiles
         previous = self.session
         if previous:
             previous.close(wait=False)
         def discover():
             if previous and not previous.close(wait=True):
                 raise RuntimeError('Previous camera session has not released its resources.')
-            return discover_profile()
-        self.background(discover, self._connect_profile, 'Checking the current device and runtime…')
+            return discover_profiles()
+        self.background(discover, self.choose_profile, 'Checking the current device and runtime…')
+
+    def choose_profile(self, report):
+        profiles = report['profiles']
+        if not profiles:
+            self.device_label.setText(report['issues'][0]['code'].replace('_',' ').title() if report['issues'] else 'No camera')
+            self.notify('\n'.join(item['message'] for item in report['issues']))
+            return
+        if len(profiles) == 1:
+            selected = profiles[0]
+        else:
+            labels = [f"{i+1}. {p['name']} · identifier ending {p['serial'][-4:]} · runtime {Path(p['cti']).parent.name}"
+                      for i,p in enumerate(profiles)]
+            name,ok = W.QInputDialog.getItem(self,'Select imaging device','Discovered supported cameras',labels,0,False)
+            if not ok:
+                return
+            selected = profiles[labels.index(name)]
+        if self.profile and any(self.profile.get(key)!=selected.get(key) for key in ('serial','name','cti')):
+            self.notify('Saved profile changed; selected device will be validated again on connection.')
+        self._connect_profile(selected)
 
     def _connect_profile(self, profile):
         if self.closing:
             return
         from hyperlab.acquisition.camera import CameraSession
         self.profile = profile
+        from hyperlab.devices import remember_profile
+        remember_profile(profile)
         factory = self.session_factory or CameraSession
+        options = {} if self.session_factory else {'phase_log': self.output_dir/('session-phases_'+stamp()+'.json')}
         self.session = factory(profile['cti'], profile['serial'], settings=self.requested_settings(),
-                               mode=self.session_mode.currentData())
+                               mode=self.session_mode.currentData(), **options)
         self.session.connect()
         self.device_label.setText(profile['name'])
         self.detail_text.setPlainText(json_text(profile))
@@ -346,6 +412,7 @@ class Workbench(W.QMainWindow):
                 self.cube.close()
                 self.cube = None
             self.product = self.product_source = None
+            self.map_spec = self.plot_spec = None
             self.derived_graphics.hide()
             self.temporal_plot.clear()
             self.band.blockSignals(True)
@@ -436,6 +503,8 @@ class Workbench(W.QMainWindow):
                     elif event.get('kind') == 'recording' and event.get('done') and event.get('save_reopen_verified'):
                         self.add_recent(Path(event['path']), partial=event.get('partial', True))
                 if event.get('kind') == 'error' or event.get('error'):
+                    from hyperlab.devices import connection_error_kind
+                    self.device_label.setText(connection_error_kind(event.get('error') or event))
                     self.notify(str(event.get('error') or event))
                 if event.get('kind') == 'state':
                     self.notify(f"Device state: {event.get('state', self.session.state)}")
@@ -443,7 +512,7 @@ class Workbench(W.QMainWindow):
             frame = self.session.latest_frame()
             if frame is not None and self.session.state in ('streaming', 'recording'):
                 age = max(0.0, (time.monotonic_ns() - frame.metadata['host_monotonic_ns']) / 1e9)
-                self.display_mode = 'FROZEN' if self.freeze.isChecked() else 'STALE' if age > 2 else 'LIVE'
+                self.display_mode = 'FROZEN' if self.freeze.isChecked() else 'STALE' if self.last_status.get('stale', age > 2) else 'LIVE'
                 if not self.freeze.isChecked() and frame.identity != self.last_frame_identity:
                     self.displayed_frame = frame
                     self.last_frame_identity = frame.identity
@@ -489,7 +558,10 @@ class Workbench(W.QMainWindow):
             return f'{value:.1f}' if isinstance(value, (int, float)) else '—'
         age = metrics.get('frame_age_s')
         age_text = f'{age * 1000:.0f}' if age is not None else '—'
-        self.metrics_label.setText(f"Capture {metric('capture_fps')} fps  |  Display {metric('display_fps')} fps  |  Writer {recording.get('writer_fps', 0):.1f} fps  |  age {age_text} ms  |  preview drop {metrics.get('preview_dropped', '—')}  |  device gaps {metrics.get('device_frame_gaps', '—')}  |  writer queue {recording.get('queue_length', 0)}")
+        screen_age = '—'
+        if self.displayed_frame is not None and self.display_mode in ('LIVE','FROZEN','STALE'):
+            screen_age = f"{max(0,time.monotonic_ns()-self.displayed_frame.metadata.get('host_monotonic_ns',time.monotonic_ns()))/1e6:.0f}"
+        self.metrics_label.setText(f"Capture {metric('capture_fps')} fps  |  Display {metric('display_fps')} fps  |  Writer {recording.get('writer_fps', 0):.1f} fps  |  receive age {age_text} ms / screen age {screen_age} ms  |  preview drop {metrics.get('preview_dropped', '—')}  |  device gaps {metrics.get('device_frame_gaps', '—')}  |  writer queue {recording.get('queue_length', 0)}")
         frame_meta = status.get('frame_metadata') or {}
         connection = status.get('connection_metadata') or {}
         readback = frame_meta.get('readback_settings') or connection.get('readback_settings') or connection.get('current_settings') or {}
@@ -511,7 +583,8 @@ class Workbench(W.QMainWindow):
         self.disconnect_button.setEnabled(state in ('ready', 'streaming', 'recording', 'error'))
         self.preview_button.setEnabled(state == 'ready')
         self.stop_button.setEnabled(state in ('streaming', 'recording'))
-        self.record_button.setEnabled(state in ('streaming', 'recording'))
+        self.record_button.setEnabled(state == 'recording' or (state == 'streaming' and
+            self.last_status.get('has_current_frame', self.displayed_frame is not None)))
         self.record_button.setText('Stop recording' if state == 'recording' else 'Record…')
         self.save_button.setEnabled(self.cube is not None)
         for item in (self.format, self.exposure, self.gain, self.session_mode, self.apply_button):
@@ -527,14 +600,22 @@ class Workbench(W.QMainWindow):
         old_shape = self.cube.shape if self.cube is not None else None
         self.cube = cube
         if not live:
+            if reset_axis:
+                self.analysis_version += 1
             self.display_mode = 'SYNTHETIC' if cube.metadata.get('data_source') == 'SYNTHETIC' else 'REPLAY'
             self.displayed_frame = None
             self.product = None
             self.product_source = None
+            self.map_spec = None
             self.derived_graphics.hide()
             self.roi_results = []
             if reset_axis:
                 self.temporal_plot.clear()
+                self.plot_spec = None
+                self.plot_mode.blockSignals(True)
+                self.plot_mode.setCurrentIndex(0)
+                self.plot_mode.blockSignals(False)
+                self.last_quality = 0.0
         self.band.blockSignals(True)
         self.band.setRange(0, (self.sequence.frame_count - 1) if self.sequence else cube.shape[2] - 1)
         if not live and reset_axis:
@@ -550,6 +631,8 @@ class Workbench(W.QMainWindow):
             self.update_capabilities()
         if old_shape != cube.shape:
             self.fit()
+        from hyperlab.ui.state import restore_view
+        restore_view(self)
         self.update_controls()
         self.update_source_label()
 
@@ -559,28 +642,25 @@ class Workbench(W.QMainWindow):
         raw = self.cube.data
         is_color = bool(self.cube.metadata.get('channel_labels'))
         band = min(self.band.value(), raw.shape[2] - 1)
-        shown = raw if is_color else raw[..., band]
-        if is_color and self.cube.metadata.get('channel_labels') == ['B', 'G', 'R']:
-            shown = shown[..., ::-1]
-        if self.view_mode.currentIndex() == 1 and not is_color:
-            try:
-                shown = bayer_cell_rgb(shown, self.cube.metadata)
-            except ValueError as error:
-                self.notify(str(error))
+        try:
+            selected = display_selection(self.cube, band, policy=self.policy.currentData(),
+                                         cfa=self.view_mode.currentIndex() == 1 and not is_color)
+        except ValueError as error:
+            self.notify(str(error))
+            selected = display_selection(self.cube, band, policy=self.policy.currentData())
+        self.display_selection = selected
+        shown = selected['image']
         if self.auto_levels.isChecked():
-            self.levels = display_levels(shown)
+            self.levels = selected['levels']
         else:
             self.levels = (self.low.value(), max(self.low.value() + 1e-12, self.high.value()))
         self.image.setImage(shown, autoLevels=False, levels=self.levels)
         h, w = raw.shape[:2]
         self.image.setRect(QtCore.QRectF(0, 0, w, h))
         if self.overlay.isChecked():
-            bits = self.cube.metadata.get('pfnc_sample_bits', self.cube.metadata.get('effective_bits'))
-            limit = self.cube.metadata.get('saturation_value')
-            if limit is None and bits:
-                limit = 2 ** int(bits) - 1
+            limit = selected['saturation_value']
             if limit is not None:
-                saturated = np.any(raw >= limit, axis=2)
+                saturated = selected['saturated_mask']
                 rgba = np.zeros((h, w, 4), dtype=np.uint8)
                 rgba[saturated] = [255, 50, 35, 125]
                 self.saturation_overlay.setImage(rgba, autoLevels=False)
@@ -613,19 +693,100 @@ class Workbench(W.QMainWindow):
         box.setRange(xRange=((x0+x1-width)/2, (x0+x1+width)/2),
                      yRange=((y0+y1-height)/2, (y0+y1+height)/2), padding=0)
 
+    def _roi_row(self, name, color):
+        row = W.QWidget()
+        layout = W.QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        edit = W.QLineEdit(name)
+        edit.setStyleSheet(f'border-left: 4px solid {color};')
+        layout.addWidget(edit, 1)
+        show = W.QCheckBox('Show')
+        show.setChecked(True)
+        layout.addWidget(show)
+        remove = self.button('×', lambda: self.remove_roi(self.roi_rows.index(row)))
+        remove.setToolTip('Remove this ROI from the analysis definition')
+        remove.setMaximumWidth(28)
+        layout.addWidget(remove)
+        self.roi_form.addWidget(row)
+        self.roi_names.append(edit)
+        self.roi_colors.append(color)
+        self.roi_rows.append(row)
+        self.roi_visible.append(show)
+        edit.textChanged.connect(self.roi_changed)
+        show.toggled.connect(lambda visible: self.set_roi_visible(self.roi_rows.index(row), visible))
+
+    def set_roi_visible(self, index, visible):
+        if index < len(self.rois):
+            self.rois[index].setVisible(visible)
+        self.roi_changed()
+
+    def add_roi(self, name=None, rect=None, color=None):
+        if len(self.roi_names) >= 8:
+            self.notify('Up to eight rectangular ROIs are supported.')
+            return
+        index = len(self.roi_names)
+        self._roi_row(name or f'ROI {chr(65+index)}', color or COLORS[index])
+        if self.cube is not None:
+            self._create_roi(index, rect)
+        self.roi_changed()
+
+    def _create_roi(self, index, rect=None):
+        h, w = self.cube.shape[:2]
+        if rect is None:
+            x, y = w * (.12 + .26 * (index % 3)), h * (.22 + .28 * (index // 3))
+            width, height = max(1, w * .2), max(1, h * .22)
+        else:
+            x, y, x1, y1 = rect
+            width, height = x1-x, y1-y
+        roi = pg.RectROI([x, y], [width, height], pen=pg.mkPen(self.roi_colors[index], width=2),
+                         movable=True, rotatable=False, maxBounds=QtCore.QRectF(0,0,w,h))
+        self.plot.addItem(roi)
+        self.rois.append(roi)
+        roi.setVisible(self.roi_visible[index].isChecked())
+        label = pg.TextItem(self.roi_names[index].text(), color=self.roi_colors[index], anchor=(0,1))
+        self.plot.addItem(label)
+        self.roi_labels.append(label)
+        roi.sigRegionChanged.connect(self.roi_changed)
+        self._update_roi_labels()
+
+    def _update_roi_labels(self):
+        for i, roi in enumerate(self.rois):
+            self.roi_labels[i].setVisible(roi.isVisible())
+            self.roi_labels[i].setText(self.roi_names[i].text(), color=self.roi_colors[i])
+            self.roi_labels[i].setPos(roi.pos())
+
+    def roi_changed(self, *args):
+        self.analysis_version += 1
+        self._update_roi_labels()
+        if self.cube is not None and self.plot_mode.currentIndex() == 2:
+            self.roi_timer.start(160)
+
+    def remove_roi(self, index):
+        if not 0 <= index < len(self.roi_names):
+            return
+        if len(self.roi_names) <= 1:
+            self.notify('Keep at least one ROI; use Show to hide its curve.')
+            return
+        row = self.roi_rows.pop(index)
+        row.setParent(None)
+        row.deleteLater()
+        self.roi_names.pop(index)
+        self.roi_visible.pop(index)
+        self.roi_colors.pop(index)
+        if index < len(self.rois):
+            self.plot.removeItem(self.rois.pop(index))
+            self.plot.removeItem(self.roi_labels.pop(index))
+        self.roi_changed()
+
     def reset_rois(self, force=False):
         if self.cube is None or (self.rois and not force):
             return
-        for roi in self.rois:
-            self.plot.removeItem(roi)
-        h, w = self.cube.shape[:2]
-        self.rois = []
-        for index, color in enumerate(('#ed9b3d', '#45a6ff')):
-            roi = pg.RectROI([w * (0.18 + index * 0.42), h * 0.32], [max(1, w * 0.2), max(1, h * 0.25)],
-                             pen=pg.mkPen(color, width=2), movable=True, rotatable=False,
-                             maxBounds=QtCore.QRectF(0, 0, w, h))
-            self.plot.addItem(roi)
-            self.rois.append(roi)
+        for item in [*self.rois, *self.roi_labels]:
+            self.plot.removeItem(item)
+        self.rois, self.roi_labels = [], []
+        for index in range(len(self.roi_names)):
+            self._create_roi(index)
+        self.roi_changed()
 
     def rectangles(self):
         return [roi_rect(roi.pos(), roi.size(), self.cube.shape) for roi in self.rois]
@@ -640,60 +801,115 @@ class Workbench(W.QMainWindow):
         x, y = int(np.floor(point.x() * sx)), int(np.floor(point.y() * sy))
         if 0 <= x < self.cube.shape[1] and 0 <= y < self.cube.shape[0]:
             values = self.cube.data[y, x]
-            finite = bool(np.all(np.isfinite(values)))
-            if self.cube.valid_mask is not None:
-                finite &= bool(np.all(self.cube.valid_mask[y, x]))
-            self.pixel_label.setText(f'Raw pixel x={x}, y={y} · {np.array2string(values, precision=7, threshold=8)} · finite/mask={finite}')
+            from hyperlab.analysis.core import _quality
+            selection = (slice(y,y+1),slice(x,x+1),slice(None))
+            valid, counts, _ = _quality(self.cube,self.cube.data[selection],selection,self.policy.currentData())
+            self.pixel_label.setText(f'Raw pixel x={x}, y={y} · {np.array2string(values, precision=7, threshold=8)} · {self.policy.currentData()} valid channels {np.count_nonzero(valid)}/{valid.size}')
+            self.pixel_label.setToolTip(json_text({name: int(mask.sum()) for name,mask in counts.items()}))
 
     def update_chart(self, shown):
-        if self.plot_mode.currentIndex() != 2:
-            self.chart.getAxis('bottom').setTicks(None)
-        from hyperlab.analysis.core import _quality
-        cube = self.cube
-        policy = self.policy.currentData()
-        h, w, k = cube.shape
-        band = min(self.band.value(), k - 1)
-        channels = slice(None) if cube.metadata.get('channel_labels') else slice(band, band + 1)
-        selection = (slice(None, None, max(1, h // 180)), slice(None, None, max(1, w // 240)), channels)
-        raw_sample = cube.data[selection]
-        good, quality, threshold = _quality(cube, raw_sample, selection, policy)
-        eligible = raw_sample.size - np.count_nonzero(quality['invalid']) - np.count_nonzero(quality['ignored'])
-        saturated = np.count_nonzero(quality['saturated'])
-        sat = f'{100*saturated/eligible:.2f}% ({saturated}/{eligible} eligible)' if threshold is not None and eligible else 'unknown'
-        raw_values = raw_sample[good].astype(np.float64)
-        mean = f'{raw_values.mean():.2f}' if raw_values.size else 'unavailable'
-        sample = np.asarray(shown)[::max(1, shown.shape[0] // 180), ::max(1, shown.shape[1] // 240)]
-        values = sample[np.isfinite(sample)].astype(np.float64)
-        grey = np.mean(sample, axis=2) if sample.ndim == 3 else sample
-        gradients = np.diff(grey.astype(np.float64), axis=0)**2
-        finite_gradients = gradients[np.isfinite(gradients)]
-        focus = f'{finite_gradients.mean():.2f}' if finite_gradients.size else 'unavailable'
-        self.quality_label.setText(f'Raw sample saturation {sat}\n{policy} mean {mean} · display focus {focus} (gradient heuristic)')
-        self.quality_label.setToolTip('Saturation uses sampled raw sensor values, not CFA/RGB display derivatives. Eligible excludes nonfinite, masked and ignored samples; the mean follows the selected quality policy.')
-        if values.size:
-            if self.plot_mode.currentIndex() == 0:
-                counts, edges = np.histogram(values, bins=128)
-                self.curves[0].setData((edges[:-1] + edges[1:]) * 0.5, counts)
-                self.curves[1].setData([], [])
-                self.chart.setLabel('bottom', 'Displayed channel values · sampled histogram')
-                self.chart.setLabel('left', 'Sample count')
-            elif self.plot_mode.currentIndex() == 1:
-                rects = self.rectangles()
-                means = []
-                for x0, y0, x1, y1 in rects:
-                    roi_selection = (slice(y0, y1), slice(x0, x1), channels)
-                    data = cube.data[roi_selection]
-                    valid, _, _ = _quality(cube, data, roi_selection, policy)
-                    means.append(float(np.mean(data[valid], dtype=np.float64)) if np.any(valid) else np.nan)
-                self.temporal_plot.append((time.monotonic(), *means))
-                history = np.asarray(self.temporal_plot)
-                for index, curve in enumerate(self.curves):
-                    curve.setData(history[:, 0] - history[0, 0], history[:, index + 1])
-                self.chart.setLabel('bottom', 'Host elapsed time', units='s')
-                self.chart.setLabel('left', f'ROI mean · {policy}', units=cube.metadata.get('units'))
-        elif self.plot_mode.currentIndex() == 0:
-            for curve in self.curves:
-                curve.setData([], [])
+        if self.cube is None:
+            return
+        from hyperlab.analysis import roi_statistics
+        cube, policy = self.cube, self.policy.currentData()
+        band = min(self.band.value(), cube.shape[2]-1)
+        try:
+            selected = display_selection(cube, band, policy=policy,
+                                        cfa=self.view_mode.currentIndex() == 1 and not cube.metadata.get('channel_labels'))
+        except ValueError:
+            selected = display_selection(cube, band, policy=policy)
+        values = selected['values']
+        counts = selected['raw_counts']
+        eligible = counts['total'] - counts['invalid'] - counts['ignored']
+        saturation = (f"{100*counts['saturated']/eligible:.2f}% ({counts['saturated']}/{eligible} eligible)"
+                      if selected['saturation_value'] is not None and eligible else 'unknown')
+        mean = f"{selected['raw_mean']:.2f}" if selected['raw_mean'] is not None else 'unavailable'
+        self.quality_label.setText(f"{policy} mean {mean} · raw saturation {saturation}\n"
+            f"Display histogram: {selected['sample_count']}/{selected['sample_total']} selected samples\n"
+            'Invalid and ignored samples do not affect contrast.')
+        self.quality_label.setToolTip(json_text({'raw_counts': counts, **{k:v for k,v in selected.items()
+            if k not in ('image','valid_mask','values','saturated_mask')}}))
+        mode = self.plot_mode.currentIndex()
+        source = source_identity(cube)
+        if mode == 0:
+            y, edges = np.histogram(values, bins=128) if values.size else (np.array([]), np.array([0.]))
+            spec = PlotSpec('lines', 'Sampled histogram', f"Value ({cube.metadata['units']})", 'Sample count',
+                source=source, series=[{'name':policy, 'color':COLORS[0], 'style':'-',
+                'x':(edges[:-1]+edges[1:])/2, 'y':y}] if values.size else [], metadata={k:v for k,v in selected.items()
+                if k not in ('image','valid_mask','values','saturated_mask')}, caption=selected['interpretation'])
+            self.draw_plot(spec)
+        elif mode == 1:
+            rects = self.rectangles()
+            stats = [roi_statistics(cube, rect, policy=policy) for rect in rects]
+            means = [float(np.nanmean(r['mean'])) if cube.metadata.get('channel_labels') and np.any(np.isfinite(r['mean']))
+                     else float(r['mean'][band]) for r in stats]
+            definition = {'rectangles':rects, 'names':[edit.text() for edit in self.roi_names],
+                          'policy':policy, 'band':None if self.sequence else band,
+                          'source_file':cube.metadata.get('source_file'),
+                          'session_id':cube.metadata.get('session_id'),
+                          'stream_epoch':cube.metadata.get('stream_epoch'),
+                          'settings':cube.metadata.get('readback_settings') or cube.metadata.get('current_settings')}
+            # File replay uses recorded times, never UI playback cadence.
+            meta = dict(cube.metadata, display_mode=self.display_mode)
+            self.temporal_plot.add(meta, means, definition, sequence=self.sequence,
+                                   index=self.band.value() if self.sequence else None)
+            spec = self.temporal_plot.plot(definition['names'], self.roi_colors, source)
+            if not len(self.temporal_plot):
+                spec.caption = 'A static frame has no temporal samples. Open a recorded sequence for time analysis.'
+            self.draw_plot(spec)
+        elif mode in (3,4) and self.product is not None and 'scores' in self.product:
+            self.draw_plot(pca_diagnostics(self.product, self.product_source)[mode-3])
+
+    def draw_plot(self, spec):
+        self.plot_spec = spec
+        origin = spec.source.get('acquisition_source') or spec.source.get('data_source') or 'UNKNOWN'
+        frame = spec.source.get('sequence')
+        source = (f"frame {frame} / stream {spec.source.get('stream_epoch')}" if frame is not None
+                  else Path(spec.source.get('source_file') or 'in-memory example').name)
+        self.analysis_label.setText(f'Pinned analysis: {source} · {origin} origin · {spec.caption}')
+        self.chart.clear()
+        legend = self.chart.plotItem.legend or self.chart.addLegend(offset=(8,8))
+        legend.clear()
+        legend.setColumnCount(min(4,max(1,len(spec.series))))
+        self.curves = []
+        self.chart.setTitle(spec.title if any(np.any(np.isfinite(item['y'])) for item in spec.series) else spec.title+' · No valid samples')
+        self.chart.setToolTip(spec.caption)
+        self.chart.setLabel('bottom', spec.xlabel)
+        self.chart.setLabel('left', spec.ylabel)
+        self.chart.getAxis('left').enableAutoSIPrefix(False)
+        self.chart.getAxis('bottom').setTicks([list(enumerate(spec.categories))] if spec.categories else None)
+        for item in spec.series:
+            pen = pg.mkPen(item['color'], width=2,
+                           style=QtCore.Qt.PenStyle.SolidLine if item.get('style','-') == '-' else QtCore.Qt.PenStyle.DashLine)
+            curve = self.chart.plot(item['x'], item['y'], pen=pen, name=item['name'], connect='finite',
+                                    symbol='o' if spec.categories else None, symbolSize=5)
+            self.curves.append(curve)
+            if item.get('sd') is not None:
+                low = self.chart.plot(item['x'], np.asarray(item['y'])-item['sd'], pen=None, connect='finite')
+                high = self.chart.plot(item['x'], np.asarray(item['y'])+item['sd'], pen=None, connect='finite')
+                color = pg.mkColor(item['color']); color.setAlpha(35)
+                self.chart.addItem(pg.FillBetweenItem(low, high, brush=color))
+        # Preserve the two default curve handles for existing integrations.
+        while len(self.curves) < 2:
+            self.curves.append(self.chart.plot([],[],pen=None))
+        xs = np.concatenate([np.asarray(item['x']) for item in spec.series]) if spec.series else np.array([])
+        xs = xs[np.isfinite(xs)]
+        if xs.size and xs.max()>xs.min():
+            self.chart.setXRange(float(xs.min()),float(xs.max()),padding=.03)
+        self.shape_chart.clear()
+        self.shape_curves = []
+        normalized = [item for item in spec.series if 'normalized' in item]
+        self.shape_chart.setVisible(bool(normalized))
+        if normalized:
+            self.shape_chart.setTitle('L2 normalized shape · dimensionless')
+            self.shape_chart.setLabel('bottom', spec.xlabel)
+            self.shape_chart.setLabel('left','Normalized mean')
+            self.shape_chart.getAxis('left').enableAutoSIPrefix(False)
+            self.shape_chart.getAxis('bottom').setTicks([list(enumerate(spec.categories))] if spec.categories else None)
+            for item in normalized:
+                self.shape_curves.append(self.shape_chart.plot(item['x'],item['normalized'],pen=pg.mkPen(item['color'],width=2), connect='finite'))
+            self.chart_row.setSizes([1,1])
+            self.vertical.setSizes([400,280])
 
     def update_capabilities(self):
         from hyperlab.analysis import capabilities
@@ -704,38 +920,48 @@ class Workbench(W.QMainWindow):
         self.capability_label.setText(f"{cap['axis_label']} · {cap['effective_dimensions']} enabled features\n" +
                                      '\n'.join(dict.fromkeys(cap.get('reasons', {}).values())))
 
+    def analysis_context(self):
+        return {'version':self.analysis_version, 'source':source_identity(self.cube),
+                'rectangles':self.rectangles(), 'names':[name.text() for name in self.roi_names],
+                'colors':list(self.roi_colors), 'visible':[item.isChecked() for item in self.roi_visible],
+                'policy':self.policy.currentData(), 'normalized':self.shape_normalize.isChecked(),
+                'spatial_sd':self.spatial_sd.isChecked()}
+
     def analyze_rois(self):
-        if self.cube is None:
+        if self.cube is None or self.closing:
+            return
+        if self.task_busy:
+            self.roi_timer.start(180)
             return
         from hyperlab.analysis import roi_statistics
-        cube, rects, policy = self.cube, self.rectangles(), self.policy.currentData()
-        self.background(lambda: [roi_statistics(cube, rect, policy=policy) for rect in rects],
-                        self.show_rois, 'Computing ROI statistics in raw pixel coordinates…')
+        cube, context = self.cube, self.analysis_context()
+        def completed(results):
+            if context['version'] != self.analysis_version:
+                self.notify('ROI definition changed; obsolete result discarded.')
+                self.roi_timer.start(180)
+                return
+            self.show_rois(results, context)
+        self.background(lambda: [roi_statistics(cube, rect, policy=context['policy']) for rect in context['rectangles']],
+                        completed, 'Computing pinned ROI statistics…')
 
-    def show_rois(self, results):
+    def show_rois(self, results, context=None):
+        context = context or self.analysis_context()
         self.roi_results = results
+        self.plot_mode.blockSignals(True)
         self.plot_mode.setCurrentIndex(2)
-        labels = results[0].get('channel_labels')
-        self.chart.getAxis('bottom').setTicks([list(enumerate(labels))] if labels else None)
-        common = np.all(np.isfinite([stats['mean'] for stats in results]), axis=0)
-        shape_valid = True
-        for index, stats in enumerate(results):
-            means = stats['mean'].copy()
-            if self.shape_normalize.isChecked():
-                means[~common] = np.nan
-                norm = np.linalg.norm(means[common])
-                if np.any(common) and np.isfinite(norm) and norm > 0:
-                    means /= norm
-                else:
-                    means[:] = np.nan
-                    shape_valid = False
-            x = stats.get('wavelengths')
-            x = np.arange(len(means)) if x is None else x
-            self.curves[index].setData(x, means)
-        self.chart.setLabel('bottom', results[0].get('axis_label', 'index'), units=results[0].get('wavelength_units'))
-        self.chart.setLabel('left', 'L2 normalized shape' if self.shape_normalize.isChecked() else results[0].get('units', 'unknown'))
-        self.notify('ROI means updated. Shape normalization uses common finite features; CSV retains raw amplitudes.'
-                    if shape_valid else 'Shape comparison unavailable: no common finite features or a zero ROI norm.')
+        self.plot_mode.blockSignals(False)
+        enabled = [i for i,v in enumerate(context['visible']) if v]
+        if not enabled:
+            self.draw_plot(PlotSpec('lines','No visible ROI','Index','Mean'))
+            return
+        spec = roi_plot([results[i] for i in enabled], [context['names'][i] for i in enabled],
+                        [context['colors'][i] for i in enabled], source=context['source'],
+                        normalized=context['normalized'], spatial_sd=context['spatial_sd'])
+        spec.metadata['analysis_version'] = context['version']
+        self.draw_plot(spec)
+        self.notify('Shape comparison unavailable for a zero norm or missing common features; raw amplitude is retained.'
+                    if any('normalized' in item and not np.any(np.isfinite(item['normalized'])) for item in spec.series)
+                    else 'Pinned ROI means and spatial SD; source identity and quality counts are retained in Figure export.')
 
     def export_rois(self):
         if self.cube is None:
@@ -787,6 +1013,7 @@ class Workbench(W.QMainWindow):
             return
         cube, rect, policy = self.cube, self.rectangles()[0], self.policy.currentData()
         reference_name = self.roi_names[0].text()
+        context = self.analysis_context()
         a, b = self.pair_a.value(), self.pair_b.value()
         def run():
             if operation == 'pca':
@@ -797,20 +1024,88 @@ class Workbench(W.QMainWindow):
                     'coordinates': 'raw pixels; half-open x0,y0,x1,y1 rectangle'}
                 return result
             return (difference if operation == 'difference' else ratio)(cube, a, b, policy=policy)
-        self.background(run, lambda result: self.show_product(result, cube), f'Computing {operation}…')
+        def completed(result):
+            result['metadata']['analysis_context'] = context
+            if context['version'] != self.analysis_version:
+                self.notify('Analysis definition changed; obsolete result discarded. Compute again with the new ROI.')
+                return
+            self.show_product(result, cube)
+        self.background(run, completed, f'Computing pinned {operation}…')
 
     def show_product(self, result, source_cube=None):
         self.product = result
         self.product_source = source_cube or self.cube
-        shown = result.get('data', result.get('image'))
-        if shown.ndim == 3:
-            shown = shown[..., 0]
-        self.derived_image.setImage(shown, autoLevels=False, levels=display_levels(shown))
-        self.colorbar.setLevels(display_levels(shown))
+        count = result['scores'].shape[2] if 'scores' in result else 1
+        self.pc_component.blockSignals(True)
+        selected = min(self.pc_component.currentIndex(), count-1)
+        self.pc_component.clear()
+        self.pc_component.addItems([f'PC{i+1} score' for i in range(count)])
+        self.pc_component.setCurrentIndex(max(0, selected))
+        self.pc_component.setEnabled(count > 1)
+        self.pc_component.blockSignals(False)
+        source = source_identity(self.product_source)
+        source['units'] = self.product_source.metadata.get('units')
+        spec = map_plot(result, source, component=max(0, selected), degrees=self.angle_degrees.isChecked())
+        key = (spec.title, spec.colour_label)
+        if self.lock_map_limits.isChecked() and key in self._map_limits:
+            spec.limits = self._map_limits[key]
+        self._map_limits[key] = spec.limits
+        self.map_spec = spec
+        self.derived_image.setImage(spec.image, autoLevels=False, levels=spec.limits)
+        cmap = pg.colormap.get(spec.colormap, source='matplotlib')
+        self.colorbar.setColorMap(cmap)
+        self.colorbar.setLevels(spec.limits)
+        self.colorbar.axis.setLabel(spec.colour_label)
+        self.derived_plot.setTitle(f'{spec.title} · pinned source; invalid transparent')
+        self.derived_plot.setLabel('bottom', spec.xlabel)
+        self.derived_plot.setLabel('left', spec.ylabel)
         self.derived_graphics.show()
         self.images.setSizes([self.images.width() // 2] * 2)
         self.set_view_link(self.link_views.isChecked())
-        self.notify('Derived values displayed; invalid pixels use NaN/mask. Raw data is unchanged.')
+        identity = source.get('sequence')
+        label = f'frame {identity}' if identity is not None else Path(source.get('source_file') or 'current data').name
+        self.notify(f'Pinned result from {label}; units and invalid mask retained. Raw data is unchanged.')
+        if 'scores' in result:
+            self.plot_mode.setCurrentIndex(3)
+            self.draw_plot(pca_diagnostics(result, self.product_source)[0])
+
+    def refresh_product(self):
+        if self.product is not None:
+            self.show_product(self.product, self.product_source)
+
+    def figure_export(self):
+        choices = {'Current chart': self.plot_spec}
+        if self.map_spec:
+            choices['Derived map'] = self.map_spec
+        choices = {name:spec for name,spec in choices.items() if spec is not None}
+        if not choices:
+            self.notify('Display a chart or compute a map before Figure export.')
+            return
+        dialog = W.QDialog(self)
+        dialog.setWindowTitle('Figure export · SVG / PDF / PNG and source data')
+        form = W.QFormLayout(dialog)
+        selected = W.QComboBox(); selected.addItems(list(choices))
+        form.addRow('Figure', selected)
+        title = W.QLineEdit(next(iter(choices.values())).title)
+        form.addRow('Title', title)
+        selected.currentTextChanged.connect(lambda name: title.setText(choices[name].title))
+        width, height, dpi = W.QSpinBox(), W.QSpinBox(), W.QSpinBox()
+        for control, minimum, maximum, value, label in ((width,60,400,180,'Width (mm)'),
+                (height,50,400,115,'Height (mm)'), (dpi,72,1200,300,'PNG DPI')):
+            control.setRange(minimum, maximum); control.setValue(value); form.addRow(label,control)
+        form.addRow(W.QLabel('Editable vector text; map pixels rasterized. CSV / NPY / PlotSpec accompany the figures.'))
+        buttons = W.QDialogButtonBox(W.QDialogButtonBox.StandardButton.Save | W.QDialogButtonBox.StandardButton.Cancel)
+        form.addRow(buttons)
+        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject)
+        if dialog.exec() != W.QDialog.DialogCode.Accepted:
+            return
+        from dataclasses import replace
+        spec = replace(choices[selected.currentText()], title=title.text())
+        directory = self.output_dir / ('figure_' + stamp())
+        width_mm, height_mm, output_dpi = width.value(), height.value(), dpi.value()
+        self.background(lambda: export_figure_bundle(spec, directory, width_mm=width_mm,
+                        height_mm=height_mm, dpi=output_dpi),
+                        lambda path: self.notify(f'Figure and source-data bundle saved: {path}'), 'Rendering publication figure…')
 
     def set_view_link(self, enabled):
         # Two aspect constraints with different viewport sizes feed range changes
@@ -927,6 +1222,8 @@ class Workbench(W.QMainWindow):
         self.recent.append(path)
         item = W.QListWidgetItem(path.parent.name if path.name in ('frame.npy', 'manifest.json') else path.name)
         item.setData(QtCore.Qt.ItemDataRole.UserRole, str(path))
+        if not path.exists():
+            item.setText('MISSING · ' + item.text())
         if partial:
             item.setText('PARTIAL · ' + item.text())
         self.recent_list.insertItem(0, item)
@@ -935,10 +1232,31 @@ class Workbench(W.QMainWindow):
         self.notify(f'{"Partial sequence preserved" if partial else "Saved"}: {path}')
 
     def choose_output(self):
-        name = W.QFileDialog.getExistingDirectory(self, 'Choose local output folder', str(self.output_dir))
+        name = W.QFileDialog.getExistingDirectory(self, 'Choose data workspace', str(self.workspace))
         if name:
-            self.output_dir = Path(name)
-            self.output_edit.setText(name)
+            from hyperlab.paths import select_workspace
+            try:
+                self.workspace = select_workspace(name)
+                self.output_dir = self.workspace/'experiments'
+                self.output_dir.mkdir(parents=True,exist_ok=True)
+                self.output_edit.setText(str(self.output_dir))
+                self.notify(f'Workspace saved: {self.workspace}')
+            except (ValueError,OSError) as error:
+                self.notify(str(error))
+
+    def locate_recent(self):
+        item = self.recent_list.currentItem()
+        if item is None:
+            self.notify('Select a recent file first.')
+            return
+        old = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        name,_ = W.QFileDialog.getOpenFileName(self,'Locate the moved data file',str(self.workspace),
+                                              'Data (*.npy *.npz *.hdr *.json)')
+        if name:
+            item.setData(QtCore.Qt.ItemDataRole.UserRole,name)
+            item.setData(QtCore.Qt.ItemDataRole.UserRole+1,{'previous_path':old,'association':'user-selected; not byte-verified'})
+            item.setText(Path(name).name)
+            self.open_path(Path(name))
 
     def compare_recent(self):
         paths = [item.data(QtCore.Qt.ItemDataRole.UserRole) for item in self.recent_list.selectedItems()]
@@ -984,13 +1302,19 @@ class Workbench(W.QMainWindow):
                   'conditions': self.conditions.toPlainText() or 'unknown', 'registered_at': stamp(),
                   'metadata': self.cube.metadata}
         path = self.output_dir / ('reference_' + stamp() + '.json')
-        self.background(lambda: path.write_text(json_text(record), encoding='utf-8'),
+        def register():
+            from hyperlab.calibration import file_digest, applicability
+            record.update(sha256=file_digest(source), applicability=applicability(record['metadata']))
+            path.write_text(json_text(record),encoding='utf-8')
+        self.background(register,
                         lambda _: self._reference_added(record), 'Registering the reference file and conditions…')
 
     def _reference_added(self, record):
         item = W.QListWidgetItem(f"{record['kind']} · {record['label'] or Path(record['path']).parent.name}")
         item.setData(QtCore.Qt.ItemDataRole.UserRole, record)
         self.references.addItem(item)
+        if not Path(record['path']).exists():
+            item.setText('MISSING · '+item.text())
         self.notify('Reference registration saved. A label does not establish spectral calibration.')
 
     def check_references(self):
@@ -999,8 +1323,104 @@ class Workbench(W.QMainWindow):
             self.notify('Select at least two registered references.')
             return
         from hyperlab.experiments import matching_settings
+        if any(record.get('device_compatibility')=='MISMATCH' or not Path(record['path']).exists() for record in records):
+            self.notify('Reference device mismatch or missing file. Locate and check applicability before use.')
+            return
         result = matching_settings([record['metadata'] for record in records])
         self.notify(json_text(result))
+
+    def locate_reference(self):
+        item = self.references.currentItem()
+        if item is None:
+            self.notify('Select a registered reference first.')
+            return
+        record = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        name,_ = W.QFileDialog.getOpenFileName(self,'Locate reference array',str(self.workspace),'Arrays (*.npy *.npz *.hdr)')
+        if not name:
+            return
+        from hyperlab.calibration import locate_reference
+        def complete(updated):
+            item.setData(QtCore.Qt.ItemDataRole.UserRole,updated)
+            item.setText(f"{updated['kind']} · {updated['label'] or Path(name).name}")
+            self.notify(f"Reference relocated: {updated['relocation_evidence']}; previous provenance retained.")
+        self.background(lambda: locate_reference(record,name),complete,'Checking relocated reference…')
+
+    def export_reference_bundle(self):
+        records = [item.data(QtCore.Qt.ItemDataRole.UserRole) for item in self.references.selectedItems()]
+        if not records:
+            self.notify('Select the references to export. This package contains private data.')
+            return
+        from hyperlab.calibration import export_references
+        path = self.output_dir/('private_references_'+stamp()+'.zip')
+        self.background(lambda:export_references(records,path),lambda p:self.notify(f'Private reference package: {p}'),
+                        'Packaging selected private references…')
+
+    def import_reference_bundle(self):
+        name,_ = W.QFileDialog.getOpenFileName(self,'Import private reference package',str(self.workspace),'Reference package (*.zip)')
+        if not name:
+            return
+        from hyperlab.calibration import import_references
+        directory = self.workspace/'references'/stamp()
+        serial = (self.profile or {}).get('serial')
+        def complete(records):
+            for record in records:
+                self._reference_added(record)
+            self.notify('References imported. Device applicability recorded; no calibration applied.')
+        self.background(lambda:import_references(name,directory,device_serial=serial),complete,'Checking reference package…')
+
+    def support_report(self):
+        from hyperlab.support import redacted_report
+        payload = redacted_report(self.last_status)
+        dialog = W.QDialog(self); dialog.setWindowTitle('Preview redacted support report')
+        dialog.resize(650,520)
+        layout = W.QVBoxLayout(dialog)
+        text = W.QPlainTextEdit(json_text(payload)); text.setReadOnly(True); layout.addWidget(text)
+        buttons = W.QDialogButtonBox(W.QDialogButtonBox.StandardButton.Save | W.QDialogButtonBox.StandardButton.Cancel)
+        layout.addWidget(buttons); buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject)
+        if dialog.exec()==W.QDialog.DialogCode.Accepted:
+            path = self.output_dir/('support_redacted_'+stamp()+'.json')
+            path.write_text(json_text(payload),encoding='utf-8')
+            self.notify(f'Redacted report saved locally: {path}. Nothing was transmitted.')
+
+    def hardware_help(self):
+        from hyperlab import __version__
+        dialog = W.QDialog(self); dialog.setWindowTitle('HyperLab setup and support scope')
+        dialog.resize(680,540); layout = W.QVBoxLayout(dialog)
+        text = W.QTextBrowser(); text.setOpenExternalLinks(True)
+        text.setHtml(f'<h2>HyperLab {__version__}</h2><p>Research preview. Original-code license and public release are pending.</p>'
+            '<h3>1. Offline</h3><p>Open data or Load synthetic example. No camera or vendor runtime is needed.</p>'
+            '<h3>2. Image acquisition</h3><p>Windows x64, supported mvBlueFOX3 module, official USB3 Vision driver, '
+            'Balluff Impact Acquire 3.7.2 and Harvester 1.4.3. Install the vendor runtime from its official source; '
+            'an administrator approves driver installation. HyperLab does not bundle or silently install drivers.</p>'
+            '<p>Connect discovers candidates; choose the intended device when more than one is present. '
+            'A missing Python package, runtime, OS driver or device is distinct from a communication fault.</p>'
+            '<h3>3. Spectroscopy</h3><p>Requires verified FP state control and device-specific calibration. '
+            'USB-A / USB-C are connector shapes, not proof of image/control roles.</p>'
+            '<p><a href="https://assets.balluff.com/documents/DRF_957356_AA_000/Troubleshooting_Windows_USB3VisionDeviceIsNotShownOrCannotBeUsed.html">Official Balluff USB3 Vision setup guidance</a></p>')
+        layout.addWidget(text); button=self.button('Close',dialog.accept); layout.addWidget(button); dialog.exec()
+
+    def plot_recorded_rois(self):
+        if not self.sequence:
+            self.notify('Open a recorded sequence first; a static image has no time trend.')
+            return
+        from hyperlab.plots import recorded_roi_plot
+        context,sequence = self.analysis_context(),self.sequence
+        def completed(spec):
+            if context['version'] != self.analysis_version or sequence is not self.sequence:
+                self.notify('Recorded ROI definition changed; obsolete curve discarded.')
+                return
+            spec.metadata['analysis_context'] = context
+            self.draw_plot(spec)
+        self.background(lambda:recorded_roi_plot(sequence,context['rectangles'],context['names'],context['colors'],
+                        policy=context['policy']),completed,'Computing all recorded ROI samples…')
+
+    def quality_details(self):
+        payload = {'display': self.quality_label.toolTip(),
+                   'rois': self.plot_spec.record() if self.plot_spec else None}
+        dialog = W.QDialog(self); dialog.setWindowTitle('Validity and pinned ROI statistics')
+        dialog.resize(700,520); layout = W.QVBoxLayout(dialog)
+        text = W.QPlainTextEdit(json_text(payload)); text.setReadOnly(True); layout.addWidget(text)
+        layout.addWidget(self.button('Close',dialog.accept)); dialog.exec()
 
     def sequence_statistics(self):
         if not self.sequence:
@@ -1026,6 +1446,12 @@ class Workbench(W.QMainWindow):
             self.notify('Finishing the current file operation before closing.')
             return
         self.timer.stop()
+        self.roi_timer.stop()
+        from hyperlab.ui.state import save_state
+        try:
+            save_state(self)
+        except (OSError,ValueError) as error:
+            self.notify(f'Could not save workspace settings: {error}')
         if self.sequence:
             self.sequence.close()
         if self.cube is not None:
@@ -1035,8 +1461,8 @@ class Workbench(W.QMainWindow):
 
 
     def apply_roi_bounds(self, index, bounds):
-        if self.cube is None or index not in (0, 1) or index >= len(self.rois):
-            raise ValueError('Load an image and select ROI A or B first.')
+        if self.cube is None or not 0 <= index < len(self.rois) or index >= len(self.rois):
+            raise ValueError('Load an image and select an existing ROI first.')
         if len(bounds) != 4 or any(not isinstance(value, (int, np.integer)) for value in bounds):
             raise ValueError('ROI bounds must be four integer raw-pixel coordinates.')
         x0, y0, x1, y1 = (int(value) for value in bounds)
@@ -1050,7 +1476,7 @@ class Workbench(W.QMainWindow):
         return x0, y0, x1, y1
 
     def edit_roi_bounds(self):
-        if self.cube is None or len(self.rois) != 2:
+        if self.cube is None or not self.rois:
             self.notify('Load an image before editing ROI bounds.')
             return
         dialog = W.QDialog(self)
@@ -1107,25 +1533,27 @@ class Workbench(W.QMainWindow):
         form = self.panel()
         form.addWidget(W.QLabel('ROI coordinates always use raw pixels'))
         self.roi_names = []
-        for index in range(2):
-            row = W.QHBoxLayout()
-            name = W.QLineEdit(f'ROI {chr(65 + index)}')
-            self.roi_names.append(name)
-            row.addWidget(name)
-            show = W.QCheckBox('Show')
-            show.setChecked(True)
-            show.toggled.connect(lambda checked, i=index: self.rois[i].setVisible(checked) if len(self.rois) > i else None)
-            row.addWidget(show)
-            form.addLayout(row)
-        form.addWidget(self.button('Reset both ROIs', lambda: self.reset_rois(force=True)))
+        self.roi_form = W.QVBoxLayout()
+        form.addLayout(self.roi_form)
+        self._roi_row('ROI A', COLORS[0])
+        self._roi_row('ROI B', COLORS[1])
+        form.addWidget(self.button('Add ROI', lambda: self.add_roi(), 'add_roi'))
+        form.addWidget(self.button('Reset ROI geometry', lambda: self.reset_rois(force=True)))
         form.addWidget(self.button('Edit ROI bounds…', self.edit_roi_bounds, 'roi_edit_bounds'))
         self.policy = W.QComboBox()
         self.policy.addItem('Diagnostic · include saturation', 'diagnostic')
         self.policy.addItem('Quantitative · exclude known saturation', 'quantitative')
         form.addWidget(self.policy)
+        self.policy.currentIndexChanged.connect(self.roi_changed)
+        self.policy.currentIndexChanged.connect(lambda: self.render_current())
         self.shape_normalize = W.QCheckBox('L2 normalized shape')
         self.shape_normalize.setToolTip('Compare curve shape over common valid features; exports retain raw amplitudes.')
         form.addWidget(self.shape_normalize)
+        self.spatial_sd = W.QCheckBox('Show ±1 spatial SD (not CI)')
+        self.spatial_sd.setChecked(True)
+        form.addWidget(self.spatial_sd)
+        self.shape_normalize.toggled.connect(self.roi_changed)
+        self.spatial_sd.toggled.connect(self.roi_changed)
         form.addWidget(self.button('Compare ROIs', self.analyze_rois, 'roi_compare'))
         form.addWidget(self.button('Export ROI CSV + provenance', self.export_rois, 'roi_export'))
         self.analysis_buttons = {}
@@ -1142,12 +1570,28 @@ class Workbench(W.QMainWindow):
             button = self.button(label, lambda checked=False, operation=op: self.analyze(operation), op)
             self.analysis_buttons[op] = button
             form.addWidget(button)
+        self.pc_component = W.QComboBox()
+        self.pc_component.addItem('PC1 score')
+        self.pc_component.setEnabled(False)
+        self.pc_component.currentIndexChanged.connect(self.refresh_product)
+        form.addWidget(self.pc_component)
+        row = W.QHBoxLayout()
+        row.addWidget(self.button('PCA variance', lambda: self.plot_mode.setCurrentIndex(3)))
+        row.addWidget(self.button('PCA loadings', lambda: self.plot_mode.setCurrentIndex(4)))
+        form.addLayout(row)
+        self.angle_degrees = W.QCheckBox('Angle in degrees (default: rad)')
+        self.angle_degrees.toggled.connect(self.refresh_product)
+        form.addWidget(self.angle_degrees)
+        self.lock_map_limits = W.QCheckBox('Share map limits across comparisons')
+        self.lock_map_limits.setChecked(True)
+        form.addWidget(self.lock_map_limits)
         self.link_views = W.QCheckBox('Link raw / derived views')
         self.link_views.setChecked(True)
         self.link_views.toggled.connect(self.set_view_link)
         form.addWidget(self.link_views)
         form.addWidget(self.button('Export derived values + mask…', self.export_derived))
-        form.addWidget(self.button('Export display image…', self.export_display))
+        form.addWidget(self.button('Image export…', self.export_display))
+        form.addWidget(self.button('Figure export…', self.figure_export, 'figure_export'))
         self.capability_label = W.QLabel('Load data to see available analysis')
         self.capability_label.setWordWrap(True)
         form.addWidget(self.capability_label)
@@ -1173,7 +1617,11 @@ class Workbench(W.QMainWindow):
         self.references.setSelectionMode(W.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.references.setMaximumHeight(160)
         form.addWidget(self.references)
+        form.addWidget(self.button('Locate selected reference…',self.locate_reference))
+        form.addWidget(self.button('Export selected private references',self.export_reference_bundle))
+        form.addWidget(self.button('Import private reference package…',self.import_reference_bundle))
         form.addWidget(self.button('Temporal mean / SD / drift', self.sequence_statistics))
+        form.addWidget(self.button('Plot all recorded ROI samples',self.plot_recorded_rois))
         form.addWidget(W.QLabel('2 · FP states and spectral response'))
         label = W.QLabel('Control protocol and state synchronization evidence are required. Wavelength response mapping is not configured.')
         label.setWordWrap(True)
@@ -1190,8 +1638,20 @@ def launch(path=None, *, benchmark_log=None):
     app.setApplicationName('HyperLab')
     app.setStyle('Fusion')
     app.setFont(QtGui.QFont('Segoe UI', 10))
-    window = Workbench(path, benchmark_log=benchmark_log)
+    try:
+        window = Workbench(path, benchmark_log=benchmark_log)
+    except ValueError as error:
+        if 'workspace' not in str(error).lower():
+            raise
+        W.QMessageBox.warning(None,'Choose a writable workspace',str(error))
+        directory = W.QFileDialog.getExistingDirectory(None,'Choose a writable data workspace')
+        if not directory:
+            return 2
+        from hyperlab.paths import select_workspace
+        select_workspace(directory)
+        window = Workbench(path, benchmark_log=benchmark_log, workspace=directory)
     screen = app.primaryScreen().availableGeometry()
-    window.resize(min(1360, int(screen.width() * 0.95)), min(860, int(screen.height() * 0.93)))
+    if not window.config.get('ui',{}).get('geometry'):
+        window.resize(min(1360, int(screen.width() * 0.95)), min(860, int(screen.height() * 0.93)))
     window.show()
     return app.exec()

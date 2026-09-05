@@ -13,11 +13,13 @@ def emit(value):
 
 
 def run_directory(kind):
-    return Path("local") / kind / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    from .paths import workspace
+    return workspace() / kind / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="HyperLab: instrument evidence and explicit offline analysis")
+    parser.add_argument('--workspace', type=Path, help='Writable data directory, saved for later CLI/GUI launches')
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("doctor", help="Python/runtime presence; does not load camera libraries")
     probe = commands.add_parser("probe", help="Read-only Windows inventory")
@@ -55,17 +57,27 @@ def main(argv=None):
     demo = commands.add_parser("demo")
     demo.add_argument("--output", type=Path)
     demo.add_argument("--no-gui", action="store_true")
+    figure = commands.add_parser('figure-demo', help='Generate reproducible synthetic scientific figure bundles; no hardware')
+    figure.add_argument('--output', type=Path, required=True, help='New output directory')
     args = parser.parse_args(argv)
     try:
+        if args.workspace:
+            import os
+            from .paths import select_workspace
+            os.environ['HYPERLAB_WORKSPACE'] = str(select_workspace(args.workspace))
         if args.command == "doctor":
             from importlib.metadata import version, PackageNotFoundError
             dependencies = {}
-            for name in ("numpy", "matplotlib", "Pillow", "harvesters", "genicam"):
+            for name in ("numpy", "matplotlib", "Pillow", "PySide6", "pyqtgraph", "harvesters", "genicam"):
                 try:
                     dependencies[name] = version(name)
                 except PackageNotFoundError:
                     dependencies[name] = "NOT_INSTALLED"
+            from .paths import workspace, config_directory
+            from importlib.resources import files
             emit({"python": sys.version, "executable": sys.executable, "platform": platform.platform(),
+                  'workspace':str(workspace()), 'config_directory':str(config_directory()),
+                  'packaged_probe_present':files('hyperlab.resources').joinpath('Probe-Devices.ps1').is_file(),
                   "architecture": platform.machine(), "dependencies": dependencies,
                   "matlab_executable": shutil.which("matlab"), "hardware_validation": "NOT_TESTED",
                   "note": "Library presence does not establish driver or camera readiness"})
@@ -141,6 +153,9 @@ def main(argv=None):
             else:
                 from hyperlab.ui.workbench import launch
                 launch(args.path, benchmark_log=args.benchmark_log)
+        elif args.command == 'figure-demo':
+            from hyperlab.examples import figure_examples
+            emit({'data_source':'SYNTHETIC','bundles':figure_examples(args.output),'hardware_validation':'NOT_TESTED'})
         elif args.command == "demo":
             from hyperlab.io import make_synthetic_cube, save_cube
             output = args.output or run_directory("synthetic") / "demo.npy"
