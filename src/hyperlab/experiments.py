@@ -30,7 +30,7 @@ def matching_settings(metadata):
     if len(metadata) < 2:
         raise ValueError('At least two references required')
     keys = ('PixelFormat', 'ExposureTime', 'Gain', 'ExposureAuto', 'GainAuto',
-            'BalanceWhiteAuto', 'GammaEnable', 'Gamma', 'LUTEnable', 'BlackLevel')
+            'BalanceWhiteAuto', 'GammaEnable', 'Gamma', 'LUTEnable', 'BlackLevel', 'BlackLevelAuto')
     settings = [_setting_values(item) for item in metadata]
     unknown, mismatches, unavailable = [], [], []
     compared = []
@@ -64,7 +64,7 @@ def matching_settings(metadata):
     # Equal session readbacks are insufficient while an automatic mode can vary
     # frame settings. Chunk evidence can establish exposure/gain per frame.
     for automatic, chunk in (('ExposureAuto', 'ChunkExposureTime'), ('GainAuto', 'ChunkGain'),
-                             ('BalanceWhiteAuto', None)):
+                             ('BalanceWhiteAuto', None), ('BlackLevelAuto', None)):
         active = any(not _unknown(item.get(automatic)) and item[automatic] not in ('Off', False, 0)
                      for item in settings)
         if active and (chunk is None or any(_unknown((item.get('chunk_settings') or {}).get(chunk)) for item in metadata)):
@@ -135,3 +135,63 @@ def summarize_sequence(sequence, directory):
         'interpretation': 'Temporal observations; incomplete settings evidence is explicit. Not spatial SD, temperature uncertainty or material diagnosis'},
         indent=2, default=str, allow_nan=False), encoding='utf-8')
     return directory
+
+
+def compare_saved_frames(paths, rectangle=None, policy='diagnostic'):
+    """Compare two saved ROI summaries; equal geometry does not establish registration."""
+    from contextlib import ExitStack
+    from hyperlab.analysis import quality_summary
+    from hyperlab.io import load_cube
+
+    paths = list(paths)
+    if len(paths) != 2:
+        raise ValueError('Select exactly two saved frames for comparison')
+    paths = [Path(path).resolve(strict=True) for path in paths]
+    if paths[0] == paths[1]:
+        raise ValueError('Select two distinct saved frames for comparison')
+    with ExitStack() as opened:
+        cubes = [opened.enter_context(load_cube(path)) for path in paths]
+        if any(cube.metadata['data_level'] not in {'raw_frame', 'derived_frame'} for cube in cubes):
+            raise ValueError('Saved comparison requires raw_frame or derived_frame inputs')
+        if any(cube.wavelengths is not None for cube in cubes):
+            raise ValueError('Saved frame comparison does not accept a wavelength axis')
+        if cubes[0].shape[:2] != cubes[1].shape[:2]:
+            raise ValueError('Saved frames must have matching HW geometry')
+        schemas = [(cube.shape[2], tuple(cube.metadata.get('channel_labels') or ())) for cube in cubes]
+        if schemas[0] != schemas[1]:
+            raise ValueError('Saved frames must have matching channel count and channel labels')
+        h, w, _ = cubes[0].shape
+        rectangle = (0, 0, w, h) if rectangle is None else tuple(rectangle)
+        files = []
+        for path, cube in zip(paths, cubes):
+            summary = quality_summary(cube, rectangle, policy=policy)
+            # Retain provenance once per source instead of duplicating the full
+            # sidecar again inside the per-channel statistics metadata.
+            summary['per_channel']['metadata'].pop('source_provenance', None)
+            files.append({'path': str(path), 'data_level': cube.metadata['data_level'],
+                          'acquisition_source': cube.metadata.get('acquisition_source', 'unknown'),
+                          'summary': summary, 'source_provenance': dict(cube.metadata)})
+        report = {'schema_version': 1, 'operation': 'saved_frame_comparison',
+                  'paths': [str(path) for path in paths], 'rectangle': list(rectangle), 'policy': policy,
+                  'geometry_hw': [h, w],
+                  'channel_schema': {'count': schemas[0][0], 'labels': list(schemas[0][1]) or None},
+                  'registration': 'NOT_VERIFIED', 'matching_settings': matching_settings([cube.metadata for cube in cubes]),
+                  'files': files,
+                  'interpretation': 'Separate ROI summaries in each saved image. Equal geometry and matching settings do not establish spatial registration, identical illumination, material cause or spectral calibration.'}
+
+    def strict_value(value):
+        if isinstance(value, np.ndarray):
+            return strict_value(value.tolist())
+        if isinstance(value, np.generic):
+            return strict_value(value.item())
+        if isinstance(value, dict):
+            return {key: strict_value(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [strict_value(item) for item in value]
+        if isinstance(value, float) and not np.isfinite(value):
+            return None
+        return value
+
+    report = strict_value(report)
+    json.dumps(report, allow_nan=False)  # Enforce the returned strict-JSON contract.
+    return report

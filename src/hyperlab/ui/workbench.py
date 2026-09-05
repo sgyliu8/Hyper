@@ -274,9 +274,11 @@ class Workbench(W.QMainWindow):
         form.addWidget(self.quality_label)
         form.addWidget(W.QLabel('Recent saves · double-click to reopen'))
         self.recent_list = W.QListWidget()
+        self.recent_list.setSelectionMode(W.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.recent_list.setMaximumHeight(130)
         self.recent_list.itemDoubleClicked.connect(lambda item: self.open_path(Path(item.data(QtCore.Qt.ItemDataRole.UserRole))))
         form.addWidget(self.recent_list)
+        form.addWidget(self.button('Compare two saved frames', self.compare_recent))
         form.addWidget(self.button('Open output folder', lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(self.output_dir)))))
         form.addStretch()
 
@@ -938,6 +940,35 @@ class Workbench(W.QMainWindow):
             self.output_dir = Path(name)
             self.output_edit.setText(name)
 
+    def compare_recent(self):
+        paths = [item.data(QtCore.Qt.ItemDataRole.UserRole) for item in self.recent_list.selectedItems()]
+        if len(paths) != 2:
+            self.notify('Ctrl-click two saved frames in Recent saves. Sequence comparison uses temporal statistics.')
+            return
+        from hyperlab.experiments import compare_saved_frames
+        path = self.output_dir / ('saved_comparison_' + stamp() + '.json')
+        policy = self.policy.currentData()
+        def run():
+            report = compare_saved_frames(paths, policy=policy)
+            path.write_text(json_text(report), encoding='utf-8')
+            return report
+        def completed(report):
+            self.notify(f'Saved-frame comparison: {path}')
+            self.detail_text.setPlainText(json_text(report))
+            lines = [f"Whole-frame statistics · {policy}",
+                     f"Acquisition settings: {report['matching_settings']['status']}"]
+            for index, item in enumerate(report['files']):
+                stats = item['summary']['per_channel']
+                labels = stats.get('channel_labels') or [str(i) for i in range(len(stats['mean']))]
+                means = ', '.join(f'{label}: {value:.6g}' if value is not None else f'{label}: unavailable'
+                                  for label, value in zip(labels, stats['mean']))
+                lines.append(f"\n{chr(65 + index)} · {Path(item['path']).name}\nMean ({item['summary']['units']}): {means}\nSpatial SD: {stats['std']}\nValid samples: {stats['count']}")
+            lines.append('\nFrames are not registered. These are descriptive field statistics, not pixelwise change or a material diagnosis.')
+            self.comparison_dialog = W.QMessageBox(W.QMessageBox.Icon.Information, 'Saved-frame comparison',
+                                                   '\n'.join(lines), W.QMessageBox.StandardButton.Ok, self)
+            self.comparison_dialog.open()
+        self.background(run, completed, 'Comparing whole-frame statistics of two saved files…')
+
     def export_evidence(self):
         path = self.output_dir / ('session_evidence_' + stamp() + '.json')
         payload = {'profile': self.profile, 'status': self.last_status, 'display_mode': self.display_mode}
@@ -1003,6 +1034,75 @@ class Workbench(W.QMainWindow):
         event.accept()
 
 
+    def apply_roi_bounds(self, index, bounds):
+        if self.cube is None or index not in (0, 1) or index >= len(self.rois):
+            raise ValueError('Load an image and select ROI A or B first.')
+        if len(bounds) != 4 or any(not isinstance(value, (int, np.integer)) for value in bounds):
+            raise ValueError('ROI bounds must be four integer raw-pixel coordinates.')
+        x0, y0, x1, y1 = (int(value) for value in bounds)
+        h, w = self.cube.shape[:2]
+        if not (0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h):
+            raise ValueError('ROI must be nonempty: 0 ≤ x0 < x1 ≤ width and 0 ≤ y0 < y1 ≤ height.')
+        roi = self.rois[index]
+        roi.setPos((x0, y0), update=False)
+        roi.setSize((x1 - x0, y1 - y0))
+        self.notify(f'{self.roi_names[index].text()}: raw bounds ({x0}, {y0}, {x1}, {y1}).')
+        return x0, y0, x1, y1
+
+    def edit_roi_bounds(self):
+        if self.cube is None or len(self.rois) != 2:
+            self.notify('Load an image before editing ROI bounds.')
+            return
+        dialog = W.QDialog(self)
+        dialog.setWindowTitle('Edit ROI bounds · raw pixels')
+        dialog.setObjectName('roi_bounds_dialog')
+        form = W.QFormLayout(dialog)
+        target = W.QComboBox()
+        target.setObjectName('roi_bounds_target')
+        target.addItems([f'{chr(65 + index)} · {name.text()}' for index, name in enumerate(self.roi_names)])
+        form.addRow('ROI', target)
+        h, w = self.cube.shape[:2]
+        controls = []
+        for name, minimum, maximum in (('x0', 0, w - 1), ('y0', 0, h - 1), ('x1', 1, w), ('y1', 1, h)):
+            control = W.QSpinBox()
+            control.setObjectName('roi_bound_' + name)
+            control.setRange(minimum, maximum)
+            controls.append(control)
+            form.addRow(name, control)
+        note = W.QLabel('Half-open raw pixels: x0 ≤ x < x1 and y0 ≤ y < y1.')
+        note.setWordWrap(True)
+        form.addRow(note)
+        buttons = W.QDialogButtonBox(W.QDialogButtonBox.StandardButton.Ok | W.QDialogButtonBox.StandardButton.Cancel)
+        form.addRow(buttons)
+
+        def validate():
+            x0, y0, x1, y1 = (control.value() for control in controls)
+            valid = x0 < x1 and y0 < y1
+            buttons.button(W.QDialogButtonBox.StandardButton.Ok).setEnabled(valid)
+            note.setText('Half-open raw pixels: x0 ≤ x < x1 and y0 ≤ y < y1.' if valid
+                         else 'Choose nonempty bounds: x0 < x1 and y0 < y1.')
+
+        def load_bounds(index):
+            for control, value in zip(controls, self.rectangles()[index]):
+                control.setValue(value)
+            validate()
+
+        def accept():
+            try:
+                self.apply_roi_bounds(target.currentIndex(), tuple(control.value() for control in controls))
+            except ValueError as error:
+                note.setText(str(error))
+            else:
+                dialog.accept()
+
+        for control in controls:
+            control.valueChanged.connect(validate)
+        target.currentIndexChanged.connect(load_bounds)
+        buttons.accepted.connect(accept)
+        buttons.rejected.connect(dialog.reject)
+        load_bounds(0)
+        dialog.exec()
+
     def _analysis_panel(self):
         form = self.panel()
         form.addWidget(W.QLabel('ROI coordinates always use raw pixels'))
@@ -1018,6 +1118,7 @@ class Workbench(W.QMainWindow):
             row.addWidget(show)
             form.addLayout(row)
         form.addWidget(self.button('Reset both ROIs', lambda: self.reset_rois(force=True)))
+        form.addWidget(self.button('Edit ROI bounds…', self.edit_roi_bounds, 'roi_edit_bounds'))
         self.policy = W.QComboBox()
         self.policy.addItem('Diagnostic · include saturation', 'diagnostic')
         self.policy.addItem('Quantitative · exclude known saturation', 'quantitative')

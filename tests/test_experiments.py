@@ -15,7 +15,7 @@ def metadata():
             "acquisition_source": "SYNTHETIC", "data_source": "SYNTHETIC", "valid": True,
             "readback_settings": {"PixelFormat": "RGB8", "ExposureTime": 1000, "Gain": 0,
                 "ExposureAuto": "Off", "GainAuto": "Off", "BalanceWhiteAuto": "Off",
-                "GammaEnable": False, "Gamma": 1, "LUTEnable": False, "BlackLevel": 0}}
+                "GammaEnable": False, "Gamma": 1, "LUTEnable": False, "BlackLevel": 0, "BlackLevelAuto": "Off"}}
 
 
 def test_matching_uses_actual_identity_without_required_device_alias():
@@ -56,6 +56,18 @@ def test_active_auto_needs_per_frame_evidence_and_unknown_cannot_hide_mismatch()
     result = matching_settings(records)
     assert result["status"] == "MISMATCH"
     assert "ExposureTime" in result["mismatches"] and "ExposureTime" in result["unknown"]
+
+
+def test_black_level_auto_same_continuous_is_not_frozen_match():
+    first, second = metadata(), metadata()
+    for item in (first, second):
+        item['readback_settings']['BlackLevelAuto'] = 'Continuous'
+    result = matching_settings([first, second])
+    assert result['status'] == 'UNKNOWN'
+    assert 'BlackLevelAuto: active without per-frame evidence' in result['unknown']
+    second['readback_settings']['BlackLevelAuto'] = 'Off'
+    result = matching_settings([first, second])
+    assert result['status'] == 'MISMATCH' and 'BlackLevelAuto' in result['mismatches']
 
 
 class SyntheticSequence:
