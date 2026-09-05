@@ -8,7 +8,8 @@ import sys
 
 
 def emit(value):
-    print(json.dumps(value, indent=2, ensure_ascii=False, default=str))
+    print(json.dumps(value, indent=2, ensure_ascii=False,
+                     default=lambda item: item.tolist() if hasattr(item, 'tolist') else str(item)))
 
 
 def run_directory(kind):
@@ -39,8 +40,18 @@ def main(argv=None):
     inspect = commands.add_parser("inspect")
     inspect.add_argument("path", type=Path)
     inspect.add_argument("--axis-order", help="Explicit NPY/NPZ mapping, e.g. HWK or KHW")
+    analyze = commands.add_parser("analyze", help="Offline numeric analysis with shared semantic/quality gates")
+    analyze.add_argument("path", type=Path)
+    analyze.add_argument("operation", choices=("capabilities", "roi", "quality", "cfa", "pca", "angle", "difference", "ratio"))
+    analyze.add_argument("--axis-order")
+    analyze.add_argument("--roi", type=int, nargs=4, metavar=('X0','Y0','X1','Y1'))
+    analyze.add_argument("--bands", type=int, nargs='+')
+    analyze.add_argument("--policy", choices=("diagnostic", "quantitative"), default="diagnostic")
+    analyze.add_argument("--output", type=Path)
     app = commands.add_parser("app")
     app.add_argument("path", nargs="?", type=Path)
+    app.add_argument("--legacy", action="store_true", help="Explicit temporary Tk fallback")
+    app.add_argument("--benchmark-log", type=Path, help="Local GUI telemetry JSONL; preview pixels are not recorded")
     demo = commands.add_parser("demo")
     demo.add_argument("--output", type=Path)
     demo.add_argument("--no-gui", action="store_true")
@@ -94,9 +105,42 @@ def main(argv=None):
             cube = load_cube(args.path, axis_order=args.axis_order)
             emit({"shape": cube.shape, "dtype": str(cube.data.dtype),
                   "logical_bytes": int(cube.data.size * cube.data.dtype.itemsize), "metadata": cube.metadata})
+        elif args.command == "analyze":
+            from hyperlab.io import load_cube
+            from hyperlab.analysis import (capabilities, roi_statistics, quality_summary, cfa_statistics,
+                pca, spectral_angle, difference, ratio, export_roi_csv, export_product)
+            with load_cube(args.path, axis_order=args.axis_order) as cube:
+                rect = tuple(args.roi) if args.roi else (0, 0, cube.shape[1], cube.shape[0])
+                if args.operation == "capabilities":
+                    emit(capabilities(cube))
+                elif args.operation in ("roi", "quality", "cfa"):
+                    function = {"roi":roi_statistics, "quality":quality_summary, "cfa":cfa_statistics}[args.operation]
+                    result = function(cube, rect, policy=args.policy)
+                    if args.operation == "roi" and args.output:
+                        export_roi_csv(result, args.output)
+                    emit(result)
+                else:
+                    if args.output is None:
+                        raise ValueError("Numeric map analysis requires --output (.npy or .hdr)")
+                    if args.operation == "pca":
+                        result = pca(cube, min(3, len(args.bands or capabilities(cube)['feature_indices'])),
+                                     bands=args.bands, policy=args.policy)
+                    elif args.operation == "angle":
+                        reference = roi_statistics(cube, rect, policy=args.policy)['mean']
+                        result = spectral_angle(cube, reference, bands=args.bands, policy=args.policy)
+                    else:
+                        if args.bands is None or len(args.bands) != 2:
+                            raise ValueError("Difference/ratio require exactly two --bands indices")
+                        result = (difference if args.operation == "difference" else ratio)(cube, *args.bands, policy=args.policy)
+                    export_product(result, args.output, source_cube=cube)
+                    emit({'output':str(args.output), 'metadata':result['metadata']})
         elif args.command == "app":
-            from hyperlab.ui.app import launch
-            launch(args.path)
+            if args.legacy:
+                from hyperlab.ui.app import launch
+                launch(args.path)
+            else:
+                from hyperlab.ui.workbench import launch
+                launch(args.path, benchmark_log=args.benchmark_log)
         elif args.command == "demo":
             from hyperlab.io import make_synthetic_cube, save_cube
             output = args.output or run_directory("synthetic") / "demo.npy"
@@ -104,7 +148,7 @@ def main(argv=None):
             save_cube(make_synthetic_cube(), output)
             emit({"data_source": "SYNTHETIC", "path": output.resolve(), "hardware_validation": "NOT_TESTED"})
             if not args.no_gui:
-                from hyperlab.ui.app import launch
+                from hyperlab.ui.workbench import launch
                 launch(output)
     except (ValueError, RuntimeError, OSError, ImportError) as exc:
         print(str(exc), file=sys.stderr)

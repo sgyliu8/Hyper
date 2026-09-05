@@ -41,7 +41,10 @@ def run_inventory(output: str | Path | None = None) -> Path:
     command = [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)]
     if output is not None:
         command.extend(["-OutputDirectory", str(Path(output).resolve())])
-    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+    environment = {key: value for key, value in os.environ.items()
+                   if key.upper() != "PSMODULEPATH" or Path(shell).stem.lower() == "pwsh"}
+    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
+                            env=environment, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if result.returncode:
         raise RuntimeError(f"Read-only inventory failed: {result.stderr.strip()}")
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]

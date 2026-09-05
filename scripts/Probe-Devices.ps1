@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$OutputDirectory)
+param([string]$OutputDirectory, [switch]$IncludeRuntimeArtifacts)
 
 # Inventory only: no device handles, capture APIs, serial ports, or driver changes.
 $ErrorActionPreference = 'Stop'
@@ -129,7 +129,6 @@ $software = @(foreach ($registryRoot in $uninstallRoots) {
     }
 })
 $searchRoots = [Collections.Generic.List[string]]::new()
-$searchRoots.Add((Join-Path (Split-Path $PSScriptRoot -Parent) 'local'))
 foreach ($entry in $software) {
     if ($entry.install_location -ne 'unknown' -and (Test-ScopedRoot $entry.install_location) -and (Test-Path -LiteralPath $entry.install_location -PathType Container)) {
         $resolved = [IO.Path]::GetFullPath($entry.install_location).TrimEnd('\')
@@ -156,7 +155,8 @@ foreach ($variable in @('GENICAM_GENTL32_PATH', 'GENICAM_GENTL64_PATH')) {
 $searchRoots = @($searchRoots | Sort-Object -Unique)
 $extensions = @('.cti', '.dll', '.exe', '.msi', '.inf', '.h', '.hpp', '.xml', '.ini', '.json', '.cal', '.lut', '.hdr', '.dat', '.log', '.txt')
 $artifacts = @(foreach ($directory in $searchRoots) {
-    foreach ($file in @(Get-ChildItem -LiteralPath $directory -File -Recurse -ErrorAction SilentlyContinue | Where-Object {
+    foreach ($file in @(Get-ChildItem -LiteralPath $directory -File -Recurse:$IncludeRuntimeArtifacts -ErrorAction SilentlyContinue | Where-Object {
+        ($IncludeRuntimeArtifacts -or $_.Extension -eq '.cti') -and
         $_.Extension.ToLowerInvariant() -in $extensions -and $_.FullName -notlike '*\local\diagnostics\*'
     })) {
         [ordered]@{ path = $file.FullName; bytes = $file.Length; extension = $file.Extension; architecture = (Get-PEArchitecture $file.FullName); executed = $false }
@@ -173,6 +173,7 @@ $snapshot = [ordered]@{
     scope = [ordered]@{
         device_filter = 'All present USB/USBSTOR instance IDs and Camera/Image/Ports classes'
         file_search_roots = $searchRoots; software_source = 'Uninstall registry only; no Win32_Product'
+        recursive_runtime_artifacts = [bool]$IncludeRuntimeArtifacts
         driver_files = 'Associated INF/service paths recorded; no driver DLL is loaded'
         forbidden_actions_performed = @(); serial_ports_opened = $false; camera_streams_opened = $false
         full_disk_search = $false; binaries_executed = $false
