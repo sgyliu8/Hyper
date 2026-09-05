@@ -145,8 +145,24 @@ def _sidecar(path):
     return path.with_suffix(path.suffix + ".json")
 
 
+def _record_loaded_source(meta, path):
+    """Current file identity is separate from earlier, unverified declarations."""
+    actual = str(path.resolve())
+    declared = meta.get("source_file")
+    if declared and declared != actual:
+        history = list(meta.get("declared_source_files") or [])
+        if declared not in history:
+            history.append(declared)
+        meta["declared_source_files"] = history
+    meta["source_file"] = actual
+
+
 def load_cube(path, axis_order=None, *, dataset=None, binary_path=None):
-    """Load ENVI, NPY+JSON or NPZ; no axes or wavelength units are guessed."""
+    """Load ENVI/NPY/NPZ with explicit axes and current opened source_file.
+
+    Stored source_file declarations remain under declared_source_files. Loading
+    does not rewrite the original array, header or sidecar.
+    """
     path = Path(path)
     suffix = path.suffix.lower()
     if suffix == ".hdr":
@@ -200,7 +216,7 @@ def load_cube(path, axis_order=None, *, dataset=None, binary_path=None):
         for field in ("band_validity", "fwhm", "scan_states", "frame_ids", "timestamps"):
             if isinstance(meta.get(field), list):
                 meta[field] = meta[field][:count]
-    meta.setdefault("source_file", str(path.resolve()))
+    _record_loaded_source(meta, path)
     meta["display_mode"] = "REPLAY"
     return Cube(mapped, meta, mask)
 
@@ -291,7 +307,7 @@ def _load_envi(path, binary_path=None):
         if "data units" in hdr and saved.get("units", hdr["data units"]) != hdr["data units"]:
             raise ValueError("ENVI header and sidecar data units disagree")
         meta.update({key: value for key, value in saved.items() if key not in
-                     {"wavelengths", "wavelength_units", "envi_header", "source_file"}})
+                     {"wavelengths", "wavelength_units", "envi_header"}})
         meta["envi_sidecar_wavelength_units_original"] = saved_units
         if saved.get("valid_mask_file"):
             mask = np.load(path.parent / saved["valid_mask_file"], mmap_mode="r", allow_pickle=False)
@@ -309,6 +325,7 @@ def _load_envi(path, binary_path=None):
         meta["band_validity"] = good
     if "fwhm" in hdr:
         meta["fwhm"] = [float(x) for x in re.split(r"[,\s]+", hdr["fwhm"]) if x]
+    _record_loaded_source(meta, path)
     meta["display_mode"] = "REPLAY"
     data = np.memmap(binary, mode="r", dtype=dtype, offset=offset, shape=shape).transpose(axes)
     try:

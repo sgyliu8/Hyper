@@ -68,3 +68,47 @@ def test_time_axis_is_not_spectral_and_khw_prefix_remains_mapped(tmp_path):
     with load_cube(path) as cube:
         assert cube.shape == (2, 3, 2) and isinstance(cube.data, np.memmap)
         assert cube.metadata["scan_states"] == [0, 1]
+
+
+@pytest.mark.parametrize('suffix', ['.npy', '.npz', '.hdr'])
+def test_loaded_copy_owns_current_path_and_retains_declared_source_chain(tmp_path, suffix):
+    original = tmp_path / 'original.npy'
+    copy = tmp_path / ('copy' + suffix)
+    next_copy = tmp_path / ('copy-again' + suffix)
+    data = np.arange(12, dtype=np.uint16).reshape(2, 3, 2)
+    provenance = {'acquisition': {'note': 'synthetic fixture'}}
+    save_cube(Cube(data, {'source_provenance': provenance}), original)
+    with load_cube(original) as first:
+        save_cube(first, copy)
+    source_receipt = copy if suffix == '.npz' else copy.with_suffix(suffix + '.json')
+    immutable_before = source_receipt.read_bytes()
+    with load_cube(copy) as reopened:
+        assert reopened.metadata['source_file'] == str(copy.resolve())
+        assert reopened.metadata['declared_source_files'] == [str(original.resolve())]
+        assert reopened.metadata['source_provenance'] == provenance
+        np.testing.assert_array_equal(reopened.data, data)
+        save_cube(reopened, next_copy)
+    assert source_receipt.read_bytes() == immutable_before
+    with load_cube(next_copy) as reopened:
+        assert reopened.metadata['source_file'] == str(next_copy.resolve())
+        assert reopened.metadata['declared_source_files'] == [str(original.resolve()), str(copy.resolve())]
+
+
+def test_register_reference_uses_opened_copy_path(tmp_path):
+    # Invoke the method with simple controls; no QApplication or native window.
+    from types import SimpleNamespace
+    from hyperlab.ui.workbench import Workbench
+    original, copy = tmp_path / 'original.npy', tmp_path / 'chosen-copy.npy'
+    save_cube(Cube(np.ones((2, 3, 1))), original)
+    with load_cube(original) as first:
+        save_cube(first, copy)
+    registered = []
+    with load_cube(copy) as reopened:
+        fake = SimpleNamespace(cube=reopened, output_dir=tmp_path,
+            reference_kind=SimpleNamespace(currentText=lambda: 'dark'),
+            scene_label=SimpleNamespace(text=lambda: 'synthetic reference'),
+            conditions=SimpleNamespace(toPlainText=lambda: 'synthetic conditions'),
+            background=lambda run, done, message: done(run()), _reference_added=registered.append)
+        Workbench.register_reference(fake)
+    assert registered[0]['path'] == str(copy.resolve())
+    assert registered[0]['metadata']['declared_source_files'] == [str(original.resolve())]

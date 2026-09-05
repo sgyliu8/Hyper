@@ -203,3 +203,44 @@ def test_new_sequence_does_not_inherit_source_reopen_success(tmp_path):
     with SequenceWriter(tmp_path / "new", (2, 3), np.uint16, 2,
                         metadata={"save_reopen_verified": True}) as writer:
         assert not writer.meta["save_reopen_verified"]
+
+
+@pytest.mark.parametrize('color', [False, True])
+@pytest.mark.parametrize('saver', ['save_frame', 'save_cube'])
+def test_selected_time_frame_can_save_and_reopen_as_frame(tmp_path, color, saver):
+    from hyperlab.io import Cube, load_cube, save_cube
+    shape = (3, 4, 3) if color else (3, 4)
+    dtype = np.uint8 if color else np.uint16
+    pixel_format = 'RGB8' if color else 'BayerRG12'
+    initial = {'data_source': 'SYNTHETIC', 'acquisition_source': 'SYNTHETIC',
+               'pixel_format': pixel_format, 'channel_labels': ['R', 'G', 'B'] if color else None,
+               'effective_bits': 8 if color else 12, 'units': 'DN'}
+    with SequenceWriter(tmp_path / 'container', shape, dtype, 9, metadata=initial) as writer:
+        # Five durable frames in a deliberately partial nine-frame recording.
+        for index in range(5):
+            writer.append(np.full(shape, index + 1, dtype),
+                          {'session_id': 'fixture', 'sequence': index, 'frame_id': index,
+                           'valid': True, 'pixel_format': pixel_format})
+    with load_sequence(writer.path) as sequence:
+        selected = sequence.frame(3)
+    for key in ('frame_count', 'expected_frames', 'partial', 'completed', 'status', 'frames', 'time_origin'):
+        assert key not in selected.metadata
+    source = selected.metadata['sequence_source']
+    assert source['time_index'] == 3 and source['frame_records_count'] == 5
+    assert source['container_provenance']['frame_count'] == 5
+    assert source['container_provenance']['expected_frames'] == 9
+    assert source['container_provenance']['partial'] is True
+    assert 'frames' not in source['container_provenance']
+    with open(source['manifest_path'], encoding='utf-8') as manifest:
+        assert json.load(manifest)['frame_count'] == 5
+    if saver == 'save_frame':
+        saved = save_frame(tmp_path / 'selected', selected)
+    else:
+        saved = tmp_path / 'selected.npy'
+        cube = Cube(selected.data if color else selected.data[..., None], dict(selected.metadata))
+        save_cube(cube, saved)
+    with load_cube(saved) as reopened:
+        assert reopened.metadata['data_level'] == 'raw_frame'
+        assert reopened.shape == (3, 4, 3 if color else 1)
+        assert np.all(reopened.data == 4)
+        assert reopened.metadata['sequence_source']['container_provenance']['partial'] is True

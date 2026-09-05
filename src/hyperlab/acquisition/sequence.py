@@ -186,12 +186,28 @@ class Sequence:
         index %= self.frame_count
         record = self.metadata["frames"][index]
         metadata = dict(self.metadata)
-        metadata.pop("frames", None)
-        metadata.update(record, data_level="raw_frame", display_mode="REPLAY",
+        metadata.update(record)
+        container_fields = ("frames", "frame_count", "expected_frames", "completed", "partial", "status",
+                            "started_at", "ended_at", "error", "stopped", "time_units", "time_origin",
+                            "save_reopen_verified", "reopen_verified_indices", "writer_error", "writer_overflow",
+                            "writer_capacity", "accepted_frames", "acquired_frames", "recording_budget_bytes",
+                            "free_bytes_at_start", "duration_limit_s", "failed_frame", "failed_transport_payload",
+                            "failed_payload_write_error", "finalization_error", "index")
+        for key in container_fields:
+            metadata.pop(key, None)
+        provenance = dict(self.metadata)
+        records = provenance.pop("frames")
+        # The immutable manifest retains the complete record list. Repeating it
+        # in every selected Frame would make a T-frame summary retain O(T²)
+        # metadata, although only one frame's pixels are accumulated at a time.
+        source = {"path": str(self.path), "manifest_path": str(self.path.with_suffix(".npy.json")),
+                  "time_index": index, "axis_kind": "time", "frame_records_count": len(records),
+                  "container_provenance": provenance}
+        metadata.update(data_level="raw_frame", display_mode="REPLAY",
                         axis_order="HWC" if self.array.ndim == 4 else "HW",
                         axis_kind="color_channel" if self.array.ndim == 4 else "sensor_plane",
                         axis_names=["y", "x"] + (["color_channel"] if self.array.ndim == 4 else []),
-                        sequence_source={"path": str(self.path), "time_index": index, "axis_kind": "time"},
+                        sequence_source=source,
                         shape=list(self.array.shape[1:]))
         # Independent ownership: the Frame stays valid after this file is closed.
         return Frame(np.array(self.array[index], copy=True), metadata)
