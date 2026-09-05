@@ -11,13 +11,24 @@ improves native event polling/display. Its source/package/test results and all
 normal camera releases are tracked in ROI_LIVE_FIX.md and ignored local evidence.
 H1 has new bounded imaging evidence; long-duration/recovery qualification and
 H2–H4 are still outstanding. The historical gate table below is not current H1.
-The final 0.3.1 package (source e809135) passed 229 offline tests and its own
+The earlier 0.3.1 package (source e809135) passed 229 offline tests and its own
 1,803-frame native imaging check, 20/20 recording, real ROI/figure export and normal
-settings restoration/release. The delivered window shows actual frame 1261 with
-ROI plots in REPLAY. The earlier e06345b 2,512-frame run remains separate evidence.
+settings restoration/release. Its actual frame 1261 ROI check remains evidence.
+The earlier e06345b 2,512-frame run remains separate evidence.
 The later owner-selected heatmap style adds a white map background, blue-white-red
 PCA/difference display, grey invalid layer/key and readable unscaled colorbar.
 It changes presentation only; the real-session receipts above remain unchanged.
+
+The current package is 0.3.1 from source 3df0041, with 234 offline tests passing
+and successful push/PR CI. The later real RGB session captured 6,437 frames,
+zero device gaps/timeouts, and normally restored/released the camera. A 300-frame
+recording attempt failed on writer overflow (64 persisted, one rejected); a
+separate confirmed 20-frame recording passed. Preserve both outcomes. Native
+ROI/L2 and R−G exports from actual frames 3321 and 912 match independent NumPy
+checks. The final executable displays frame 912, R−G and ROI curves in REPLAY
+with LIVE origin. Full-rate RGB writing and the observed 2.56 fps RGB display
+remain performance limitations. Recording failures now retain the camera's
+connection label, and maps use the recorded RGB/BGR channel names.
 
 Baseline: `feature/live-workbench-v2@2d9083533a2e367e6543748f97753da02b1a0713`.
 Working branch: `feature/scientific-workbench-portable-v3`.

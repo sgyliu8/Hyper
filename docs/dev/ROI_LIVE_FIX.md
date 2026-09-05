@@ -216,3 +216,50 @@ classifies connection faults only for camera error-state events, while retaining
 recording/snapshot errors and partial files visibly. Difference/ratio titles now
 use evidenced channel names, including BGR order, and retain numerical indices
 in provenance. The revised offline suite passed 234 tests in 49.40 s.
+
+The RGB session captured 6,437 frames with zero device frame-ID gaps or fetch
+timeouts, then normally stopped, restored settings and released the camera.
+All open/configure/start/stop/destroy phases returned within their deadlines.
+The eligible 77 LIVE streaming samples (22:52:44–22:54:39 UTC, 5 September) had
+median capture 34.04 fps and display 2.56 fps. These RGB display numbers are
+separate from the faster Bayer display results above. Full-frame RGB display
+cost and sustained writer throughput remain performance limitations.
+
+Independent NumPy checks passed for actual 5 ms frame 3321: all nine ROI means
+and population SDs, L2 normalization, native CSV values, every signed R−G pixel
+and its validity mask. Both the complete 20-frame sequence and the failed
+64-frame valid prefix reopened correctly. The source-frame hash did not change.
+
+## Current local package and real presentation
+
+The delivered package is built from `3df0041c5e682df85ead502363f072b7ea54f62c`.
+Its changes after the RGB capture affect error labels and evidenced channel
+names only; acquisition, masks and numerical calculations are unchanged.
+
+| Artifact | Bytes | SHA-256 |
+|---|---:|---|
+| HyperLab-0.3.1-3df0041c-win-x64.zip | 84,120,036 | 9dbbc6186d18e68b4f98e7cd77bab6cf1deb428e6d87619ed8a9f90e00c33178 |
+| hyperlab-0.3.1-py3-none-any.whl | 120,918 | 507db4b6b9277a2ad28117ea01c6954f0b7e19cd06894a1828a88c3431d91060 |
+
+The fresh extracted ZIP passed doctor/offline-smoke and native startup/close
+from an unrelated directory, with all 729 installation files unchanged and no
+vendor driver or CTI included. This is a same-host installation check, not a
+clean-PC or NTFS write-denial qualification. Exact source-head
+[push CI](https://github.com/sgyliu8/Hyper/actions/runs/33997534649) and
+[PR CI](https://github.com/sgyliu8/Hyper/actions/runs/33997536944) both completed
+Linux offline and Windows independent-wheel jobs successfully.
+
+Native inspection of this exact executable reopened actual RGB frame 912 at
+20 ms and exported its ROI and R−G figures. All nine ROI values, SDs and L2
+values match independent NumPy calculations. All 2,354,176 map pixels were
+checked: 2,282,348 valid values and 71,828 excluded saturated pixels, with
+signed limits −82 to +82 DN. The title/colorbar say R−G, the invalid key is
+grey, and actual zero remains distinct from invalid NaN. The raw file remains
+unchanged. The final window displays this real scene, its map and ROI curves
+in REPLAY with LIVE origin; no synthetic dataset is displayed.
+
+Private data, figures and receipts stay under the ignored
+`local/diagnostics/roi-live-fix-20260905` directory. The complete record includes
+the initial writer failure and verification-helper CSV-header correction.
+The local package is in `local/distribution/real-scene-0.3.1`. Public release
+and the original-code license remain pending; H2–H4 are not established by RGB.

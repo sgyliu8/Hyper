@@ -15,6 +15,8 @@
 - Export single-plane distribution counts, bin edges and densities with figures.
 - Match PCA/difference maps to white publication figures, with blue-white-red
   scales, readable numerical colorbars and a separate grey invalid-pixel layer.
+- Label difference/ratio maps with recorded RGB/BGR channel names. Keep recording
+  and snapshot errors visible without misreporting a healthy camera connection.
 
 ## 0.3.0 — research preview, 2026-09-05
 
