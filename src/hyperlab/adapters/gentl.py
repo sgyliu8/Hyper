@@ -316,9 +316,9 @@ class GenTLBackend:
 
     def start(self):
         self._owner()
-        # Bound each native wait; Harvester's synchronous retry loop otherwise
-        # repeatedly reacquires the GIL while the UI processes NumPy arrays.
-        self.camera.timeout_period_on_update_event_data_call = 1
+        # GenTL defines zero as an immediate event check. Even a 1 ms Windows
+        # native wait can starve UI NumPy work; Python owns the deadline/yield.
+        self.camera.timeout_period_on_update_event_data_call = 0
         self.start_attempted = True  # Start can partially acquire resources before raising.
         self.camera.start(run_as_thread=False)
 
@@ -328,7 +328,7 @@ class GenTLBackend:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError('No camera buffer within the fetch deadline')
-            buffer = self.camera.try_fetch(timeout=min(.003, remaining))
+            buffer = self.camera.try_fetch(timeout=min(.001, remaining))
             if buffer is not None:
                 return buffer
             # Cooperatively release Python between finite native polls.

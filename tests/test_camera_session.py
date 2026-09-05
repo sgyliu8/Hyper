@@ -119,6 +119,7 @@ class FakeCamera:
     def start(self, **kwargs):
         self.events.append("start")
         assert kwargs == {"run_as_thread": False}
+        assert self.timeout_period_on_update_event_data_call == 0
         if "start" in self.faults:
             raise RuntimeError("start primary")
 

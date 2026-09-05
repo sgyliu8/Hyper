@@ -74,10 +74,20 @@ bounded, normally released diagnostic compared Harvester native event waits of
 1 and 5 ms; neither resolved the synchronous retry loop's contention. Replaying
 the exact frame without acquisition took about 46 ms including offscreen paint,
 whereas image selection during acquisition took about 259 ms. The adapter now
-polls the public try_fetch API for at most 3 ms, yielding Python for 1 ms between
+polls the public try_fetch API for at most 1 ms, yielding Python for 1 ms between
 empty polls while retaining the overall fetch deadline and transport errors.
 It retains one camera owner and returns/requeues each buffer exactly as before.
 The chart reuses the image's validity selection instead of recomputing it.
 Tests cover silence/deadline, later buffer delivery, transport failure and repeated
 density redraw. The complete revised suite passed 228 tests in 21.40 s.
 Final native performance and package results follow after the exact-code rebuild.
+
+The intermediate 1 ms native wait candidate still displayed about 3 fps. A
+second bounded diagnostic compared 1 ms and nonblocking native event checks in
+one normally released session. The same image-selection workload improved from
+47 to 91 processed frames per ten-second phase, with capture staying about 20 fps
+and zero device gaps/timeouts. The final adapter uses zero for the native event
+check, as specified by [GenTL 1.6, EventGetData, page 124](https://www.emva.org/wp-content/uploads/GenICam_GenTL_1_6.pdf),
+and retains a finite Python deadline/yield. No device node or camera setting is
+changed by that host polling policy. Diagnostic frame-processing rates exclude
+Qt painting; final native UI rates are reported separately.

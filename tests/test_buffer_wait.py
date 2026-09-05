@@ -17,7 +17,7 @@ def test_buffer_wait_bounds_silence_and_does_not_swallow_transport_failure():
     with pytest.raises(TimeoutError, match='fetch deadline'):
         backend._wait_for_buffer(.025)
     assert .025 <= time.monotonic()-start < .5
-    assert polls and max(polls) <= .003
+    assert polls and max(polls) <= .001
 
     def broken(*, timeout):
         raise RuntimeError('device disconnected')
