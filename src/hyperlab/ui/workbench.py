@@ -389,7 +389,7 @@ class Workbench(W.QMainWindow):
         self.quality_label = W.QLabel('Quality: —')
         self.quality_label.setWordWrap(True)
         form.addWidget(self.quality_label)
-        form.addWidget(self.button('View quality / ROI counts…', self.quality_details))
+        form.addWidget(self.button('Frame quality / readiness…', self.quality_details))
         form.addWidget(W.QLabel('Recent saves · double-click to reopen'))
         self.recent_list = W.QListWidget()
         self.recent_list.setSelectionMode(W.QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -455,6 +455,7 @@ class Workbench(W.QMainWindow):
                       for i,p in enumerate(profiles)]
             name,ok = W.QInputDialog.getItem(self,'Select imaging device','Discovered supported cameras',labels,0,False)
             if not ok:
+                self.notify('Device selection cancelled.')
                 return
             selected = profiles[labels.index(name)]
         if self.profile and any(self.profile.get(key)!=selected.get(key) for key in ('serial','name','cti')):
@@ -500,6 +501,7 @@ class Workbench(W.QMainWindow):
             self.map_tools.hide()
             self.brush_overlay.clear(); self.brush_mask_overlay.clear()
             self.map_spec = self.plot_spec = None
+            self.map_limits_note.setText('Colour limits: no map')
             self.plot_source = self.roi_source = None
             self.roi_result_context = None
             self.science_result = None
@@ -801,6 +803,7 @@ class Workbench(W.QMainWindow):
             self.product = None
             self.product_source = None
             self.map_spec = None
+            self.map_limits_note.setText('Colour limits: no map')
             self.right_spec = None
             self.map_distributions = None
             self.map_brushes = []
@@ -1482,6 +1485,7 @@ class Workbench(W.QMainWindow):
         enabled = [i for i, original in enumerate(included) if context['visible'][original]]
         if not enabled:
             self.draw_plot(PlotSpec('lines','No visible ROI','Index','Mean'))
+            self.notify('ROI results ready; all included ROIs are hidden. Numeric results remain available in Results and Export.')
             return
         spec = roi_plot(results, [context['names'][i] for i in included],
                         [context['colors'][i] for i in included], source=context['source'],
@@ -1868,6 +1872,7 @@ class Workbench(W.QMainWindow):
                     self.brush_low.setValue(low); self.brush_high.setValue(high); self.apply_map_brush()
                 self.brush_region.sigRegionChangeFinished.connect(changed)
         chart.enableAutoRange(); self.chart_row.setSizes([1,1]); self.vertical.setSizes([440,300])
+        self.notify(f'Right plot ready: {spec.title}')
 
     def update_right_task(self):
         self._right_request += 1
@@ -2368,6 +2373,7 @@ class Workbench(W.QMainWindow):
             self._completed_source = cube
             self.draw_plot(spec)
             self._completed_source = None
+            self.notify(f'Recorded ROI trace complete · {sequence.frame_count} persisted frames; source identities and sample counts retained.')
         from hyperlab.experiment_metadata import compute_pinned
         self.roi_timer.stop()
         self.background(lambda:compute_pinned(cube, lambda:recorded_roi_plot(sequence,[context['regions'][i] for i in indices],
@@ -2393,6 +2399,8 @@ class Workbench(W.QMainWindow):
             report, fingerprint = payload
             self.last_readiness = dict(report, source_fingerprint=fingerprint)
             text.setPlainText(json_text(self.last_readiness))
+            self.notify(f"Quality inspection complete · pinned frame receipt {report['frame_received']['status']}; "
+                f"scene {report['scene_usable_for_selected_task']['status']}; reference {report['reference_qualified']['status']}.")
         self.background(lambda: compute_pinned(cube, lambda: measurement_readiness(cube, policy=policy)),
                         complete, 'Inspecting full-resolution quality of the pinned observation…')
 
@@ -2488,6 +2496,10 @@ class Workbench(W.QMainWindow):
                 color = COLORS[index % len(COLORS)]
                 record = make_roi(cube.shape[:2], geometry, name='Mask ROI', color=color)
                 self.add_roi(record['name'], color=color, record=record)
+                if len(self.rois) > index:
+                    self.notify('Mask ROI imported; binary asset and raw image coordinates verified.')
+            else:
+                self.notify('Source changed; the verified mask was not added. Import it for the current image.')
         self.background(lambda: mask_geometry(path, cube.shape[:2]), completed, 'Verifying binary mask bytes and raw shape…')
 
     def study_dialog(self):

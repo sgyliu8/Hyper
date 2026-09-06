@@ -11,8 +11,9 @@ Acquired files, ROI definitions and derived results have separate identities.
 2. Check **Camera**, **Viewing**, **Viewed data** and **Chart** separately.
    Opening a saved image can leave acquisition running. **Return to live**
    returns to that existing session. Freeze affects the display, not acquisition.
-3. Save the frame you intend to compare. Inspect **View quality / ROI counts**
-   for exact, pinned quantiles, quality denominators and readiness.
+3. Save the frame you intend to compare. Inspect **Frame quality / readiness**
+   for exact, pinned quantiles, frame-quality denominators and readiness.
+   ROI-specific counts are in **Analysis → Results** and numeric exports.
 
 Frame receipt, scene usefulness for a stated task, and reference qualification
 are different evidence. Unknown illumination, specimen identity or reference

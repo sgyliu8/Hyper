@@ -181,12 +181,29 @@ range controls and an indefinitely Computing profile status. Contextual controls
 pending-request guards and completion messages pass 70 focused regressions.
 Previous completed export receipts remain immutable when the active brush clears.
 
+The actual Study Add/Save/Verify workflow exposed the same unfinished-progress
+message in the main window despite completed dialog results. Four queued success
+and failure counterexamples reproduced it; the two-line notification correction
+passes 27 Study tests. A subsequent bounded callback audit found related missing
+terminal messages in quality, recorded traces, mask/annotation import, reference
+checks and cancelled device selection. Local completion/rejection notices retain
+the existing source guards and operation semantics. The quality button now says
+**Frame quality / readiness**; ROI counts remain in Results and numeric exports.
+
 Two native exports from the actual scene independently pass 57 numerical/hash
 checks: the inclusive Suspect selection contains 1,071 / 102,469 valid pixels
 within 185,500 geometric pixels. The native one-pixel strip profile retains 820
 bins, including 280 empty bins per channel, with 17,569 geometric / 6,044 excluded
 pixels and 11,525 used pixels per channel. Empty bins remain empty. These are
 descriptive contrast and spatial dispersion, not defect labels or repeatability.
+
+Native Study Add/Save/Verify also retains two real observations with three ROI
+rows each. Independent recomputation passes 36 additional checks: all 18 RGB
+median/common feature cells, the six exported R points, source/AnalysisRun
+identities and seven declared output hashes match. Settings are MISMATCH for
+20 versus 40 ms; specimen, temperature, dwell and independent-replicate count
+remain unknown. Selecting temperature natively shows 0/6 points and six explicit
+unknown-temperature omissions. The saved-data workflow has no camera session.
 
 The `e457cc06` installed native repeat retained **176 / 300** requested frames:
 accepted/written 176, one writer rejection/overflow, and a verified partial prefix.

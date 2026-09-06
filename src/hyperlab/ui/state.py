@@ -104,6 +104,9 @@ def restore_view(window):
             if window.cube is cube:
                 window.annotation, window.annotation_path = record, path
                 window.roi_changed()
+                window.notify(f"Saved specimen context restored · annotation revision {record['revision']}.")
+            else:
+                window.notify('Source changed; saved specimen context was checked but not attached.')
         window.background(lambda:load_annotation(path,cube),attach,'Checking saved specimen context against source hashes…')
     if state.get('view_range'):
         x,y = state['view_range']

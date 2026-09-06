@@ -198,6 +198,7 @@ class ReferenceCorrectionDialog(W.QDialog):
                 row.setExpanded(bool(failed))
             if self._checked and self._active_acquisition():
                 self.status.setText("MATCH · Stop acquisition before opening a corrected cube.")
+            self.workbench.notify('Reference check complete: ' + self.status.text())
         self._start(inspect, checked, "Checking source files and recorded conditions…")
 
     def run_correction(self):
@@ -235,6 +236,7 @@ class ReferenceCorrectionDialog(W.QDialog):
                 path = cube.metadata["source_file"]
                 cube.close()
                 self.status.setText(f"Saved {path}. Stop acquisition and reopen the result.")
+                self.workbench.notify('Correction complete: ' + self.status.text())
                 return
             if self.workbench.sequence is not None:
                 self.workbench.sequence.close()
