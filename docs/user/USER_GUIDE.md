@@ -60,6 +60,10 @@ is separate from a median/quartile amplitude panel. No mm calibration is assumed
 
 ## Spectral and derived operations
 
+Use **Reflectance…** for response bundles, matched raw scans and reference-ratio
+processing. The [spectroscopy guide](SPECTROSCOPY.md) covers setup, CLI commands,
+the synthetic example and the physical control/measurement requirements.
+
 RGB feature selectors refer to stored colour categories, not wavelengths. A
 documented external spectral cube can use actual wavelength smoothing, first/
 second derivatives and interval maps. The inclusive first/last indices retain

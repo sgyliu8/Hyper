@@ -25,6 +25,10 @@ def capabilities(cube):
                   "difference": len(indices) >= 2 and not (bayer and k == 1),
                   "ratio": len(indices) >= 2 and not (bayer and k == 1),
                   "spectral_features": wavelength_features,
+                  "spectral_support": spectral and cube.valid_mask is not None,
+                  "reconstruction_residual": level == 'spectral_cube' and spectral
+                    and bool((meta.get('reconstruction') or {}).get('residual_file')
+                             or hasattr(cube, 'reconstruction_residual')),
                   "continuum": wavelength_features and level == "reflectance_cube" and len(indices) >= 3,
                   "reflectance": spectral and level == "spectral_cube"
                     and meta.get("linear_intensity") is True}
@@ -34,6 +38,10 @@ def capabilities(cube):
             continue
         if operation == "cfa":
             reasons[operation] = "CFA statistics require one raw Bayer mosaic."
+        elif operation == 'spectral_support':
+            reasons[operation] = 'Requires a wavelength-supported cube with an explicit validity mask.'
+        elif operation == 'reconstruction_residual':
+            reasons[operation] = 'Open the reconstructed sample or white signal with its retained state residuals.'
         elif operation == "temporal":
             reasons[operation] = "Temporal statistics require a sequence of matching frames."
         elif operation == "reflectance":

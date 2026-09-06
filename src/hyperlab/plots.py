@@ -343,6 +343,10 @@ def map_plot(result, source, *, component=0, degrees=False, limits=None):
         center, cmap, units = 0., 'RdBu_r', 'dimensionless'
     elif operation == 'reference_rmse':
         title = 'Reference ROI RMSE'
+    elif operation == 'reconstruction_residual':
+        title = 'Reconstruction residual RMS'
+    elif operation == 'spectral_support':
+        title = 'Valid spectral fraction'
     spec = PlotSpec('map', title, 'Raw x (pixel)', 'Raw y (pixel)', source=source,
                     metadata={**plain(meta), 'component': component, 'valid_count': int(valid.sum()),
                               'total_count': int(valid.size), 'semantic_center': center, 'units':units,

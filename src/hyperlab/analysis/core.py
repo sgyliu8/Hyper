@@ -457,12 +457,13 @@ def reflectance(sample, white, dark_sample, dark_white, *, reference_reflectance
     for key in ("data_ignore_value", "envi_header", "saturation_value", "effective_bits",
                 "pfnc_sample_bits", "adc_precision", "adc_precision_source", "storage_dtype",
                 "pixel_format", "valid_mask_file",
-                "source_file", "estimated_bytes", "dtype", "linear_intensity"):
+                "source_file", "estimated_bytes", "dtype", "linear_intensity", "uncertainty"):
         meta.pop(key, None)
     meta.update(data_level="reflectance_cube", units="dimensionless", reflectance_kind=kind,
                 calibration_source=reference_source, reference_source=reference_source,
                 reference_reflectance=reference.tolist(), source_provenance=source_provenance,
                 reference_applicability=applicability,
+                uncertainty={"status": "not_computed", "reason": "Requires an explicit input covariance/model including shared references"},
                 processing_steps=list(meta["processing_steps"]) + [{"operation": "dark-corrected reference ratio",
                     "kind": kind, "minimum_denominator": minimum_denominator, "clipped": False}],
                 validity_note="Output mask: finite unsaturated inputs and positive denominator above threshold",

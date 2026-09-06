@@ -88,7 +88,7 @@ def main():
     parser.add_argument('--source', type=Path)
     parser.add_argument('--wheel', type=Path)
     parser.add_argument('--frozen', type=Path)
-    parser.add_argument('--version', default='0.6.0')
+    parser.add_argument('--version', default='0.6.1.dev1')
     args = parser.parse_args()
     here = Path(__file__).resolve().parent
     source = read_allowlist(here/'public_files.txt')

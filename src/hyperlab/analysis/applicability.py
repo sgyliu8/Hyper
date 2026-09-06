@@ -62,6 +62,9 @@ def reference_applicability(sample, white, dark_sample, dark_white):
 
     compare("shape", [list(cube.shape) for cube in cubes])
     compare("wavelengths", [None if cube.wavelengths is None else cube.wavelengths.tolist() for cube in cubes])
+    widths = [cube.metadata.get("fwhm") for cube in cubes]
+    if any(value is not None for value in widths):
+        compare("fwhm", [None if value is None else np.asarray(value).tolist() for value in widths])
     for field in ("exposure", "gain", "units", "wavelength_units"):
         compare(field, [cube.metadata.get(field) for cube in cubes])
     compare("settings", [cube.metadata.get("settings") for cube in cubes],
@@ -82,6 +85,13 @@ def reference_applicability(sample, white, dark_sample, dark_white):
                 "Reference correction requires a spectral cube")
         require(role, "linear_intensity", meta.get("linear_intensity"), lambda value: value is True,
                 "Reference correction requires linear_intensity=true")
+        require(role, "positive_exposure", meta.get("exposure"),
+                lambda value: isinstance(value, Real) and not isinstance(value, (bool, np.bool_))
+                and np.isfinite(value) and value > 0, "Raw reference correction requires positive scalar exposure")
+        lineage = meta.get("signal_lineage")
+        if isinstance(lineage, Mapping) and lineage.get("dark_subtracted") is True:
+            record(role, "correction_ownership", "MISMATCH",
+                   "Dark subtraction is already applied; use reflectance_corrected with two compatible signals")
         require(role, "completed", meta.get("completed"), lambda value: value is True,
                 "Reference correction requires completed inputs")
         require(role, "partial", meta.get("partial"), lambda value: value is False,
@@ -91,9 +101,9 @@ def reference_applicability(sample, white, dark_sample, dark_white):
         require(role, "wavelength_units", meta.get("wavelength_units"),
                 lambda value: wavelength_unit_scale(value) is not None, "Wavelength units must be known length units")
         wave = cube.wavelengths
-        ordered = wave is not None and (np.all(np.diff(wave) > 0) or np.all(np.diff(wave) < 0))
+        ordered = wave is not None and np.all(wave > 0) and (np.all(np.diff(wave) > 0) or np.all(np.diff(wave) < 0))
         record(role, "wavelength_order", "UNKNOWN" if wave is None else "MATCH" if ordered else "MISMATCH",
-               "Requires unique ordered wavelength samples")
+               "Requires positive unique ordered wavelength samples")
         expected_role = role if role in ("sample", "white") else "dark"
         require(role, "role", context.get("role"), lambda value: value == expected_role,
                 f"Source role must be {expected_role}")

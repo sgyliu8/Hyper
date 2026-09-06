@@ -11,6 +11,8 @@ def save_state(window):
     last_path = str(window.sequence.path) if window.sequence else (
         cube.metadata.get('source_file') if cube is not None else previous.get('last_path'))
     state = {'last_path':last_path,
+             'spectroscopy_setup': (window._spectroscopy_dialog.setup_values() if hasattr(window, '_spectroscopy_dialog')
+                                    else previous.get('spectroscopy_setup', {})),
              'synthetic':cube is not None and cube.metadata.get('data_source') == 'SYNTHETIC' and not last_path,
              'geometry':bytes(window.saveGeometry().toBase64()).decode('ascii'),
              'view_range':window.plot.getViewBox().viewRange(),

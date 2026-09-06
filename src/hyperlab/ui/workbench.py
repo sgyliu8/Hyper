@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import queue
 import sys
+import threading
 import time
 
 import numpy as np
@@ -75,6 +76,11 @@ class Workbench(W.QMainWindow):
         self.setMinimumSize(960, 620)
         self.session_factory = session_factory
         self.session = None
+        self.spectral_adapter = None
+        self.spectral_stop = threading.Event()
+        self.spectral_busy = False
+        self.response_path = None
+        self.response_summary = None
         self.discovering = False
         self.connection_issue = None
         self.follow_camera = False
@@ -212,6 +218,7 @@ class Workbench(W.QMainWindow):
         for item in (self.preview_button, self.stop_button, self.save_button, self.record_button, self.freeze):
             actions.addWidget(item)
         actions.addStretch()
+        actions.addWidget(self.button('Reflectance…', self.spectroscopy_dialog, 'spectroscopy_setup'))
         actions.addWidget(self.button('Fit', self.fit))
         actions.addWidget(self.button('1:1', self.one_to_one))
         self.side_toggle = self.button('Settings ▾', lambda: self.side_scroll.setVisible(not self.side_scroll.isVisible()))
@@ -574,6 +581,10 @@ class Workbench(W.QMainWindow):
             self.follow_camera = True
 
     def stop_preview(self):
+        if self.spectral_busy:
+            self.spectral_stop.set()
+            self.notify('Stopping spectroscopy and preserving completed raw states and products…')
+            return
         if self.session:
             self.session.stop_preview()
             self.notify('Stopping the stream and restoring session settings…')
@@ -882,7 +893,8 @@ class Workbench(W.QMainWindow):
         returning = state in ('streaming', 'recording') and not self.follow_camera
         self.preview_button.setEnabled((state == 'ready' or returning) and not burst_pending and not self.closing)
         self.preview_button.setText('Return to live' if returning else '▶ Start preview')
-        self.stop_button.setEnabled(state in ('streaming', 'recording'))
+        self.stop_button.setEnabled(state in ('streaming', 'recording') or self.spectral_busy)
+        self.stop_button.setText('■ Stop spectroscopy' if self.spectral_busy else '■ Stop acquisition')
         self.record_button.setEnabled(state == 'recording' or (state == 'streaming' and
             self.last_status.get('has_current_frame', self.displayed_frame is not None)))
         self.record_button.setText('Stop recording' if state == 'recording' else 'Record…')
@@ -896,7 +908,7 @@ class Workbench(W.QMainWindow):
         self.analysis_actions.setVisible(self.tabs.currentIndex() == 1)
         for item in (self.preview_button, self.save_button, self.record_button, self.freeze):
             item.setVisible(acquisition or active)
-        self.stop_button.setVisible(acquisition or active)
+        self.stop_button.setVisible(acquisition or active or self.spectral_busy)
         self.metrics_label.setVisible(state in ('streaming', 'recording') and self.display_mode in ('LIVE', 'FROZEN', 'STALE'))
         if hasattr(self, 'run_button'):
             self.method_changed()
@@ -951,6 +963,10 @@ class Workbench(W.QMainWindow):
 
     def set_cube(self, cube, *, live=False, reset_axis=True):
         old_shape = self.cube.shape if self.cube is not None else None
+        old_grid = self.cube.metadata.get('spatial_grid') if self.cube is not None else getattr(self, 'roi_grid', None)
+        new_grid = cube.metadata.get('spatial_grid')
+        grid_changed = (old_grid is not None or new_grid is not None) and old_grid != new_grid
+        self.roi_grid = new_grid
         self.roi_source_notice = ''
         if self.annotation is not None and self.cube is not cube:
             self.annotation = None
@@ -990,15 +1006,15 @@ class Workbench(W.QMainWindow):
                 self.plot_mode.setCurrentIndex(0)
                 self.plot_mode.blockSignals(False)
                 self.last_quality = 0.0
-        if old_shape != cube.shape:
-            matching_coordinates = bool(self.rois) and all(
+        if old_shape != cube.shape or grid_changed:
+            matching_coordinates = not grid_changed and bool(self.rois) and all(
                 record and record['coordinate_frame']['shape_hw'] == list(cube.shape[:2])
                 for record in self.roi_records)
             if not matching_coordinates:
                 new_coordinates = bool(self.rois)
                 self.reset_rois(force=True, new_coordinates=new_coordinates)
                 if new_coordinates:
-                    self.roi_source_notice = ('Raw image dimensions changed; new default ROIs created. '
+                    self.roi_source_notice = ('Image dimensions or spatial grid changed; new default ROIs created. '
                                               'Review placement and choose the reference.')
             elif live and old_shape is None:
                 self.roi_source_notice = ('ROI coordinates retained for matching raw dimensions; '
@@ -1770,6 +1786,9 @@ class Workbench(W.QMainWindow):
         if operation in ('spectral_angle', 'reference_rmse'):
             context['support'] = 'common'
         def run():
+            if operation in ('reconstruction_residual', 'spectral_support'):
+                from hyperlab.spectroscopy.diagnostics import diagnostic_map
+                return diagnostic_map(cube, operation)
             if operation in ('interval_map','interval_mean_map'):
                 from hyperlab.analysis.distributions import spectral_interval_map
                 first,last=context['feature_interval']
@@ -1909,6 +1928,13 @@ class Workbench(W.QMainWindow):
         from hyperlab.ui.reference_dialog import ReferenceCorrectionDialog
         self._reference_dialog = ReferenceCorrectionDialog(self, sample=self.cube, workspace=self.workspace)
         self._reference_dialog.show()
+
+    def spectroscopy_dialog(self):
+        from hyperlab.ui.spectroscopy_dialog import SpectroscopyDialog
+        if not hasattr(self, '_spectroscopy_dialog'):
+            self._spectroscopy_dialog = SpectroscopyDialog(self)
+        self._spectroscopy_dialog.show()
+        self._spectroscopy_dialog.raise_()
 
     def show_product(self, result, source_cube=None):
         self.product = result
@@ -2720,6 +2746,7 @@ class Workbench(W.QMainWindow):
                         lambda path: self.add_recent(Path(path) / 'mean.npy'), 'Accumulating frame means, temporal SD and drift…')
 
     def closeEvent(self, event):
+        self.spectral_stop.set()
         if self.session and not self.session.status().get('closed'):
             event.ignore()
             if not self.closing:
@@ -2853,7 +2880,9 @@ class Workbench(W.QMainWindow):
                    ('Second derivative', 'derivative2'), ('Interval integral / mean', 'integral'),
                    ('Wavelength interval integral map','interval_map'), ('Wavelength interval mean map','interval_mean_map'),
                    ('Endpoint continuum / band depth', 'continuum'), ('PCA', 'pca'),
-                   ('Spectral / state-vector angle', 'spectral_angle'), ('Recorded ROI trace', 'recorded')]
+                   ('Spectral / state-vector angle', 'spectral_angle'),
+                   ('Reconstruction residual RMS', 'reconstruction_residual'), ('Valid spectral fraction', 'spectral_support'),
+                   ('Recorded ROI trace', 'recorded')]
         for label, operation in methods:
             self.analysis_method.addItem(label, operation)
             action = QtGui.QAction(label, self)
@@ -3071,9 +3100,11 @@ class Workbench(W.QMainWindow):
         form.addWidget(self.button('Temporal mean / SD / drift', self.sequence_statistics))
         form.addWidget(self.button('Plot all recorded ROI samples',self.plot_recorded_rois))
         form.addWidget(W.QLabel('2 · FP states and spectral response'))
-        label = W.QLabel('Control protocol and state synchronization evidence are required. Wavelength response mapping is not configured.')
+        label = W.QLabel('Spectral selector and wavelength response are configured separately from the sensor. '
+                        'Open Reflectance to check a response bundle, reconstruct saved optical states, or acquire with a verified adapter.')
         label.setWordWrap(True)
         form.addWidget(label)
+        form.addWidget(self.button('Spectroscopy setup and processing…', self.spectroscopy_dialog))
         form.addWidget(W.QLabel('3 · Reflectance reference correction'))
         form.addWidget(self.button('Reflectance correction…', self.reference_correction_dialog, 'reflectance_correction'))
         note = W.QLabel('Requires documented wavelengths, linear intensity and applicable sample / white / dark references.')

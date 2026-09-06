@@ -1,5 +1,19 @@
 # Changes
 
+## 0.6.1.dev1 — stationary spectroscopy tools
+
+- Add state-by-state optical scan orchestration for an explicitly supplied,
+  documented adapter, with state/exposure association and durable partial records.
+- Fit finite-band response measurements, save numeric response bundles and run
+  bounded native-grid reconstruction with rank, conditioning, masks and residuals.
+- Reconstruct sample and white separately, apply reference factors once, and
+  preserve negative/above-one results and pixel-ratio ROI statistics.
+- Add a modeless Reflectance setup/processing flow, reusable reference paths,
+  global cancellation and residual/support maps in the existing Analysis panel.
+- Add CLI characterization, reconstruction, processing, spectral ROI export and
+  a clearly synthetic end-to-end example. No HinaLea selector API or calibration
+  is bundled; physical spectroscopy needs the matching local assets.
+
 ## 0.6.0 — local research preview
 
 - Add a bounded RAM burst with explicit resource preflight, stop-before-save,

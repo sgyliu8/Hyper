@@ -69,13 +69,18 @@ def main(argv=None):
     demo.add_argument("--no-gui", action="store_true")
     figure = commands.add_parser('figure-demo', help='Generate reproducible synthetic scientific figure bundles; no hardware')
     figure.add_argument('--output', type=Path, required=True, help='New output directory')
+    from .spectroscopy.cli import configure_parser
+    configure_parser(commands.add_parser('spectroscopy', help='Characterization, reconstruction and spectral ROI tools'))
     args = parser.parse_args(argv)
     try:
         if args.workspace:
             import os
             from .paths import select_workspace
             os.environ['HYPERLAB_WORKSPACE'] = str(select_workspace(args.workspace))
-        if args.command == "doctor":
+        if args.command == 'spectroscopy':
+            from .spectroscopy.cli import execute
+            emit(execute(args))
+        elif args.command == "doctor":
             from importlib.metadata import version, PackageNotFoundError
             dependencies = {}
             for name in ("numpy", "matplotlib", "Pillow", "PySide6", "pyqtgraph", "harvesters", "genicam"):

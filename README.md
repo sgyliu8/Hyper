@@ -12,6 +12,8 @@ orange, blue and teal region colours.
 - Original-observation Studies, explicit comparison conditions and source-bound
   PNG/SVG/PDF/CSV/NPY exports.
 - NPY/NPZ/ENVI data, per-user workspaces and a supported USB3 Vision imaging path.
+- Stationary response characterization, reconstruction and pixel/ROI reference
+  ratios; see [spectroscopy](docs/user/SPECTROSCOPY.md) for the executable workflow.
 
 Original-code licensing and public binary release remain pending. The online
 evaluation branch is `feature/materials-science-v040`; the default branch remains

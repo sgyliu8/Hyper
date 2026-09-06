@@ -10,6 +10,7 @@ docs/assets/roi-synthetic.png
 docs/assets/workbench-060-synthetic-native.jpg
 docs/user/DATA_AND_METHODS.md
 docs/user/INSTALL.md
+docs/user/SPECTROSCOPY.md
 docs/user/TROUBLESHOOTING.md
 docs/user/USER_GUIDE.md
 examples/README.md
@@ -65,6 +66,14 @@ src/hyperlab/resources/Probe-Devices.ps1
 src/hyperlab/resources/__init__.py
 src/hyperlab/resources/hyperlab-logo.png
 src/hyperlab/sharing.py
+src/hyperlab/spectroscopy/__init__.py
+src/hyperlab/spectroscopy/cli.py
+src/hyperlab/spectroscopy/diagnostics.py
+src/hyperlab/spectroscopy/example.py
+src/hyperlab/spectroscopy/reflectance.py
+src/hyperlab/spectroscopy/response.py
+src/hyperlab/spectroscopy/scan.py
+src/hyperlab/spectroscopy/workflow.py
 src/hyperlab/study.py
 src/hyperlab/support.py
 src/hyperlab/ui/__init__.py
@@ -73,6 +82,7 @@ src/hyperlab/ui/app.py
 src/hyperlab/ui/presentation.py
 src/hyperlab/ui/reference_dialog.py
 src/hyperlab/ui/roi_dialog.py
+src/hyperlab/ui/spectroscopy_dialog.py
 src/hyperlab/ui/state.py
 src/hyperlab/ui/study_dialog.py
 src/hyperlab/ui/view.py
@@ -91,6 +101,7 @@ tests/test_cli_analysis.py
 tests/test_color_frame.py
 tests/test_compact_analysis_ui.py
 tests/test_controller_diagnostics.py
+tests/test_corrected_reflectance.py
 tests/test_display_limits_preserve_selection.py
 tests/test_experiment_metadata.py
 tests/test_experiments.py
@@ -112,6 +123,7 @@ tests/test_recording_workbench_states.py
 tests/test_reference_applicability.py
 tests/test_reference_dialog.py
 tests/test_region_geometry.py
+tests/test_response.py
 tests/test_roi_editor_identity.py
 tests/test_roi_source_transition.py
 tests/test_saved_comparison.py
@@ -122,6 +134,11 @@ tests/test_science_workbench.py
 tests/test_sequence.py
 tests/test_share_copy.py
 tests/test_share_workbench.py
+tests/test_spectroscopy_diagnostics.py
+tests/test_spectroscopy_transitions.py
+tests/test_spectroscopy_ui.py
+tests/test_spectroscopy_workflow.py
+tests/test_stationary_scan.py
 tests/test_strip_profile_boundaries.py
 tests/test_study_completion_status.py
 tests/test_study_definitions.py
