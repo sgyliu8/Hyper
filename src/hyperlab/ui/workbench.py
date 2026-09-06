@@ -645,6 +645,8 @@ class Workbench(W.QMainWindow):
             self.annotation = None
             self.annotation_path = None
         self.cube = cube
+        self.pixel_label.setText('Pixel: —')
+        self.pixel_label.setToolTip('')
         if not live:
             if reset_axis:
                 self.analysis_version += 1

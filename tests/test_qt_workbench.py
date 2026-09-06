@@ -42,6 +42,19 @@ def test_roi_coordinates_survive_zoom_pan_band(window):
     assert roi_rect((-1.2, 2), (5, 3), (10,10)) == (0,2,4,5)
 
 
+@pytest.mark.parametrize('live', [False, True])
+def test_new_frame_clears_previous_pixel_inspection(window, live):
+    window.set_cube(Cube(np.full((24, 32, 3), 118, np.uint8),
+                         {'data_level': 'raw_frame', 'pixel_format': 'RGB8', 'channel_labels': ['R', 'G', 'B']}))
+    # The native replay-to-camera check retained this prior pixel readout.
+    window.pixel_label.setText('Raw pixel x=5, y=5 · [118 118 118]')
+    window.pixel_label.setToolTip('{"valid": 3}')
+    window.set_cube(Cube(np.zeros((24, 32, 3), np.uint8),
+                         {'data_level': 'raw_frame', 'pixel_format': 'RGB8', 'channel_labels': ['R', 'G', 'B']}), live=live)
+    assert window.pixel_label.text() == 'Pixel: —'
+    assert not window.pixel_label.toolTip()
+
+
 def test_one_plane_gate_and_product_source(window):
     original = make_synthetic_cube()
     window.set_cube(original)
