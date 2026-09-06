@@ -36,7 +36,9 @@ def test_saved_real_origin_and_disconnected_camera_are_independent(window):
     assert window.mode_label.text() == 'Viewing: Saved / retained frame'
     assert 'Real camera capture' in window.source_label.text()
     assert 'frame 7' in window.source_label.text()
-    assert '2026-09-06' in window.source_label.text()
+    assert '2026-09-06' not in window.source_label.text()
+    window.refresh_details()
+    assert '2026-09-06T11:00:00Z' in window.detail_text.toPlainText()
     assert 'LIVE' not in window.source_label.text()
     assert window.metrics_label.isHidden() and not window.metrics_label.text()
     assert 'stream None' not in window.analysis_label.text()
@@ -89,7 +91,9 @@ def test_pending_method_retains_completed_plot_and_identity(window):
     window.update_chart(window.image.image)
     assert window.plot_spec is spec
     assert window.analysis_label.text() == original
-    assert 'ROI revision 4' in original
+    assert 'ROI revision' not in original
+    window.refresh_details()
+    assert '"analysis_version": 4' in window.detail_text.toPlainText()
     window.task_busy = False
 
 

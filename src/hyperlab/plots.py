@@ -32,6 +32,55 @@ def source_identity(cube):
         'quantitative_eligible', 'wavelength_evidence', 'wavelength_source', 'channel_labels')}
 
 
+def map_limit_key(spec, robust=False):
+    """Only share colour limits for the same numerical display definition."""
+    meta = spec.metadata
+    definition = {key: meta.get(key) for key in ('operation', 'component', 'indices',
+        'feature_indices', 'feature_wavelengths', 'wavelength_units', 'units', 'reference', 'interval_nm', 'interval_span_nm')}
+    definition.update(source_domain=spec.source.get('data_level'),
+        source_units=spec.source.get('units'), feature_labels=spec.source.get('feature_labels'),
+        semantic_center=meta.get('semantic_center'), normalization='linear',
+        colormap=spec.colormap, robust=bool(robust))
+    if spec.title.startswith('PCA'):
+        definition['fit_source'] = meta.get('source_fingerprint') or spec.source
+    return json.dumps(plain(definition), sort_keys=True, separators=(',', ':'))
+
+
+def map_display_limits(spec, *, robust=False, locked_limits=None):
+    """Set rendering limits only; Qt and Matplotlib use this same linear scale."""
+    values = spec.image[spec.valid_mask & np.isfinite(spec.image)]
+    center = spec.metadata.get('semantic_center')
+    magnitude = spec.metadata.get('operation') == 'reference_rmse' or 'angle' in spec.title.lower()
+    if values.size:
+        low, high = np.percentile(values, [1, 99]) if robust else (values.min(), values.max())
+    else:
+        low, high = (center-1., center+1.) if center is not None else (0., 1.)
+    if center is not None:
+        radius = max(abs(float(low)-center), abs(float(high)-center), 1e-12)
+        low, high = center-radius, center+radius
+    else:
+        if magnitude:
+            low = 0.
+        if high <= low:
+            high = low + max(1., abs(float(low))*1e-6)
+    if locked_limits is not None:
+        low, high = map(float, locked_limits)
+        if (not np.isfinite([low, high]).all() or low >= high or
+                (center is not None and not np.isclose(low/2+high/2, center, rtol=0, atol=1e-12)) or
+                (magnitude and low < 0)):
+            raise ValueError('Shared colour limits must preserve the semantic center and magnitude domain')
+    spec.limits = (float(low), float(high))
+    clipped = int(np.count_nonzero((values < low) | (values > high)))
+    spec.metadata['display_limits'] = {
+        'policy':'1–99 percentile radius' if robust and center is not None else '1–99 percentile' if robust else 'full finite range',
+        'normalization':'linear', 'semantic_center':center, 'shared_limits':locked_limits is not None,
+        'shared_limit_key':map_limit_key(spec, robust), 'limits':list(spec.limits),
+        'clipped_count':clipped, 'valid_count':int(values.size),
+        'clipped_fraction':clipped/values.size if values.size else None,
+        'scope':'Colour mapping only; source/map values, statistics and brush eligibility are unchanged'}
+    return spec
+
+
 @dataclass
 class PlotSpec:
     kind: str
@@ -88,6 +137,8 @@ def roi_plot(results, names, colors, *, source, normalized=False, spatial_sd=Tru
                     caption='Mean ± 1 spatial SD when enabled; pixel dispersion, not a confidence interval.')
     if summary == 'median':
         spec.caption = 'Median with Q25–Q75 spatial interval when enabled; pixel dispersion, not a confidence interval.'
+    spec.caption += (' Common pixels across enabled features.' if first.get('support') == 'common'
+                     else ' Per-feature valid pixels.')
     if single_plane:
         spec.title = f'ROI {summary} and spatial variation'
         spec.xlabel, spec.categories = 'Region of interest', list(names)
@@ -127,6 +178,7 @@ def strip_profile_plot(result, *, source, source_fingerprint, analysis_context=N
         raise ValueError('A profile plot requires a completed strip_profile result')
     metadata = deepcopy(result['metadata'])
     metadata.update(operation='strip_profile', units=result['units'],
+        summary='mean', support='per_band',
         source_fingerprint=deepcopy(source_fingerprint),
         aggregation_order='spatial_bin_then_summary', sample_axis='spatial bin index',
         bin_edges_px=np.asarray(result['bin_edges_px']).tolist(),
@@ -153,6 +205,25 @@ def strip_profile_plot(result, *, source, source_fingerprint, analysis_context=N
             'roi_definition':deepcopy(metadata['roi_definition']),
             'exclusion_definitions':deepcopy(metadata['exclusion_definitions'])})
     return spec
+
+
+def profile_bin_text(spec, distance):
+    """Describe a full-origin profile bin, including unavailable bins and reasons."""
+    edges = np.asarray(spec.metadata['bin_edges_px'])
+    if not np.isfinite(distance) or distance < edges[0] or distance > edges[-1]:
+        return 'Profile: hover within the recorded path distance.'
+    index = min(len(edges)-2, int(np.searchsorted(edges, distance, side='right')-1))
+    meta = spec.metadata
+    text = (f"Bin {index} · {edges[index]:g}–{edges[index+1]:g} px · geometry {meta['geometry_count'][index]}"
+            f" · excluded {meta['excluded_count'][index]} · selected {meta['selected_count'][index]}")
+    for curve in spec.series:
+        count = int(curve['used_counts'][index])
+        reasons = ', '.join(f'{key} {int(values[index])}' for key, values in curve['counts'].items()
+                            if key not in ('total', 'valid') and values[index])
+        text += f"\n{curve['name']}: used {count} · " + ('unavailable' if not count else f"mean {curve['y'][index]:g}")
+        if reasons:
+            text += ' · ' + reasons + ' (reasons may overlap exclusions)'
+    return text
 
 
 def roi_transform_plot(amplitude_spec, task, *, reference=None, common=None, reference_roi_id=None):
@@ -215,7 +286,7 @@ def map_distribution_plot(result, names=None, colors=COLORS, *, source, mode='ec
     units = result['metadata']['units']
     title = 'Map value ECDF' if mode == 'ecdf' else 'Map value histogram'
     spec = PlotSpec('lines', title, f'Map value ({units})',
-        'Cumulative fraction of valid ROI pixels' if mode == 'ecdf' else 'Pixel count', source=source,
+        'Cumulative fraction' if mode == 'ecdf' else 'Pixel count', source=source,
         metadata={**plain(result['metadata']), 'distribution_mode':mode,
                   'roi_results':plain([{key:item[key] for key in ('roi', 'counts', 'statistics', 'reason_counts')}
                                        for item in regions])}, brushes=list(brushes),
@@ -272,25 +343,17 @@ def map_plot(result, source, *, component=0, degrees=False, limits=None):
         center, cmap, units = 0., 'RdBu_r', 'dimensionless'
     elif operation == 'reference_rmse':
         title = 'Reference ROI RMSE'
-    values = data[valid]
-    if limits is None:
-        low, high = (float(values.min()), float(values.max())) if values.size else (0., 1.)
-        if center is not None:
-            radius = max(abs(low-center), abs(high-center), 1e-12)
-            low, high = center-radius, center+radius
-        elif high <= low:
-            high = low + 1
-        if operation == 'reference_rmse':
-            low = 0.
-        limits = (low, high)
-    return PlotSpec('map', title, 'Raw x (pixel)', 'Raw y (pixel)', source=source,
+    spec = PlotSpec('map', title, 'Raw x (pixel)', 'Raw y (pixel)', source=source,
                     metadata={**plain(meta), 'component': component, 'valid_count': int(valid.sum()),
-                              'total_count': int(valid.size), 'semantic_center': center},
+                              'total_count': int(valid.size), 'semantic_center': center, 'units':units,
+                              'coordinate_frame':{'origin':'upper left edge', 'extent':[0, data.shape[1], data.shape[0], 0],
+                                  'pixel_centers':'x + 0.5, y + 0.5', 'array_indices':'integer (y, x)'}},
                     image=np.where(valid, data, np.nan), valid_mask=valid.copy(),
-                    colour_label=f'{title} ({units})', colormap=cmap, limits=tuple(limits),
+                    colour_label=f'{title} ({units})', colormap=cmap,
                     caption=(f"({pair[0]} − {pair[1]}) / ({pair[0]} + {pair[1]}). "
                              if operation == 'normalized_difference' else '') +
                     'Invalid / masked values are grey; an angle or score is not a defect probability.')
+    return map_display_limits(spec, locked_limits=limits)
 
 
 def roi_feature_plot(result, names, colors, *, source):
@@ -445,7 +508,8 @@ def render_figure(spec, *, width_mm=180, height_mm=115, dpi=300):
         if spec.image is not None:
             cmap = mpl.colormaps[spec.colormap].with_extremes(bad='#dce1e5')
             image = ax.imshow(np.ma.masked_invalid(spec.image), cmap=cmap,
-                              vmin=spec.limits[0], vmax=spec.limits[1], interpolation='nearest', rasterized=True)
+                              vmin=spec.limits[0], vmax=spec.limits[1], interpolation='nearest', rasterized=True,
+                              origin='upper', extent=(0, spec.image.shape[1], spec.image.shape[0], 0))
             figure.colorbar(image, ax=ax, label=spec.colour_label, shrink=.82)
             ax.legend(handles=[Patch(facecolor='#dce1e5', label='Invalid / masked')], loc='lower right', fontsize=7)
         for item in spec.series:

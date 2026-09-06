@@ -2,7 +2,7 @@
 from pathlib import Path
 
 
-def observation_label(metadata):
+def observation_label(metadata, *, compact=False):
     """Describe origin and identity without turning saved captures into live views."""
     origin = metadata.get('acquisition_source') or metadata.get('data_source')
     if origin == 'LIVE':
@@ -13,14 +13,15 @@ def observation_label(metadata):
         label = 'External data' if metadata.get('source_file') else 'Data origin unknown'
     parts = [label]
     path = metadata.get('source_file')
-    if path:
+    if path and (not compact or metadata.get('sequence') is None):
         path = Path(path)
-        parts.append(f'{path.parent.name}/{path.name}' if path.name in ('frame.npy', 'sequence.npy') else path.name)
+        name = f'{path.parent.name}/{path.name}' if path.name in ('frame.npy', 'sequence.npy') else path.name
+        parts.append(name if not compact or len(name) <= 45 else '…' + name[-44:])
     frame = metadata.get('sequence')
     if frame is not None:
         parts.append(f'frame {frame}')
     timestamp = metadata.get('host_utc')
-    if timestamp:
+    if timestamp and not compact:
         parts.append(str(timestamp))
     return ' · '.join(parts)
 

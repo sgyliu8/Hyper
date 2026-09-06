@@ -20,6 +20,7 @@ def main():
     with load_cube(path) as reopened:
         assert reopened.shape == cube.shape
     assert files('hyperlab.resources').joinpath('Probe-Devices.ps1').is_file()
+    assert files('hyperlab.resources').joinpath('hyperlab-logo.png').is_file()
     spec = roi_plot([roi_statistics(cube,(0,0,20,20))],['Region A'],COLORS[:1],source=source_identity(cube))
     export_figure_bundle(spec,root/'figure',source_cube=cube)
     results = roi_comparison(cube,[(0,0,20,20),(25,20,45,40)],support='common')
@@ -40,6 +41,9 @@ def main():
     assert selection['metadata']['counts']['selected'] == distributions['regions'][0]['counts']['used']
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     window = Workbench(path); window.show()
+    assert not window.windowIcon().isNull(), 'Packaged window logo is unavailable'
+    logo = window.findChild(QtWidgets.QLabel, 'hyperlab_logo')
+    assert logo is not None and not logo.pixmap().isNull(), 'Packaged header logo is unavailable'
     deadline = time.monotonic()+15
     while (window.cube is None or window.task_busy) and time.monotonic()<deadline:
         app.processEvents(); time.sleep(.01)
@@ -66,7 +70,7 @@ def main():
     assert (config_directory()/'settings.json').is_file()
     receipt = {'result':'PASS','mode':'OFFLINE_SYNTHETIC','cwd':str(Path.cwd()),
                'package':str(files('hyperlab')),'workspace':str(workspace()),
-               'resource':'PASS','save_reopen':'PASS','figure':'PASS','ui_start_close':'PASS',
+               'resource':'PASS','runtime_logo':'PASS','save_reopen':'PASS','figure':'PASS','ui_start_close':'PASS',
                'scientific_modules':'PASS','source_manifest':'PASS','context_reference_dialogs':'PASS',
                'region_distribution_interval_profile':'PASS','study_saved_observation':'PASS',
                'hardware':'NOT_TESTED','qt_platform':app.platformName(),

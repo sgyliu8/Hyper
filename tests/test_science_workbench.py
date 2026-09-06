@@ -155,7 +155,7 @@ def test_same_shape_color_order_updates_trace_labels(qtbot):
     window=Workbench(); qtbot.addWidget(window); window.set_cube(rgb())
     second=rgb(); second.metadata['channel_labels']=['B','G','R']
     window.set_cube(second)
-    assert [window.trace_channel.itemText(i) for i in range(3)]==['B','G','R']
+    assert [window.trace_channel.itemText(i) for i in range(3)]==['0 · B','1 · G','2 · R']
 
 
 def test_failed_roi_chart_request_restores_completed_selector(qtbot,monkeypatch):

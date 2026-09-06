@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from importlib.resources import files
 import json
 from pathlib import Path
 import queue
-import shutil
+import sys
 import time
 
 import numpy as np
@@ -39,10 +40,37 @@ class TimedImageItem(pg.ImageItem):
             return super().paint(*args)
 
 
+class StoredFeatureSpinBox(W.QSpinBox):
+    """Retain the integer API while identifying its actual stored channel."""
+    def __init__(self):
+        super().__init__()
+        self.labels = []
+        self.valueChanged.connect(self.refresh_label)
+
+    def refresh_label(self):
+        self.setSuffix(' · ' + self.labels[self.value()] if self.value() < len(self.labels) else '')
+
+    def set_labels(self, labels):
+        self.labels = list(labels)
+        self.refresh_label()
+
+
 class Workbench(W.QMainWindow):
     def __init__(self, path=None, *, session_factory=None, benchmark_log=None, workspace=None):
         super().__init__()
         self.setWindowTitle('HyperLab')
+        self.logo = QtGui.QPixmap()
+        self.logo.loadFromData(files('hyperlab.resources').joinpath('hyperlab-logo.png').read_bytes(), 'PNG')
+        self.setWindowIcon(QtGui.QIcon(self.logo))
+        from hyperlab import __version__
+        self.runtime_details = {'version':__version__, 'executable':sys.executable,
+            'module':__file__, 'frozen':bool(getattr(sys, 'frozen', False)), 'build':'UNKNOWN for this runtime'}
+        build_path = Path(sys.executable).with_name('BUILD.json')
+        if self.runtime_details['frozen'] and build_path.is_file():
+            try:
+                self.runtime_details['build'] = json.loads(build_path.read_text(encoding='utf-8'))
+            except (OSError, ValueError) as error:
+                self.runtime_details['build'] = f'Build metadata unavailable: {type(error).__name__}'
         self.resize(1220, 820)
         self.setMinimumSize(960, 620)
         self.session_factory = session_factory
@@ -145,6 +173,12 @@ class Workbench(W.QMainWindow):
         layout = W.QVBoxLayout(root)
         layout.setContentsMargins(14, 10, 14, 10)
         header = W.QHBoxLayout()
+        logo_label = W.QLabel()
+        logo_label.setObjectName('hyperlab_logo')
+        logo_label.setAccessibleName('HyperLab')
+        logo_label.setPixmap(self.logo.scaled(32, 32, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                                             QtCore.Qt.TransformationMode.SmoothTransformation))
+        header.addWidget(logo_label)
         title = W.QLabel('HyperLab')
         title.setStyleSheet('font-size:22px; font-weight:700; color:#123e52')
         header.addWidget(title)
@@ -160,7 +194,7 @@ class Workbench(W.QMainWindow):
         header.addWidget(self.disconnect_button)
         header.addWidget(self.button('Open data…', self.open_dialog, 'open'))
         header.addWidget(self.button('Workspace…', self.choose_output, 'workspace'))
-        header.addWidget(self.button('Session details', lambda: self.diagnostics.setVisible(not self.diagnostics.isVisible())))
+        header.addWidget(self.button('Details', self.toggle_details, 'source_details'))
         layout.addLayout(header)
         self.tabs = W.QTabBar()
         for text in ('Acquisition', 'Analysis', 'Calibration'):
@@ -188,6 +222,12 @@ class Workbench(W.QMainWindow):
         self.recording_label.setWordWrap(True)
         self.recording_label.hide()
         layout.addWidget(self.recording_label)
+        self.recording_recovery = W.QWidget()
+        recovery = W.QHBoxLayout(self.recording_recovery); recovery.setContentsMargins(0,0,0,0)
+        self.retry_recording_button = self.button('Retry persistence', self.retry_recording, 'record_retry')
+        self.abandon_recording_button = self.button('Abandon retained frames…', self.abandon_recording, 'record_abandon')
+        recovery.addWidget(self.retry_recording_button); recovery.addWidget(self.abandon_recording_button)
+        recovery.addStretch(); self.recording_recovery.hide(); layout.addWidget(self.recording_recovery)
         split = W.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.side_scroll = W.QScrollArea()
         self.side_scroll.setWidgetResizable(True)
@@ -199,6 +239,7 @@ class Workbench(W.QMainWindow):
         self._capture_panel()
         self._analysis_panel()
         self._calibration_panel()
+        layout.addWidget(self.analysis_actions)
         self.side_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         for combo in self.sidebar.findChildren(W.QComboBox):
             combo.setSizePolicy(W.QSizePolicy.Policy.Ignored, W.QSizePolicy.Policy.Fixed)
@@ -269,6 +310,7 @@ class Workbench(W.QMainWindow):
         self.curves = [self.chart.plot(pen=pg.mkPen(c, width=2)) for c in ('#d47e22', '#247dc4')]
         self.chart_row.addWidget(self.chart)
         self.shape_chart = pg.PlotWidget(background='w')
+        self.shape_chart.scene().sigMouseMoved.connect(self.profile_hover)
         for chart in (self.chart,self.shape_chart):
             self._style_scientific_chart(chart)
         self.shape_chart.hide()
@@ -290,9 +332,11 @@ class Workbench(W.QMainWindow):
         layout.addLayout(axis)
         self.source_label = W.QLabel('Viewed data: none')
         self.source_label.setWordWrap(True)
+        self.source_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.source_label)
         self.analysis_label = W.QLabel('Analysis source: no computed chart')
         self.analysis_label.setWordWrap(True)
+        self.analysis_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.analysis_label)
         self.pixel_label = W.QLabel('Pixel: —')
         self.pixel_label.setWordWrap(True)
@@ -485,6 +529,10 @@ class Workbench(W.QMainWindow):
 
     def start_preview(self):
         if self.session:
+            recording = self.session.status().get('recording') or {}
+            if recording.get('recording_mode') == 'ram_burst' and not recording.get('done'):
+                self.notify('Finish burst persistence or resolve retained frames before starting acquisition.')
+                return
             if self.task_busy:
                 self.notify('Wait for the current file operation to finish.')
                 return
@@ -547,8 +595,12 @@ class Workbench(W.QMainWindow):
     def record_dialog(self):
         if not self.session:
             return
+        recording = self.session.status().get('recording') or {}
         if self.session.state == 'recording':
             self.session.stop_recording()
+            return
+        if recording.get('recording_mode') == 'ram_burst' and not recording.get('done'):
+            self.notify('Finish persistence or resolve retained frames before a new recording.')
             return
         frame = self.session.latest_frame()
         if frame is None:
@@ -556,21 +608,40 @@ class Workbench(W.QMainWindow):
         dialog = W.QDialog(self)
         dialog.setWindowTitle('Bounded recording · raw time sequence')
         form = W.QFormLayout(dialog)
+        mode = W.QComboBox(); mode.setObjectName('recording_mode')
+        mode.addItem('Continuous · save while acquiring', 'continuous')
+        mode.addItem('RAM burst · stop, then persist', 'ram_burst')
+        form.addRow('Recording mode', mode)
         frames = W.QSpinBox()
+        frames.setObjectName('recording_frames')
         frames.setRange(1, 10000)
         frames.setValue(300)
         seconds = W.QDoubleSpinBox()
         seconds.setRange(1, 600)
         seconds.setValue(30)
         budget = W.QLabel()
+        budget.setObjectName('recording_budget')
         budget.setWordWrap(True)
         buttons = W.QDialogButtonBox(W.QDialogButtonBox.StandardButton.Ok | W.QDialogButtonBox.StandardButton.Cancel)
-        free = shutil.disk_usage(self.output_dir).free
+        directory = self.output_dir / ('sequence_' + stamp())
         def update_budget():
-            needed = frames.value() * frame.data.nbytes
-            budget.setText(f'Up to {needed / 1024**3:.2f} GiB; available {free / 1024**3:.1f} GiB.\nRecording stops at the frame or duration limit; preview continues. Writer overflow stops recording and preserves a partial sequence.')
-            buttons.button(W.QDialogButtonBox.StandardButton.Ok).setEnabled(needed + 2 * 1024**3 < free)
+            from hyperlab.acquisition.sequence import recording_preflight
+            report = recording_preflight(directory, frame, frames.value(), recording_mode=mode.currentData())
+            text = (f"{frames.value()} requested frames · {report['expected_bytes']/1024**3:.2f} GiB raw. "
+                    f"Disk available {report['free_bytes_at_start']/1024**3:.1f} GiB; reserve {report['disk_reserve_bytes']/1024**2:g} MiB.")
+            memory = report['memory_preflight']
+            if memory is not None:
+                text += (f"\nRAM required {memory['required_bytes']/1024**3:.2f} GiB; available {memory['available_bytes']/1024**3:.2f} GiB. "
+                         'Frames remain volatile until saved. At the frame/duration limit or Stop, acquisition stops before persistence. '
+                         'Keep the app open until complete or recovery is resolved.')
+            else:
+                text += '\nPreview continues after recording stops. Writer overflow preserves a partial sequence; sustained rate is not guaranteed.'
+            if report['reasons']:
+                text += '\nUnavailable: ' + '; '.join(report['reasons'])
+            budget.setText(text); budget.setToolTip(json_text(report))
+            buttons.button(W.QDialogButtonBox.StandardButton.Ok).setEnabled(report['allowed'])
         frames.valueChanged.connect(update_budget)
+        mode.currentIndexChanged.connect(update_budget)
         form.addRow('Maximum frames', frames)
         form.addRow('Maximum duration (s)', seconds)
         form.addRow(budget)
@@ -579,8 +650,25 @@ class Workbench(W.QMainWindow):
         buttons.rejected.connect(dialog.reject)
         update_budget()
         if dialog.exec() == W.QDialog.DialogCode.Accepted:
-            directory = self.output_dir / ('sequence_' + stamp())
-            self.session.start_recording(directory, frames.value(), duration_s=seconds.value())
+            self.session.start_recording(directory, frames.value(), duration_s=seconds.value(), recording_mode=mode.currentData())
+
+    def retry_recording(self):
+        if self.session and (self.session.status().get('recording') or {}).get('can_retry'):
+            directory = self.output_dir / ('sequence_retry_' + stamp())
+            self.session.retry_recording(directory)
+            self.notify('Retrying persistence into a new directory; prior partial output is retained.')
+
+    def abandon_recording(self):
+        recording = (self.session.status().get('recording') or {}) if self.session else {}
+        if not recording.get('can_abandon'):
+            return
+        answer = W.QMessageBox.question(self, 'Abandon retained frames?',
+            f"Release {recording.get('retained_frames', 'unknown')} retained RAM frames? "
+            'Frames not confirmed on disk may be lost. Existing partial files are preserved.',
+            W.QMessageBox.StandardButton.Yes | W.QMessageBox.StandardButton.Cancel,
+            W.QMessageBox.StandardButton.Cancel)
+        if answer == W.QMessageBox.StandardButton.Yes and (self.session.status().get('recording') or {}).get('can_abandon'):
+            self.session.abandon_recording()
 
     def tick(self):
         tick_ns = time.perf_counter_ns()
@@ -664,6 +752,8 @@ class Workbench(W.QMainWindow):
                     self.background_log(payload)
             if self.closing and self.last_status.get('closed'):
                 self.close()
+            elif self.closing and self.last_status.get('pending_close') == 'recovery_required':
+                self.notify(self.last_status.get('close_blocked_reason') or 'Resolve retained frames before closing.')
         self.update_source_label()
         if self.closing and not self.task_busy and (not self.session or self.session.status().get('closed')):
             self.close()
@@ -678,7 +768,39 @@ class Workbench(W.QMainWindow):
             self.executor.submit(write)
 
     def update_recording_result(self, recording):
-        if not recording or not recording.get('done'):
+        if not recording:
+            return
+        self.recording_recovery.setVisible(bool(recording.get('can_retry') or recording.get('can_abandon')))
+        self.retry_recording_button.setEnabled(recording.get('can_retry') is True)
+        self.abandon_recording_button.setEnabled(recording.get('can_abandon') is True)
+        if recording.get('phase'):
+            fields = ('path','recording_mode','phase','admitted_frames','max_frames','copied_frames',
+                'data_fsynced_frames','durable_frames','readable_frames','unpersisted_frames','volatile_frames',
+                'retained_frames','retained_bytes','rejected_frames','abandoned_frames','discarded_ram_frames','error','done',
+                'completed','partial','save_reopen_verified','can_retry','can_abandon')
+            receipt = {key:recording.get(key) for key in fields}
+            self.recording_receipt = receipt
+            phase = {'acquiring':'Acquiring', 'waiting_for_camera_stop':'Stopping before save',
+                     'persisting':'Persisting', 'recovery_required':'Recovery required',
+                     'complete':'COMPLETE', 'partial':'PARTIAL', 'abandoned':'ABANDONED'}.get(receipt['phase'], 'Unknown phase')
+            if receipt['phase'] == 'complete' and not (receipt['done'] and receipt['completed'] is True and
+                    receipt['partial'] is False and receipt['save_reopen_verified'] is True):
+                phase = 'UNKNOWN · inconsistent completion receipt'
+            mode = 'RAM burst' if receipt['recording_mode'] == 'ram_burst' else 'Continuous recording'
+            readable = receipt['readable_frames'] if receipt['readable_frames'] is not None else 'not checked'
+            text = (f"{mode}: {phase} · admitted {receipt['admitted_frames']} / {receipt['max_frames']}"
+                    f" · durable {receipt['durable_frames']} · reopened {readable}")
+            if receipt['retained_frames']:
+                text += f" · retained in RAM {receipt['retained_frames']} · unpersisted {receipt['unpersisted_frames']}"
+            if receipt['error']:
+                text += ' · ' + receipt['error']
+            self.recording_label.setText(text)
+            self.recording_label.setToolTip('Admitted, copied, data-fsynced, durable and reopened counts are separate. '
+                'A RAM admission is volatile until persistence completes.\n' + json_text(receipt))
+            self.recording_label.setStyleSheet('padding:5px 8px; background:#e6edf2; color:#263e4b;')
+            self.recording_label.show()
+            return
+        if not recording.get('done'):
             return
         receipt = {key:recording.get(key) for key in ('path', 'written_frames', 'max_frames',
             'accepted_frames', 'explicitly_failed_frames', 'rejected_frames', 'overflow',
@@ -730,8 +852,7 @@ class Workbench(W.QMainWindow):
         readback = frame_meta.get('readback_settings') or connection.get('readback_settings') or connection.get('current_settings') or {}
         self.readback_label.setText(f"Frame/session readback: {readback.get('PixelFormat', '—')} · {readback.get('ExposureTime', '—')} µs · gain {readback.get('Gain', '—')}\nPer-frame settings require chunk evidence.")
         if self.diagnostics.isVisible():
-            self.detail_text.setPlainText(json_text({'profile': self.profile, 'session': status,
-                'viewing_mode': self.display_mode, 'ui_stage_timings': self.timings.snapshot()}))
+            self.refresh_details()
         if status.get('state') == 'ready':
             for name, control, multiplier in (('ExposureTime', self.exposure, .001), ('Gain', self.gain, 1)):
                 node = status.get('capabilities', {}).get(name, {})
@@ -743,37 +864,74 @@ class Workbench(W.QMainWindow):
 
     def update_controls(self):
         state = self.session.state if self.session else 'disconnected'
+        recording = self.last_status.get('recording') or {}
+        burst_pending = recording.get('recording_mode') == 'ram_burst' and not recording.get('done')
         from hyperlab.ui.presentation import camera_label
         self.device_label.setText(camera_label(state, discovering=self.discovering))
         if state == 'error' and self.connection_issue:
             self.device_label.setText('Camera: ' + self.connection_issue)
         self.device_label.setToolTip((self.profile or {}).get('name', 'No verified camera selected'))
-        self.connect_button.setEnabled(state in ('disconnected', 'error') and not self.task_busy)
-        self.disconnect_button.setEnabled(state in ('ready', 'streaming', 'recording', 'error'))
+        self.connect_button.setEnabled(state in ('disconnected', 'error') and not self.task_busy and not burst_pending)
+        self.disconnect_button.setEnabled(state in ('ready', 'streaming', 'recording', 'error') and
+            (not burst_pending or recording.get('phase') == 'acquiring'))
         returning = state in ('streaming', 'recording') and not self.follow_camera
-        self.preview_button.setEnabled(state == 'ready' or returning)
+        self.preview_button.setEnabled((state == 'ready' or returning) and not burst_pending and not self.closing)
         self.preview_button.setText('Return to live' if returning else '▶ Start preview')
         self.stop_button.setEnabled(state in ('streaming', 'recording'))
         self.record_button.setEnabled(state == 'recording' or (state == 'streaming' and
             self.last_status.get('has_current_frame', self.displayed_frame is not None)))
         self.record_button.setText('Stop recording' if state == 'recording' else 'Record…')
+        if burst_pending:
+            acquiring = state == 'recording' and recording.get('phase') == 'acquiring'
+            self.record_button.setEnabled(acquiring)
+            self.record_button.setText('Stop and save burst' if acquiring else 'Persistence pending')
         self.save_button.setEnabled(self.cube is not None)
         active = state in ('streaming', 'recording')
         acquisition = self.tabs.currentIndex() == 0
+        self.analysis_actions.setVisible(self.tabs.currentIndex() == 1)
         for item in (self.preview_button, self.save_button, self.record_button, self.freeze):
             item.setVisible(acquisition or active)
         self.stop_button.setVisible(acquisition or active)
         self.metrics_label.setVisible(state in ('streaming', 'recording') and self.display_mode in ('LIVE', 'FROZEN', 'STALE'))
         if hasattr(self, 'run_button'):
             self.method_changed()
+            available = not self.task_busy
+            self.results_button.setEnabled(available and bool(self.roi_results or self.product))
+            self.results_button.setToolTip('Inspect completed calculations.' if self.results_button.isEnabled()
+                                          else 'Complete an analysis to inspect its results.')
+            self.figure_action.setEnabled(available and any(spec is not None for spec in (self.plot_spec,self.map_spec,self.right_spec)))
+            self.share_action.setEnabled(self.figure_action.isEnabled())
+            self.roi_export_action.setEnabled(available and bool(self.roi_results))
+            self.derived_export_action.setEnabled(available and self.product is not None)
+            self.display_export_action.setEnabled(available and self.cube is not None)
+            self.robust_map_limits.setEnabled(available)
+            self.lock_map_limits.setEnabled(available)
         for item in (self.format, self.exposure, self.gain, self.session_mode, self.apply_button):
-            item.setEnabled(state in ('disconnected', 'ready'))
+            item.setEnabled(state in ('disconnected', 'ready') and not burst_pending and not self.closing)
+
+    def toggle_details(self):
+        self.diagnostics.setVisible(not self.diagnostics.isVisible())
+        if self.diagnostics.isVisible():
+            self.refresh_details()
+
+    def refresh_details(self):
+        def completed(spec):
+            return {'title':spec.title, 'source':spec.source, 'recipe':spec.metadata,
+                    'interpretation':spec.caption} if spec is not None else None
+        self.detail_text.setPlainText(json_text({'viewing_mode':self.display_mode,
+            'runtime':self.runtime_details,
+            'viewed_source':source_identity(self.cube) if self.cube else None,
+            'effective_display':getattr(self, 'effective_display', None),
+            'completed_chart':completed(self.plot_spec), 'completed_map':completed(self.map_spec),
+            'completed_right_plot':completed(self.right_spec),
+            'profile':self.profile, 'session':self.last_status,
+            'ui_stage_timings':self.timings.snapshot()}))
 
     def update_source_label(self):
         from hyperlab.ui.presentation import observation_label, viewing_label
         self.mode_label.setText('Viewing: ' + viewing_label(self.display_mode))
         meta = self.cube.metadata if self.cube else {}
-        self.source_label.setText('Viewed data: ' + observation_label(meta) if self.cube else 'Viewed data: none')
+        self.source_label.setText('Viewed data: ' + observation_label(meta, compact=True) if self.cube else 'Viewed data: none')
         self.source_label.setToolTip(json_text(source_identity(self.cube)) if self.cube else '')
 
     def set_cube(self, cube, *, live=False, reset_axis=True):
@@ -842,6 +1000,9 @@ class Workbench(W.QMainWindow):
             self.feature_last.setValue(cube.shape[2] - 1)
         from hyperlab.io.labels import display_labels
         labels = display_labels(cube.metadata, cube.shape[2])
+        for control in (self.pair_a, self.pair_b, self.feature_first, self.feature_last):
+            control.set_labels(labels)
+        labels = [f'{i} · {label}' for i,label in enumerate(labels)]
         if labels != [self.trace_channel.itemText(i) for i in range(self.trace_channel.count())]:
             channel = max(0, self.trace_channel.currentIndex())
             self.trace_channel.blockSignals(True)
@@ -887,15 +1048,19 @@ class Workbench(W.QMainWindow):
         band = min(self.band.value(), raw.shape[2] - 1)
         fast = self.display_mode in ('LIVE', 'STALE') and not self.full_resolution_view
         stride = (max(1, int(np.ceil(raw.shape[0] / 640))), max(1, int(np.ceil(raw.shape[1] / 960)))) if fast else (1, 1)
+        fallback = None
         try:
             selected = display_selection(self.cube, band, policy=self.policy.currentData(),
                                          cfa=self.view_mode.currentIndex() == 1 and not is_color,
                                          display_stride=stride, diagnostics=not fast, timings=self.timings)
         except ValueError as error:
-            self.notify(str(error))
+            fallback = str(error)
             selected = display_selection(self.cube, band, policy=self.policy.currentData(),
                                          display_stride=stride, diagnostics=not fast, timings=self.timings)
         self.display_selection = selected
+        effective = ('Delivered RGB' if is_color else 'CFA-cell RGB' if self.view_mode.currentIndex() == 1 and not fallback else 'Raw gray')
+        self.effective_display = {'requested':self.view_mode.currentText(), 'effective':effective, 'fallback_reason':fallback}
+        self.view_mode.setToolTip(f'Effective display: {effective}' + (f'\nFallback: {fallback}' if fallback else ''))
         shown = selected['image']
         if self.auto_levels.isChecked():
             self.levels = selected['levels']
@@ -930,6 +1095,8 @@ class Workbench(W.QMainWindow):
             self.axis_label.setText(f"λ[{band}] = {self.cube.wavelengths[band]:g} {self.cube.metadata.get('wavelength_units') or 'unknown unit'} · {self.cube.metadata.get('wavelength_evidence', 'declared')}")
         else:
             self.axis_label.setText(f'Fixed optical state · DN' if raw.shape[2] == 1 else f'Scan state index {band} · not nm')
+        if not is_color and self.view_mode.currentIndex() == 1:
+            self.axis_label.setText(self.axis_label.text() + f' · Display: {effective}' + (' (CFA unavailable; Details)' if fallback else ''))
         if selected['display_stride'] != [1, 1]:
             sy, sx = selected['display_stride']
             self.axis_label.setText(self.axis_label.text() + f' · Overview samples {sx}×{sy}; 1:1 for full detail')
@@ -964,7 +1131,8 @@ class Workbench(W.QMainWindow):
         show.setChecked(True)
         layout.addWidget(show)
         use = W.QCheckBox('Use'); use.setChecked(True)
-        use.setToolTip('Include in calculations; independent of visibility')
+        use.setToolTip('Include in amplitude/common-support comparisons. A strip can be inspected with Use off. '
+            'Exclude geometry removes pixels from statistics, brushes and profiles, not raw/global map display.')
         layout.addWidget(use)
         remove = self.button('×', lambda: self.remove_roi(self.roi_rows.index(row)))
         remove.setToolTip('Remove this ROI from the analysis definition')
@@ -1292,9 +1460,7 @@ class Workbench(W.QMainWindow):
         self.plot_source = getattr(self, '_completed_source', None) or self.cube
         self.plot_annotation = spec.metadata.get('analysis_context', {}).get('annotation', self.annotation)
         from hyperlab.ui.presentation import observation_label
-        revision = spec.metadata.get('analysis_version')
-        suffix = f' · ROI revision {revision}' if revision is not None else ''
-        self.analysis_label.setText(f'Chart: {spec.title} · {observation_label(spec.source)}{suffix}')
+        self.analysis_label.setText(f'Completed: {spec.title} · {observation_label(spec.source, compact=True)}')
         self.analysis_label.setToolTip(json_text({'source': spec.source, 'recipe': spec.metadata, 'caption': spec.caption}))
         same_histogram = (previous is not None and previous.title == spec.title == 'Sampled histogram'
             and previous.xlabel == spec.xlabel and len(previous.series) == len(spec.series) == 1
@@ -1313,7 +1479,7 @@ class Workbench(W.QMainWindow):
         legend.setColumnCount(1 if len(spec.series)<=4 else 2)
         self.curves = []
         self.error_bars = []
-        self.chart.setTitle(spec.title if any(np.any(np.isfinite(item['y'])) for item in spec.series) else spec.title+' · No valid samples',
+        self.chart.setTitle(self.chart_title(spec) if any(np.any(np.isfinite(item['y'])) for item in spec.series) else spec.title+' · No valid samples',
                             color='#17212b',size='12pt')
         self.chart.setToolTip(spec.caption)
         # 0.14 can rescale ticks when disabling SI prefixes; empty ranges also
@@ -1745,23 +1911,10 @@ class Workbench(W.QMainWindow):
         self.pc_component.blockSignals(False)
         source = source_identity(self.product_source)
         source['units'] = self.product_source.metadata.get('units')
+        from hyperlab.io.labels import display_labels
+        source['feature_labels'] = display_labels(self.product_source.metadata, self.product_source.shape[2])
         spec = map_plot(result, source, component=max(0, selected), degrees=self.angle_degrees.isChecked())
-        robust = self.robust_map_limits.isChecked()
-        values = spec.image[spec.valid_mask]
-        if robust and values.size:
-            lower,upper = np.percentile(values,[1,99])
-            if lower < upper:
-                spec.limits = (float(lower),float(upper))
-        key = (spec.title, spec.colour_label, robust)
-        if self.lock_map_limits.isChecked() and key in self._map_limits:
-            spec.limits = self._map_limits[key]
-        self._map_limits[key] = spec.limits
-        clipped = int(np.count_nonzero((values < spec.limits[0]) | (values > spec.limits[1]))) if values.size else 0
-        spec.metadata['display_limits'] = {'policy':'1–99 percentile' if robust else 'full finite range',
-            'shared_limits':self.lock_map_limits.isChecked(), 'limits':list(spec.limits), 'clipped_count':clipped,
-            'valid_count':int(values.size),'clipped_fraction':clipped/len(values) if values.size else None,
-            'scope':'Colour mapping only; source/map values, statistics and brush eligibility are unchanged'}
-        self.map_limits_note.setText(f'Colour limits: {clipped} / {len(values)} valid pixels clipped')
+        self.apply_map_limits(spec)
         self.map_spec = spec
         self.map_distributions = None
         self.map_brushes = []
@@ -1824,11 +1977,7 @@ class Workbench(W.QMainWindow):
             self.show_rois(stats, context)
             self.map_distributions, self.map_distribution_product = distributions, product
             self.map_distribution_context = context
-            selected = self.inspect_roi.currentData()
-            self.inspect_roi.blockSignals(True); self.inspect_roi.clear()
-            for record in regions:
-                self.inspect_roi.addItem(record['name'],record['roi_id'])
-            self.inspect_roi.setCurrentIndex(max(0,self.inspect_roi.findData(selected))); self.inspect_roi.blockSignals(False)
+            self.refresh_inspect_selector()
             self.map_tools.show(); self.update_right_task()
         self.background(lambda:compute_pinned(cube,run),completed,'Computing exact map ROI distributions and linked amplitude…')
 
@@ -1837,7 +1986,12 @@ class Workbench(W.QMainWindow):
         chart = self.shape_chart; chart.clear(); chart.plotItem.legend.clear(); chart.show()
         for axis in ('left','bottom'):
             chart.showAxis(axis)
-        chart.setTitle(spec.title,color='#17212b',size='12pt'); chart.setToolTip(spec.caption)
+        chart.setTitle(self.chart_title(spec),color='#17212b',size='12pt'); chart.setToolTip(spec.caption)
+        if spec.metadata.get('operation') == 'strip_profile':
+            empty = [int(np.count_nonzero(np.asarray(item['used_counts']) == 0)) for item in spec.series]
+            self.brush_note.setText('No selected map range. Profile uses per-feature mean / spatial SD; '
+                + ', '.join(f"{item['name']}: {count}/{len(item['x'])} empty bins" for item,count in zip(spec.series,empty))
+                + '. Hover for counts and reasons; gaps retain their original distance.')
         chart.setLabel('bottom',spec.xlabel,**{'color':'#26313d','siPrefixEnableRanges':()})
         chart.setLabel('left',spec.ylabel,**{'color':'#26313d','siPrefixEnableRanges':()})
         chart.getAxis('bottom').setTicks([list(enumerate(spec.categories))] if spec.categories else None)
@@ -1876,10 +2030,46 @@ class Workbench(W.QMainWindow):
                     self.brush_low.setValue(low); self.brush_high.setValue(high); self.apply_map_brush()
                 self.brush_region.sigRegionChangeFinished.connect(changed)
         chart.enableAutoRange(); self.chart_row.setSizes([1,1]); self.vertical.setSizes([440,300])
+        if spec.metadata.get('operation') == 'strip_profile':
+            chart.setXRange(*[spec.metadata['bin_edges_px'][i] for i in (0,-1)], padding=0)
         self.notify(f'Right plot ready: {spec.title}')
+
+    @staticmethod
+    def chart_title(spec):
+        from html import escape
+        title = escape(spec.title)
+        if spec.metadata.get('roi_comparison') or spec.metadata.get('operation') == 'strip_profile':
+            spread = spec.metadata.get('spatial_sd', spec.metadata.get('operation') == 'strip_profile')
+            summary = ('Median / Q25–Q75' if spread else 'Median') if spec.metadata.get('summary') == 'median' else ('Mean / spatial SD' if spread else 'Mean')
+            support = 'common pixels' if spec.metadata.get('support') == 'common' else 'per-feature valid pixels'
+            title += f'<br><span style="font-size:10pt">{summary} · {support}</span>'
+        return title
+
+    def profile_hover(self, position):
+        if (self.right_spec is None or self.right_spec.metadata.get('operation') != 'strip_profile' or
+                not self.shape_chart.plotItem.sceneBoundingRect().contains(position)):
+            return
+        from hyperlab.plots import profile_bin_text
+        distance = self.shape_chart.plotItem.vb.mapSceneToView(position).x()
+        self.shape_chart.setToolTip(profile_bin_text(self.right_spec, distance))
+
+    def refresh_inspect_selector(self):
+        if self.map_distributions is None:
+            return
+        selected = self.inspect_roi.currentData()
+        profile = self.right_task.currentData() == 'profile'
+        records = self.map_distribution_context['regions']
+        self.inspect_roi.blockSignals(True); self.inspect_roi.clear()
+        for record in records:
+            if record['role'] != 'exclude' and (record['included'] or (profile and record['geometry']['type'] == 'strip')):
+                name = record['name'] + (' (inspect only)' if not record['included'] else '')
+                self.inspect_roi.addItem(name, record['roi_id'])
+        self.inspect_roi.setCurrentIndex(max(0,self.inspect_roi.findData(selected)))
+        self.inspect_roi.blockSignals(False)
 
     def update_right_task(self):
         self._right_request += 1
+        self.refresh_inspect_selector()
         task = self.right_task.currentData()
         distribution_task = task in ('ecdf','histogram')
         self.brush_controls.setVisible(distribution_task)
@@ -2004,6 +2194,30 @@ class Workbench(W.QMainWindow):
         self.background(lambda:brush_map(product,record,bounds,exclusions=context['exclusions']),completed,
                         'Selecting the inclusive map range at exact raw pixel coordinates…')
 
+    def apply_map_limits(self, spec):
+        from hyperlab.plots import map_display_limits, map_limit_key
+        robust = self.robust_map_limits.isChecked()
+        key = map_limit_key(spec, robust)
+        locked = self._map_limits.get(key) if self.lock_map_limits.isChecked() else None
+        map_display_limits(spec, robust=robust, locked_limits=locked)
+        self._map_limits[key] = spec.limits
+        limits = spec.metadata['display_limits']
+        self.map_limits_note.setText(f"Colour limits: {limits['clipped_count']} / {limits['valid_count']} valid pixels clipped")
+        self.map_limits_note.setToolTip(json_text(limits))
+
+    def refresh_map_limits(self):
+        if self.map_spec is None or self.task_busy:
+            return
+        from copy import deepcopy
+        from dataclasses import replace
+        spec = replace(self.map_spec, metadata=deepcopy(self.map_spec.metadata))
+        self.apply_map_limits(spec)
+        self.map_spec = spec
+        self.derived_image.setLevels(spec.limits)
+        self.colorbar.setLevels(spec.limits)
+        self.derived_graphics.setToolTip(spec.caption + '\n' + json_text(spec.metadata))
+        self.notify('Colour limits updated; completed values, statistics and selections are retained.')
+
     def refresh_product(self):
         if self.product is not None:
             self.show_product(self.product, self.product_source)
@@ -2017,7 +2231,7 @@ class Workbench(W.QMainWindow):
         self._right_task_pending = self._brush_pending = False
         self._right_request += 1
 
-    def figure_export(self):
+    def completed_figures(self):
         choices = {'Current chart': self.plot_spec}
         sources = {'Current chart': (self.plot_source, self.plot_annotation)}
         if self.right_spec is not None:
@@ -2029,6 +2243,10 @@ class Workbench(W.QMainWindow):
             sources['Derived map'] = (self.product_source,
                 self.map_spec.metadata.get('analysis_context', {}).get('annotation'))
         choices = {name:spec for name,spec in choices.items() if spec is not None}
+        return choices, sources
+
+    def figure_export(self):
+        choices, sources = self.completed_figures()
         if not choices:
             self.notify('Display a chart or compute a map before Figure export.')
             return
@@ -2065,6 +2283,62 @@ class Workbench(W.QMainWindow):
         buttons.accepted.connect(save); buttons.rejected.connect(dialog.reject)
         self._figure_dialog = dialog
         dialog.show()
+
+    def share_figure(self):
+        if self.task_busy or self.closing:
+            self.notify('Wait for the current operation before preparing a share copy.'); return
+        choices, sources = self.completed_figures()
+        if not choices:
+            self.notify('Complete a chart or map before preparing a share copy.'); return
+        dialog = W.QDialog(self); dialog.setWindowTitle('Preview share copy')
+        dialog.setProperty('source_bound', True)
+        layout = W.QVBoxLayout(dialog)
+        selected = W.QComboBox(); selected.addItems(list(choices)); layout.addWidget(selected)
+        notice = W.QLabel('Review this separate copy before saving. Names and source identifiers use local aliases or are removed; '
+            'numeric values, units and support remain. Scientific data are not anonymous. '
+            'Original internal exports are unchanged. Files are saved locally; nothing is uploaded.')
+        notice.setWordWrap(True); layout.addWidget(notice)
+        preview = W.QLabel('Preparing preview…'); preview.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        preview.setMinimumSize(540,320); layout.addWidget(preview,1)
+        buttons = W.QDialogButtonBox(W.QDialogButtonBox.StandardButton.Save | W.QDialogButtonBox.StandardButton.Cancel)
+        layout.addWidget(buttons)
+        def render_preview():
+            selected.setEnabled(False); buttons.button(W.QDialogButtonBox.StandardButton.Save).setEnabled(False)
+            original = choices[selected.currentText()]
+            def render():
+                from io import BytesIO
+                from hyperlab.sharing import sanitized_plot
+                from hyperlab.plots import render_figure
+                safe = sanitized_plot(original)
+                figure = render_figure(safe, width_mm=180, height_mm=115, dpi=96)
+                try:
+                    buffer = BytesIO(); figure.savefig(buffer, format='png', dpi=96)
+                    return buffer.getvalue()
+                finally:
+                    figure.clear()
+            def ready(data):
+                if dialog.property('source_invalidated') or not dialog.isVisible():
+                    return
+                pixmap = QtGui.QPixmap(); pixmap.loadFromData(data, 'PNG')
+                preview.setPixmap(pixmap); selected.setEnabled(True)
+                buttons.button(W.QDialogButtonBox.StandardButton.Save).setEnabled(True)
+                self.notify('Share preview ready. Review the visible data before saving the separate copy.')
+            self.background(render,ready,'Preparing metadata-reduced share preview…')
+        def save():
+            if dialog.property('source_invalidated') or self.task_busy:
+                self.notify('Wait for the preview, or reopen Share copy for the current source.'); return
+            from hyperlab.sharing import export_share_bundle
+            original = choices[selected.currentText()]
+            pinned_source = sources[selected.currentText()][0]
+            directory = self.output_dir / ('share_' + stamp())
+            dialog.accept()
+            self.background(lambda:export_share_bundle(original,directory,source_cube=pinned_source,
+                width_mm=180,height_mm=115,dpi=300),
+                lambda path:self.notify(f'Separate share copy saved locally: {path}'), 'Saving reviewed share copy…')
+        selected.currentTextChanged.connect(render_preview)
+        buttons.accepted.connect(save); buttons.rejected.connect(dialog.reject)
+        self._share_dialog = dialog
+        dialog.show(); render_preview()
 
     def set_view_link(self, enabled):
         # Two aspect constraints with different viewport sizes feed range changes
@@ -2571,12 +2845,17 @@ class Workbench(W.QMainWindow):
         form.addWidget(self.reference_roi)
         self.pair_controls = W.QWidget()
         pair = W.QFormLayout(self.pair_controls); pair.setContentsMargins(0, 0, 0, 0)
-        self.pair_a, self.pair_b = W.QSpinBox(), W.QSpinBox()
+        self.pair_a, self.pair_b = StoredFeatureSpinBox(), StoredFeatureSpinBox()
         pair.addRow('Feature A', self.pair_a); pair.addRow('Feature B', self.pair_b)
+        validity_toggle = W.QToolButton(); validity_toggle.setText('Advanced validity ▸'); validity_toggle.setCheckable(True)
+        pair.addRow(validity_toggle)
+        self.validity_options = W.QWidget()
+        validity = W.QFormLayout(self.validity_options); validity.setContentsMargins(0,0,0,0)
+        validity_toggle.toggled.connect(self.validity_options.setVisible)
         self.minimum_denominator = W.QDoubleSpinBox()
         self.minimum_denominator.setDecimals(8); self.minimum_denominator.setRange(1e-8, 1e12)
         self.minimum_denominator.setValue(1e-6)
-        pair.addRow('Min. |denominator|', self.minimum_denominator)
+        validity.addRow('Min. |denominator|', self.minimum_denominator)
         self.minimum_denominator.setToolTip('Numerical denominator validity only; this is not a measured noise threshold.')
         self.low_signal_controls = W.QWidget()
         signal = W.QFormLayout(self.low_signal_controls); signal.setContentsMargins(0, 0, 0, 0)
@@ -2592,15 +2871,16 @@ class Workbench(W.QMainWindow):
         signal.addRow(self.low_signal_enabled); signal.addRow('Min. |A| + |B|', self.low_signal_threshold)
         signal.addRow(self.low_signal_source)
         self.low_signal_note = W.QLabel('Low-signal qualification: UNKNOWN')
-        signal.addRow(self.low_signal_note)
         self.low_signal_enabled.toggled.connect(self.roi_changed)
         self.low_signal_threshold.valueChanged.connect(self.roi_changed)
         self.low_signal_source.textChanged.connect(self.roi_changed)
-        pair.addRow(self.low_signal_controls)
+        validity.addRow(self.low_signal_controls)
+        pair.addRow(self.validity_options); self.validity_options.hide()
+        pair.addRow(self.low_signal_note)
         form.addWidget(self.pair_controls)
         self.spectral_controls = W.QWidget()
         spectral = W.QFormLayout(self.spectral_controls); spectral.setContentsMargins(0, 0, 0, 0)
-        self.feature_first, self.feature_last = W.QSpinBox(), W.QSpinBox()
+        self.feature_first, self.feature_last = StoredFeatureSpinBox(), StoredFeatureSpinBox()
         spectral.addRow('First stored feature', self.feature_first)
         spectral.addRow('Last stored feature', self.feature_last)
         self.local_window, self.local_degree = W.QSpinBox(), W.QSpinBox()
@@ -2623,7 +2903,9 @@ class Workbench(W.QMainWindow):
         self.run_button = self.button('Run analysis', self.run_analysis, 'roi_compare')
         self.run_button.setStyleSheet('QPushButton {background:#147b83; color:white; padding:8px; font-weight:600;} '
             'QPushButton:disabled {background:#dfe7eb; color:#71808b;}')
-        form.addWidget(self.run_button)
+        self.analysis_actions = W.QWidget()
+        action_row = W.QHBoxLayout(self.analysis_actions); action_row.setContentsMargins(0,0,0,0)
+        action_row.addWidget(self.run_button)
         self.map_tools = W.QWidget(); map_form = W.QFormLayout(self.map_tools); map_form.setContentsMargins(0,0,0,0)
         self.right_task = W.QComboBox()
         for label,key in [('Map ECDF / brush','ecdf'),('Map histogram / brush','histogram'),
@@ -2645,15 +2927,18 @@ class Workbench(W.QMainWindow):
         self.brush_note = W.QLabel('No selected contrast range'); self.brush_note.setWordWrap(True)
         map_form.addRow(self.brush_note)
         form.addWidget(self.map_tools); self.map_tools.hide()
-        row = W.QHBoxLayout()
-        row.addWidget(self.button('Results…', self.science_results_dialog, 'science_results'))
+        self.results_button = self.button('Results…', self.science_results_dialog, 'science_results')
+        action_row.addWidget(self.results_button)
         export = W.QToolButton(); export.setText('Export…')
         export.setPopupMode(W.QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = W.QMenu(export)
-        for label, callback in [('Publication figure + data', self.figure_export), ('ROI tables + recipe', self.export_rois),
-                                ('Derived array + mask', self.export_derived), ('Display image', self.export_display)]:
-            menu.addAction(label, callback)
-        export.setMenu(menu); row.addWidget(export); form.addLayout(row)
+        self.figure_action = menu.addAction('Publication figure + data', self.figure_export)
+        self.share_action = menu.addAction('Share copy · preview first…', self.share_figure)
+        self.roi_export_action = menu.addAction('ROI tables + recipe', self.export_rois)
+        self.derived_export_action = menu.addAction('Derived array + mask', self.export_derived)
+        self.display_export_action = menu.addAction('Display image', self.export_display)
+        export.setMenu(menu); export.setObjectName('analysis_export'); action_row.addWidget(export)
+        action_row.addStretch()
         form.addWidget(self.button('Specimen / thermal context…', self.annotation_dialog, 'annotation'))
         form.addWidget(self.button('Study…', self.study_dialog, 'study'))
         details = W.QToolButton(); details.setText('Plot and view options ▸'); details.setCheckable(True)
@@ -2673,9 +2958,10 @@ class Workbench(W.QMainWindow):
         self.pc_component.currentIndexChanged.connect(self.refresh_product); options_form.addWidget(self.pc_component)
         self.angle_degrees = W.QCheckBox('Angle in degrees'); self.angle_degrees.toggled.connect(self.refresh_product)
         self.lock_map_limits = W.QCheckBox('Share map limits'); self.lock_map_limits.setChecked(True)
+        self.lock_map_limits.toggled.connect(self.refresh_map_limits)
         self.robust_map_limits = W.QCheckBox('Robust map colour limits · 1–99%')
         self.robust_map_limits.setToolTip('Display only. Tails remain in values, distributions, brushes and exports.')
-        self.robust_map_limits.toggled.connect(self.refresh_product)
+        self.robust_map_limits.toggled.connect(self.refresh_map_limits)
         self.map_limits_note = W.QLabel('Colour limits: no map'); self.map_limits_note.setWordWrap(True)
         self.link_views = W.QCheckBox('Link image views'); self.link_views.setChecked(True)
         self.link_views.toggled.connect(self.set_view_link)
@@ -2697,12 +2983,14 @@ class Workbench(W.QMainWindow):
         spectral = operation in ('smooth', 'derivative1', 'derivative2', 'integral', 'continuum','interval_map','interval_mean_map')
         self.pair_controls.setVisible(operation in ('difference', 'ratio', 'normalized_difference'))
         self.low_signal_controls.setVisible(operation == 'normalized_difference')
+        self.low_signal_note.setVisible(operation == 'normalized_difference')
         self.spectral_controls.setVisible(spectral)
         self.local_window.setEnabled(operation in ('smooth', 'derivative1', 'derivative2'))
         self.local_degree.setEnabled(self.local_window.isEnabled())
         self.trace_channel.setVisible(operation == 'recorded' or self.plot_mode.currentIndex() == 1)
         if self.cube is None:
             self.run_button.setEnabled(False)
+            self.run_button.setToolTip('Open data or acquire a frame first.')
             return
         cap = capabilities(self.cube)
         self.low_signal_threshold.setSuffix(' ' + self.cube.metadata['units'])
@@ -2720,6 +3008,7 @@ class Workbench(W.QMainWindow):
             note = 'ROI bounds use raw pixels.'
         if not allowed:
             note = 'Open a recorded sequence.' if operation == 'recorded' else cap['reasons'].get(gate, 'Unavailable for these data.')
+        self.run_button.setToolTip('Wait for the current calculation.' if self.task_busy else note)
         self.capability_label.setText(f"{cap['axis_kind']} · {cap['effective_dimensions']} features · {self.cube.metadata['units']}\n{note}")
         if not self.session or self.session.state not in ('streaming','recording'):
             self.install_interval_selector()
