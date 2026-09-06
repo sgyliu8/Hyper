@@ -114,7 +114,45 @@ def roi_pairwise(cube, results, names, *, summary="mean"):
     return {"pairs": pairs, "metadata": metadata}
 
 
-def local_polynomial(wavelengths_nm, values, *, derivative=0, window=5, degree=2):
+def _gap_constraints(max_gap_nm, measurement_gaps_nm):
+    if max_gap_nm is not None:
+        if (isinstance(max_gap_nm, (bool, np.bool_)) or not np.isscalar(max_gap_nm) or
+                not isinstance(max_gap_nm, (int, float, np.number)) or
+                not np.isfinite(max_gap_nm) or max_gap_nm <= 0):
+            raise ValueError('max_gap_nm must be a finite positive value or None')
+        max_gap_nm = float(max_gap_nm)
+    try:
+        gaps = np.asarray([] if measurement_gaps_nm is None else measurement_gaps_nm, np.float64)
+    except (TypeError, ValueError) as error:
+        raise ValueError('Measurement gaps must be finite [lower_nm, upper_nm] intervals') from error
+    if gaps.size == 0:
+        return max_gap_nm, []
+    if gaps.ndim != 2 or gaps.shape[1] != 2 or not np.all(np.isfinite(gaps)) or np.any(gaps[:, 0] >= gaps[:, 1]):
+        raise ValueError('Measurement gaps must be finite increasing [lower_nm, upper_nm] intervals')
+    return max_gap_nm, [list(pair) for pair in sorted(set(map(tuple, gaps.tolist())))]
+
+
+def _physical_support(x, indices, max_gap_nm, gaps):
+    delta = np.diff(x)
+    maximum = float(delta.max()) if len(delta) else None
+    # Only absorb arithmetic roundoff from coordinate conversion/subtraction;
+    # this is not a physical gap tolerance or a measurement-resolution claim.
+    roundoff = float(8*np.finfo(np.float64).eps*max(1., float(np.max(np.abs(x)))))
+    crossed = [gap for gap in gaps if x[0] < gap[1]-roundoff and x[-1] > gap[0]+roundoff]
+    reasons = []
+    if max_gap_nm is not None and maximum is not None and maximum > max_gap_nm+roundoff:
+        reasons.append('Adjacent wavelength spacing exceeds max_gap_nm')
+    if crossed:
+        reasons.append('Support crosses a declared measurement gap')
+    return {'band_indices': [int(index) for index in indices],
+            'interval_nm': [float(x[0]), float(x[-1])], 'span_nm': float(x[-1]-x[0]),
+            'max_adjacent_delta_nm': maximum, 'crossed_measurement_gaps_nm': deepcopy(crossed),
+            'comparison_roundoff_nm': roundoff,
+            'allowed': not reasons, 'reason': '; '.join(reasons) if reasons else None}
+
+
+def local_polynomial(wavelengths_nm, values, *, derivative=0, window=5, degree=2,
+                     max_gap_nm=None, measurement_gaps_nm=None):
     """Complete centered windows on true increasing coordinates; no edge extension."""
     x, y = np.asarray(wavelengths_nm, np.float64), np.asarray(values, np.float64)
     if (x.ndim != 1 or y.shape != x.shape or not np.all(np.isfinite(x)) or
@@ -127,7 +165,19 @@ def local_polynomial(wavelengths_nm, values, *, derivative=0, window=5, degree=2
     output = np.full(y.shape, np.nan)
     reasons = ["Unsupported centered edge window"] * len(x)
     half = window//2
+    max_gap_nm, gaps = _gap_constraints(max_gap_nm, measurement_gaps_nm)
+    support = []
+    for center in range(len(x)):
+        indices = np.arange(max(0, center-half), min(len(x), center+half+1))
+        record = _physical_support(x[indices], indices, max_gap_nm, gaps)
+        record.update(center_band_index=int(center), complete=len(indices) == window)
+        if not record['complete']:
+            record.update(allowed=False, reason='Unsupported centered edge window')
+        support.append(record)
     for center in range(half, len(x)-half):
+        if not support[center]['allowed']:
+            reasons[center] = support[center]['reason']
+            continue
         selected = slice(center-half, center+half+1)
         signal = y[selected]
         if not np.all(np.isfinite(signal)):
@@ -150,7 +200,10 @@ def local_polynomial(wavelengths_nm, values, *, derivative=0, window=5, degree=2
             "metadata": {"method": "Local polynomial", "window": int(window), "degree": int(degree),
                          "derivative_order": int(derivative), "rank_rcond": POLYNOMIAL_RCOND,
                          "offset_scale": "maximum absolute wavelength offset within each centered window",
-                         "edge_policy": "invalid without a complete centered window"}}
+                         "edge_policy": "invalid without a complete centered window",
+                         "max_gap_nm": max_gap_nm, "measurement_gaps_nm": gaps,
+                         "measurement_gap_rule": "support interior must not intersect an explicitly excluded open interval",
+                         "window_support": support}}
 
 
 def _interval_area(x, y):
@@ -159,7 +212,8 @@ def _interval_area(x, y):
     return float(value) if np.isfinite(value) else None
 
 
-def spectral_roi_features(cube, results, operation, *, summary="mean", bands=None, window=5, degree=2):
+def spectral_roi_features(cube, results, operation, *, summary="mean", bands=None, window=5, degree=2,
+                          max_gap_nm=None, measurement_gaps_nm=None):
     """Feature of a common-support ROI summary; never a propagated SD/IQR ribbon."""
     operations = {"smooth": 0, "derivative1": 1, "derivative2": 2, "integral": None, "continuum": None}
     if operation not in operations:
@@ -186,6 +240,26 @@ def spectral_roi_features(cube, results, operation, *, summary="mean", bands=Non
     x = all_nm[indices]
     if len(indices) < (3 if operation == "continuum" else 2) or np.any(np.abs(np.diff(indices)) != 1):
         raise ValueError("Spectral features need contiguous original bands without gaps and sufficient interval samples")
+    max_gap_nm, declared_gaps = _gap_constraints(max_gap_nm, cube.metadata.get('measurement_gaps_nm'))
+    _, added_gaps = _gap_constraints(None, measurement_gaps_nm)
+    _, gaps = _gap_constraints(None, declared_gaps+added_gaps)
+    interval_support = _physical_support(x, indices, max_gap_nm, gaps)
+    fwhm = cube.metadata.get('fwhm')
+    fwhm_units = cube.metadata.get('fwhm_units', cube.metadata['wavelength_units'])
+    fwhm_scale = wavelength_unit_scale(fwhm_units)
+    fwhm_original = None if fwhm is None else np.asarray(fwhm, np.float64)[indices].tolist()
+    fwhm_nm = None
+    if fwhm_original is not None and fwhm_scale is not None:
+        with np.errstate(over='ignore', invalid='ignore'):
+            converted = np.asarray(fwhm_original)*fwhm_scale
+        if np.all(np.isfinite(converted)):
+            fwhm_nm = converted.tolist()
+    bandpass = {'fwhm_original': fwhm_original, 'fwhm_units': fwhm_units, 'fwhm_nm': fwhm_nm,
+                'fwhm_unit_source': 'fwhm_units' if 'fwhm_units' in cube.metadata else 'wavelength_units (Cube/ENVI convention)',
+                'response_evidence': deepcopy(cube.metadata.get('response_evidence')),
+                'response_source': deepcopy(cube.metadata.get('response_source')),
+                'response_calibration_id': (cube.metadata.get('measurement_context') or {}).get('response_calibration_id'),
+                'note': 'Supplied bandwidth/response evidence, not a validation; sampling interval and fitted curves do not establish spectral resolution.'}
     derivative = operations[operation]
     source_units = cube.metadata["units"]
     units = "dimensionless" if operation == "continuum" else (
@@ -194,7 +268,10 @@ def spectral_roi_features(cube, results, operation, *, summary="mean", bands=Non
         original_wavelength_units=cube.metadata["wavelength_units"],
         original_wavelengths=cube.wavelengths[indices].tolist(), source_units=source_units, units=units,
         actual_interval_nm=[float(x[0]), float(x[-1])], interval_span_nm=float(x[-1]-x[0]),
-        gap_policy="complete contiguous original band interval; no interpolation or extrapolation",
+        gap_policy="contiguous original bands plus explicit physical gap constraints; no interpolation or extrapolation",
+        max_gap_nm=max_gap_nm, measurement_gaps_nm=gaps,
+        measurement_gap_rule="support interior must not intersect an explicitly excluded open interval",
+        interval_support=interval_support, bandpass_evidence=bandpass,
         uncertainty="not supplied; spatial SD/IQR are not propagated through a summary transformation",
         reflectance_kind=cube.metadata.get("reflectance_kind"),
         wavelength_evidence=cube.metadata.get("wavelength_evidence"),
@@ -209,9 +286,14 @@ def spectral_roi_features(cube, results, operation, *, summary="mean", bands=Non
                  "valid_mask": np.isfinite(signal), "used_count": int(used[0]), "features": {},
                  "invalid_reasons": [None if valid else "No finite common-support summary" for valid in np.isfinite(signal)]}
         if derivative is not None:
-            fitted = local_polynomial(x, signal, derivative=derivative, window=window, degree=degree)
+            fitted = local_polynomial(x, signal, derivative=derivative, window=window, degree=degree,
+                                      max_gap_nm=max_gap_nm, measurement_gaps_nm=gaps)
             curve.update({key: fitted[key] for key in ("y", "valid_mask", "invalid_reasons")})
             metadata.update(fitted["metadata"])
+        elif not interval_support['allowed']:
+            curve.update(y=np.full(len(x), np.nan), valid_mask=np.zeros(len(x), bool),
+                         invalid_reasons=[interval_support['reason']]*len(x),
+                         features={'status': 'unavailable', 'reason': interval_support['reason']})
         elif not np.all(np.isfinite(signal)):
             curve["features"] = {"status": "unavailable", "reason": "No complete finite common-support interval"}
         elif operation == "integral":
@@ -252,4 +334,9 @@ def spectral_roi_features(cube, results, operation, *, summary="mean", bands=Non
                 if area is None:
                     curve["features"]["reason"] = "Depth area is not representable as finite float64"
         curves.append(curve)
+    for record in metadata.get('window_support', []):
+        positions = record['band_indices']
+        record['fwhm_nm'] = None if fwhm_nm is None else [fwhm_nm[position] for position in positions]
+        record['band_indices'] = indices[positions].tolist()
+        record['center_band_index'] = int(indices[record['center_band_index']])
     return {"curves": curves, "metadata": metadata}

@@ -111,11 +111,13 @@ def test_stopped_snapshot_retains_exact_raw_frame(window):
 
 def test_readback_and_metric_schema(window):
     window.last_status = FakeSession().status()
+    window.last_status['state'] = 'recording'
+    window.display_mode = 'LIVE'
     window.update_status()
     assert '49998' in window.readback_label.text()
     assert '125 ms' in window.metrics_label.text()
     assert 'Writer 17.0' in window.metrics_label.text()
-    assert 'writer queue 1' in window.metrics_label.text()
+    assert 'queue 1' in window.metrics_label.text()
 
 
 def test_sequence_reopen_via_recorded_npy_and_time_is_not_band(window, qtbot, tmp_path):
@@ -203,15 +205,15 @@ def test_recording_start_is_not_saved_and_failure_remains_visible(window, tmp_pa
     assert window.recent_list.count() == 1
     assert window.recent_list.item(0).text().startswith('PARTIAL')
     assert window.message.text() == 'writer overflow'
-    assert window.device_label.text() == 'Test camera'
+    assert window.device_label.text() == 'Camera: Previewing'
     events[:] = [{'kind':'error', 'error':'snapshot disk full', 'operation':'snapshot'}]
     window.tick()
     assert window.message.text() == 'snapshot disk full'
-    assert window.device_label.text() == 'Test camera'
+    assert window.device_label.text() == 'Camera: Previewing'
     session.state = 'error'
     events[:] = [{'kind':'error', 'error':'transport timeout'}]
     window.tick()
-    assert window.device_label.text() == 'Communication fault'
+    assert window.device_label.text() == 'Camera: Communication fault'
 
 
 def test_linked_product_view_is_visible_without_range_feedback(window, qtbot):

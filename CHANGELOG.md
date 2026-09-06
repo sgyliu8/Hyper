@@ -1,5 +1,16 @@
 # Changes
 
+## Unreleased — technical-first increment
+
+- Separate camera state, viewed observation and completed analysis identity;
+  saved real captures retain their origin and hide historical live latency.
+- Repair unnamed single-plane traces and reuse chunk-first tri-state settings
+  checks. Unknown settings permit descriptive traces without repeatability claims.
+- Name overlapping mailbox replacement events accurately and add bounded host
+  stage profiling. Sampled preview never reduces raw analysis/export data.
+- Add explicit diagnostic low-signal policy, on-demand pinned quality/readiness,
+  and actual wavelength-window support with optional declared gap constraints.
+
 ## 0.3.1 — live ROI correction, 2026-09-05
 
 - Correct repeated density-axis scaling and let the display run between bounded

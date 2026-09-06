@@ -37,6 +37,13 @@ class Workbench(W.QMainWindow):
         self.setMinimumSize(960, 620)
         self.session_factory = session_factory
         self.session = None
+        self.discovering = False
+        self.connection_issue = None
+        self.follow_camera = False
+        self.full_resolution_view = False
+        from hyperlab.profiling import StageTimings
+        self.timings = StageTimings()
+        self._last_tick_ns = None
         from hyperlab.paths import load_config, workspace as resolve_workspace
         self.config = load_config()
         self.profile = self.config.get('device_profile')
@@ -119,7 +126,7 @@ class Workbench(W.QMainWindow):
         title = W.QLabel('HyperLab')
         title.setStyleSheet('font-size:22px; font-weight:700; color:#123e52')
         header.addWidget(title)
-        self.device_label = W.QLabel('Disconnected · mvBlueFOX3')
+        self.device_label = W.QLabel('Camera: Disconnected')
         header.addWidget(self.device_label)
         header.addStretch()
         self.mode_label = W.QLabel('EMPTY')
@@ -131,7 +138,7 @@ class Workbench(W.QMainWindow):
         header.addWidget(self.disconnect_button)
         header.addWidget(self.button('Open data…', self.open_dialog, 'open'))
         header.addWidget(self.button('Workspace…', self.choose_output, 'workspace'))
-        header.addWidget(self.button('Diagnostics', lambda: self.diagnostics.setVisible(not self.diagnostics.isVisible())))
+        header.addWidget(self.button('Session details', lambda: self.diagnostics.setVisible(not self.diagnostics.isVisible())))
         layout.addLayout(header)
         self.tabs = W.QTabBar()
         for text in ('Acquisition', 'Analysis', 'Calibration'):
@@ -243,6 +250,9 @@ class Workbench(W.QMainWindow):
         axis.addWidget(self.axis_label)
         axis.addWidget(self.band, 1)
         layout.addLayout(axis)
+        self.source_label = W.QLabel('Viewed data: none')
+        self.source_label.setWordWrap(True)
+        layout.addWidget(self.source_label)
         self.analysis_label = W.QLabel('Analysis source: no computed chart')
         self.analysis_label.setWordWrap(True)
         layout.addWidget(self.analysis_label)
@@ -256,7 +266,7 @@ class Workbench(W.QMainWindow):
         self.message = W.QLabel('Connect opens a real camera session. Preview is not recorded by default.')
         self.message.setWordWrap(True)
         self.statusBar().addWidget(self.message, 1)
-        self.diagnostics = W.QDockWidget('Device, evidence and local output', self)
+        self.diagnostics = W.QDockWidget('Session details · current state and historical telemetry', self)
         detail = W.QWidget()
         dl = W.QVBoxLayout(detail)
         self.detail_text = W.QPlainTextEdit()
@@ -362,7 +372,10 @@ class Workbench(W.QMainWindow):
         self.task_busy = True
         self.update_controls()
         self.notify(label)
-        future = self.executor.submit(function)
+        def measured():
+            with self.timings.measure('background_operation'):
+                return function()
+        future = self.executor.submit(measured)
         def completed(result):
             try:
                 self.results.put((callback, result.result(), None))
@@ -385,9 +398,12 @@ class Workbench(W.QMainWindow):
             if previous and not previous.close(wait=True):
                 raise RuntimeError('Previous camera session has not released its resources.')
             return discover_profiles()
+        self.discovering = True
+        self.connection_issue = None
         self.background(discover, self.choose_profile, 'Checking the current device and runtime…')
 
     def choose_profile(self, report):
+        self.discovering = False
         profiles = report['profiles']
         if not profiles:
             self.device_label.setText(report['issues'][0]['code'].replace('_',' ').title() if report['issues'] else 'No camera')
@@ -440,6 +456,14 @@ class Workbench(W.QMainWindow):
                 self.cube = None
             self.product = self.product_source = None
             self.map_spec = self.plot_spec = None
+            self.plot_source = self.roi_source = None
+            self.roi_result_context = None
+            self.roi_results = []
+            self.display_mode = 'EMPTY'
+            self.image.clear()
+            self.chart.clear()
+            self.shape_chart.hide()
+            self.analysis_label.setText('Analysis source: no computed chart')
             self.derived_graphics.hide()
             self.temporal_plot.clear()
             self.band.blockSignals(True)
@@ -448,8 +472,10 @@ class Workbench(W.QMainWindow):
             self.band.blockSignals(False)
             self.freeze.setChecked(False)
             self.last_frame_identity = None
-            self.session.set_settings(self.requested_settings(), mode=self.session_mode.currentData())
-            self.session.start_preview()
+            if self.session.state not in ('streaming', 'recording'):
+                self.session.set_settings(self.requested_settings(), mode=self.session_mode.currentData())
+                self.session.start_preview()
+            self.follow_camera = True
 
     def stop_preview(self):
         if self.session:
@@ -509,12 +535,17 @@ class Workbench(W.QMainWindow):
             self.session.start_recording(directory, frames.value(), duration_s=seconds.value())
 
     def tick(self):
+        tick_ns = time.perf_counter_ns()
+        if self._last_tick_ns is not None:
+            self.timings.record('qt_timer_lateness', max(0, tick_ns - self._last_tick_ns - 33_000_000))
+        self._last_tick_ns = tick_ns
         try:
             while True:
                 callback, result, error = self.results.get_nowait()
                 self.task_busy = False
                 failed = bool(error)
                 if error:
+                    self.discovering = False
                     self.notify(f'{type(error).__name__}: {error}')
                 else:
                     try:
@@ -539,35 +570,40 @@ class Workbench(W.QMainWindow):
                 if event.get('kind') == 'error' or event.get('error'):
                     if event.get('kind') == 'error' and self.session.state == 'error':
                         from hyperlab.devices import connection_error_kind
-                        self.device_label.setText(connection_error_kind(event.get('error') or event))
+                        self.connection_issue = connection_error_kind(event.get('error') or event)
                     self.notify(str(event.get('error') or event))
                 if event.get('kind') == 'state':
                     self.notify(f"Device state: {event.get('state', self.session.state)}")
             self.last_status = self.session.status()
             frame = self.session.latest_frame()
-            if frame is not None and self.session.state in ('streaming', 'recording'):
+            if self.follow_camera and frame is not None and self.session.state in ('streaming', 'recording'):
                 age = max(0.0, (time.monotonic_ns() - frame.metadata['host_monotonic_ns']) / 1e9)
                 self.display_mode = 'FROZEN' if self.freeze.isChecked() else 'STALE' if self.last_status.get('stale', age > 2) else 'LIVE'
                 if not self.freeze.isChecked() and frame.identity != self.last_frame_identity:
                     self.displayed_frame = frame
                     self.last_frame_identity = frame.identity
                     meta = dict(frame.metadata, data_level='raw_frame', data_source='LIVE', acquisition_source='LIVE')
-                    if frame.data.ndim == 3:
-                        meta['channel_labels'] = list(str(meta.get('pixel_format', 'RGB8'))[:3])
-                    self.set_cube(Cube(frame.data if frame.data.ndim == 3 else frame.data[..., None], meta), live=True)
+                    with self.timings.measure('ui_frame_update'):
+                        self.set_cube(Cube(frame.data if frame.data.ndim == 3 else frame.data[..., None], meta), live=True)
                     self.session.mark_displayed(frame)
             elif self.displayed_frame is not None and self.display_mode in ('LIVE', 'FROZEN', 'STALE'):
                 self.display_mode = 'REPLAY'
+                self.follow_camera = False
             self.update_controls()
             now = time.monotonic()
             if now - self.last_log >= 1:
                 self.last_log = now
                 self.update_status()
+                queued_ns = time.perf_counter_ns()
+                QtCore.QTimer.singleShot(0, lambda started=queued_ns: self.timings.record('qt_queued_callback_delay', time.perf_counter_ns() - started))
                 if self.benchmark_log:
                     payload = dict(self.last_status, host_utc=datetime.now(timezone.utc).isoformat(),
                                    host_monotonic=now, display_mode=self.display_mode,
                                    rss_bytes=psutil.Process().memory_info().rss,
                                    ui_task_busy=self.task_busy, ui_result_queue=self.results.qsize())
+                    payload['ui_stage_timings'] = self.timings.snapshot()
+                    payload['view_recipe'] = {key: value for key, value in getattr(self, 'display_selection', {}).items()
+                                             if key in ('display_stride', 'raw_extent', 'statistics_scope', 'statistics_source')}
                     self.background_log(payload)
             if self.closing and self.last_status.get('closed'):
                 self.close()
@@ -596,13 +632,24 @@ class Workbench(W.QMainWindow):
         screen_age = '—'
         if self.displayed_frame is not None and self.display_mode in ('LIVE','FROZEN','STALE'):
             screen_age = f"{max(0,time.monotonic_ns()-self.displayed_frame.metadata.get('host_monotonic_ns',time.monotonic_ns()))/1e6:.0f}"
-        self.metrics_label.setText(f"Capture {metric('capture_fps')} fps  |  Display {metric('display_fps')} fps  |  Writer {recording.get('writer_fps', 0):.1f} fps  |  receive age {age_text} ms / screen age {screen_age} ms  |  preview drop {metrics.get('preview_dropped', '—')}  |  device gaps {metrics.get('device_frame_gaps', '—')}  |  writer queue {recording.get('queue_length', 0)}")
+        live_view = self.display_mode in ('LIVE', 'FROZEN', 'STALE') and status.get('state') in ('streaming', 'recording')
+        if live_view:
+            text = f"Capture {metric('capture_fps')} fps  |  Display {metric('display_fps')} fps  |  Latest capture age {age_text} ms  |  Displayed frame age {screen_age} ms"
+            if status.get('state') == 'recording':
+                writer_fps = recording.get('writer_fps')
+                rate = f'{writer_fps:.1f}' if isinstance(writer_fps, (int, float)) else '—'
+                text += f"  |  Writer {rate} fps · queue {recording.get('queue_length', '—')}"
+            self.metrics_label.setText(text)
+        else:
+            self.metrics_label.clear()
+        self.metrics_label.setVisible(live_view)
         frame_meta = status.get('frame_metadata') or {}
         connection = status.get('connection_metadata') or {}
         readback = frame_meta.get('readback_settings') or connection.get('readback_settings') or connection.get('current_settings') or {}
         self.readback_label.setText(f"Frame/session readback: {readback.get('PixelFormat', '—')} · {readback.get('ExposureTime', '—')} µs · gain {readback.get('Gain', '—')}\nPer-frame settings require chunk evidence.")
         if self.diagnostics.isVisible():
-            self.detail_text.setPlainText(json_text({'profile': self.profile, 'session': status}))
+            self.detail_text.setPlainText(json_text({'profile': self.profile, 'session': status,
+                'viewing_mode': self.display_mode, 'ui_stage_timings': self.timings.snapshot()}))
         if status.get('state') == 'ready':
             for name, control, multiplier in (('ExposureTime', self.exposure, .001), ('Gain', self.gain, 1)):
                 node = status.get('capabilities', {}).get(name, {})
@@ -614,9 +661,16 @@ class Workbench(W.QMainWindow):
 
     def update_controls(self):
         state = self.session.state if self.session else 'disconnected'
+        from hyperlab.ui.presentation import camera_label
+        self.device_label.setText(camera_label(state, discovering=self.discovering))
+        if state == 'error' and self.connection_issue:
+            self.device_label.setText('Camera: ' + self.connection_issue)
+        self.device_label.setToolTip((self.profile or {}).get('name', 'No verified camera selected'))
         self.connect_button.setEnabled(state in ('disconnected', 'error') and not self.task_busy)
         self.disconnect_button.setEnabled(state in ('ready', 'streaming', 'recording', 'error'))
-        self.preview_button.setEnabled(state == 'ready')
+        returning = state in ('streaming', 'recording') and not self.follow_camera
+        self.preview_button.setEnabled(state == 'ready' or returning)
+        self.preview_button.setText('Return to live' if returning else '▶ Start preview')
         self.stop_button.setEnabled(state in ('streaming', 'recording'))
         self.record_button.setEnabled(state == 'recording' or (state == 'streaming' and
             self.last_status.get('has_current_frame', self.displayed_frame is not None)))
@@ -627,17 +681,18 @@ class Workbench(W.QMainWindow):
         for item in (self.preview_button, self.save_button, self.record_button, self.freeze):
             item.setVisible(acquisition or active)
         self.stop_button.setVisible(acquisition or active)
-        self.metrics_label.setVisible(self.session is not None)
+        self.metrics_label.setVisible(state in ('streaming', 'recording') and self.display_mode in ('LIVE', 'FROZEN', 'STALE'))
         if hasattr(self, 'run_button'):
             self.method_changed()
         for item in (self.format, self.exposure, self.gain, self.session_mode, self.apply_button):
             item.setEnabled(state in ('disconnected', 'ready'))
 
     def update_source_label(self):
-        acquisition = self.cube.metadata.get('acquisition_source', self.cube.metadata.get('data_source', 'unknown')) if self.cube else 'unknown'
-        level = self.cube.metadata.get('data_level') if self.cube else '—'
-        frame_text = f' · #{self.displayed_frame.metadata.get("sequence")}' if self.displayed_frame is not None else ''
-        self.mode_label.setText(f'{self.display_mode}{frame_text} · {level} · source {acquisition}')
+        from hyperlab.ui.presentation import observation_label, viewing_label
+        self.mode_label.setText('Viewing: ' + viewing_label(self.display_mode))
+        meta = self.cube.metadata if self.cube else {}
+        self.source_label.setText('Viewed data: ' + observation_label(meta) if self.cube else 'Viewed data: none')
+        self.source_label.setToolTip(json_text(source_identity(self.cube)) if self.cube else '')
 
     def set_cube(self, cube, *, live=False, reset_axis=True):
         old_shape = self.cube.shape if self.cube is not None else None
@@ -648,6 +703,7 @@ class Workbench(W.QMainWindow):
         self.pixel_label.setText('Pixel: —')
         self.pixel_label.setToolTip('')
         if not live:
+            self.follow_camera = False
             if reset_axis:
                 self.analysis_version += 1
                 self.annotation = None
@@ -681,7 +737,8 @@ class Workbench(W.QMainWindow):
                 control.setMaximum(cube.shape[2] - 1)
             self.pair_b.setValue(min(1, cube.shape[2] - 1))
             self.feature_last.setValue(cube.shape[2] - 1)
-        labels = cube.metadata.get('channel_labels') or [str(i) for i in range(cube.shape[2])]
+        from hyperlab.io.labels import display_labels
+        labels = display_labels(cube.metadata, cube.shape[2])
         if labels != [self.trace_channel.itemText(i) for i in range(self.trace_channel.count())]:
             channel = max(0, self.trace_channel.currentIndex())
             self.trace_channel.blockSignals(True)
@@ -724,28 +781,34 @@ class Workbench(W.QMainWindow):
         raw = self.cube.data
         is_color = bool(self.cube.metadata.get('channel_labels'))
         band = min(self.band.value(), raw.shape[2] - 1)
+        fast = self.display_mode in ('LIVE', 'STALE') and not self.full_resolution_view
+        stride = (max(1, int(np.ceil(raw.shape[0] / 640))), max(1, int(np.ceil(raw.shape[1] / 960)))) if fast else (1, 1)
         try:
             selected = display_selection(self.cube, band, policy=self.policy.currentData(),
-                                         cfa=self.view_mode.currentIndex() == 1 and not is_color)
+                                         cfa=self.view_mode.currentIndex() == 1 and not is_color,
+                                         display_stride=stride, diagnostics=not fast, timings=self.timings)
         except ValueError as error:
             self.notify(str(error))
-            selected = display_selection(self.cube, band, policy=self.policy.currentData())
+            selected = display_selection(self.cube, band, policy=self.policy.currentData(),
+                                         display_stride=stride, diagnostics=not fast, timings=self.timings)
         self.display_selection = selected
         shown = selected['image']
         if self.auto_levels.isChecked():
             self.levels = selected['levels']
         else:
             self.levels = (self.low.value(), max(self.low.value() + 1e-12, self.high.value()))
-        self.image.setImage(shown, autoLevels=False, levels=self.levels)
+        with self.timings.measure('image_item_enqueue'):
+            self.image.setImage(shown, autoLevels=False, levels=self.levels)
         h, w = raw.shape[:2]
-        self.image.setRect(QtCore.QRectF(0, 0, w, h))
+        self.image.setRect(QtCore.QRectF(*selected.get('display_extent', [0, 0, w, h])))
         if self.overlay.isChecked():
             limit = selected['saturation_value']
             if limit is not None:
                 saturated = selected['saturated_mask']
-                rgba = np.zeros((h, w, 4), dtype=np.uint8)
+                rgba = np.zeros(saturated.shape + (4,), dtype=np.uint8)
                 rgba[saturated] = [255, 50, 35, 125]
                 self.saturation_overlay.setImage(rgba, autoLevels=False)
+                self.saturation_overlay.setRect(QtCore.QRectF(0, 0, w, h))
                 self.saturation_overlay.show()
             else:
                 self.saturation_overlay.hide()
@@ -754,21 +817,28 @@ class Workbench(W.QMainWindow):
         if self.sequence:
             self.axis_label.setText(f'Time frame T={self.band.value()} / {self.sequence.frame_count - 1} · time axis, not spectral')
         elif is_color:
-            self.axis_label.setText('R / G / B channels · not spectral')
+            self.axis_label.setText(' / '.join(self.cube.metadata['channel_labels']) + ' channels · not spectral')
         elif self.cube.wavelengths is not None:
             self.axis_label.setText(f"λ[{band}] = {self.cube.wavelengths[band]:g} {self.cube.metadata.get('wavelength_units') or 'unknown unit'} · {self.cube.metadata.get('wavelength_evidence', 'declared')}")
         else:
             self.axis_label.setText(f'Fixed optical state · DN' if raw.shape[2] == 1 else f'Scan state index {band} · not nm')
+        if selected['display_stride'] != [1, 1]:
+            sy, sx = selected['display_stride']
+            self.axis_label.setText(self.axis_label.text() + f' · Overview samples {sx}×{sy}; 1:1 for full detail')
         if time.monotonic() - self.last_quality > 0.5:
             self.last_quality = time.monotonic()
-            self.update_chart(shown, selected=selected)
+            with self.timings.measure('chart_update'):
+                self.update_chart(shown, selected=selected)
 
     def fit(self):
+        self.full_resolution_view = False
         if self.cube is not None:
             h, w = self.cube.shape[:2]
             self.plot.setRange(xRange=(0, w), yRange=(0, h), padding=0.025)
 
     def one_to_one(self):
+        self.full_resolution_view = True
+        self.render_current()
         box = self.plot.getViewBox()
         (x0, x1), (y0, y1) = box.viewRange()
         width, height = box.width(), box.height()
@@ -876,11 +946,9 @@ class Workbench(W.QMainWindow):
     def pixel_hover(self, scene_position):
         if self.cube is None or not self.plot.sceneBoundingRect().contains(scene_position):
             return
-        point = self.image.mapFromScene(scene_position)
-        # ImageItem may display a half-resolution CFA image; scale back to raw coordinates.
-        sx = self.cube.shape[1] / self.image.image.shape[1]
-        sy = self.cube.shape[0] / self.image.image.shape[0]
-        x, y = int(np.floor(point.x() * sx)), int(np.floor(point.y() * sy))
+        point = self.plot.getViewBox().mapSceneToView(scene_position)
+        # Inspection uses raw axes even when an overview displays sampled pixels.
+        x, y = int(np.floor(point.x())), int(np.floor(point.y()))
         if 0 <= x < self.cube.shape[1] and 0 <= y < self.cube.shape[0]:
             values = self.cube.data[y, x]
             from hyperlab.analysis.core import _quality
@@ -907,11 +975,15 @@ class Workbench(W.QMainWindow):
         saturation = (f"{100*counts['saturated']/eligible:.2f}% ({counts['saturated']}/{eligible} eligible)"
                       if selected['saturation_value'] is not None and eligible else 'unknown')
         mean = f"{selected['raw_mean']:.2f}" if selected['raw_mean'] is not None else 'unavailable'
-        self.quality_label.setText(f"{policy} mean {mean} · raw saturation {saturation}\n"
+        scope = selected.get('statistics_scope', 'full raw frame')
+        self.quality_label.setText(f"{scope.capitalize()} · {policy} mean {mean} · saturation {saturation}\n"
             f"Display histogram: {selected['sample_count']}/{selected['sample_total']} selected samples\n"
             'Invalid and ignored samples do not affect contrast.')
         self.quality_label.setToolTip(json_text({'raw_counts': counts, **{k:v for k,v in selected.items()
             if k not in ('image','valid_mask','values','saturated_mask')}}))
+        # Pending controls do not replace the completed chart's source or recipe.
+        if self.task_busy and self.plot_spec is not None:
+            return
         mode = self.plot_mode.currentIndex()
         source = source_identity(cube)
         if mode == 0:
@@ -966,12 +1038,11 @@ class Workbench(W.QMainWindow):
         self.completed_plot_mode = self.plot_mode.currentIndex()
         self.plot_source = getattr(self, '_completed_source', None) or self.cube
         self.plot_annotation = spec.metadata.get('analysis_context', {}).get('annotation', self.annotation)
-        origin = spec.source.get('acquisition_source') or spec.source.get('data_source') or 'UNKNOWN'
-        frame = spec.source.get('sequence')
-        source = (f"frame {frame} / stream {spec.source.get('stream_epoch')}" if frame is not None
-                  else Path(spec.source.get('source_file') or 'in-memory example').name)
-        self.analysis_label.setText(f'{source} · {origin} · {spec.ylabel}')
-        self.analysis_label.setToolTip(spec.caption)
+        from hyperlab.ui.presentation import observation_label
+        revision = spec.metadata.get('analysis_version')
+        suffix = f' · ROI revision {revision}' if revision is not None else ''
+        self.analysis_label.setText(f'Chart: {spec.title} · {observation_label(spec.source)}{suffix}')
+        self.analysis_label.setToolTip(json_text({'source': spec.source, 'recipe': spec.metadata, 'caption': spec.caption}))
         self.chart.clear()
         legend = self.chart.plotItem.legend
         legend.clear()
@@ -1077,7 +1148,8 @@ class Workbench(W.QMainWindow):
                 'support':self.roi_support.currentData(), 'annotation':self.annotation,
                 'method':self.analysis_method.currentData(), 'trace_channel':self.trace_channel.currentIndex(),
                 'feature_interval':[self.feature_first.value(), self.feature_last.value()],
-                'window':self.local_window.value(), 'degree':self.local_degree.value()}
+                'window':self.local_window.value(), 'degree':self.local_degree.value(),
+                'max_gap_nm':self.max_gap_nm.value() or None}
 
     def analyze_rois(self):
         if self.cube is None or self.closing:
@@ -1197,6 +1269,9 @@ class Workbench(W.QMainWindow):
         a, b = self.pair_a.value(), self.pair_b.value()
         minimum_denominator = self.minimum_denominator.value()
         context.update(pair_indices=[a, b], minimum_denominator=minimum_denominator)
+        low_signal = self.low_signal_threshold.value() if self.low_signal_enabled.isChecked() else None
+        low_signal_source = self.low_signal_source.text().strip() if low_signal is not None else None
+        context.update(low_signal_threshold=low_signal, low_signal_source=low_signal_source)
         if operation in ('spectral_angle', 'reference_rmse'):
             context['support'] = 'common'
         def run():
@@ -1215,8 +1290,10 @@ class Workbench(W.QMainWindow):
             if operation == 'difference':
                 return difference(cube, a, b, policy=policy)
             from hyperlab.analysis.maps import normalized_difference
-            return (normalized_difference if operation == 'normalized_difference' else ratio)(
-                cube, a, b, policy=policy, minimum_denominator=minimum_denominator)
+            if operation == 'normalized_difference':
+                return normalized_difference(cube, a, b, policy=policy, minimum_denominator=minimum_denominator,
+                    low_signal_threshold=low_signal, low_signal_source=low_signal_source)
+            return ratio(cube, a, b, policy=policy, minimum_denominator=minimum_denominator)
         def completed(result):
             result, context['source_fingerprint'] = result
             result['metadata']['analysis_context'] = context
@@ -1255,7 +1332,7 @@ class Workbench(W.QMainWindow):
                 spec = roi_pair_plot(cube, results, result, colors)
             else:
                 result = spectral_roi_features(cube, results, operation, summary=context['summary'], bands=bands,
-                    window=context['window'], degree=context['degree'])
+                    window=context['window'], degree=context['degree'], max_gap_nm=context['max_gap_nm'])
                 spec = roi_feature_plot(result, names, colors, source=context['source'])
             spec.metadata['analysis_context'] = context
             return result, spec, results
@@ -1336,6 +1413,9 @@ class Workbench(W.QMainWindow):
     def show_product(self, result, source_cube=None):
         self.product = result
         self.product_source = source_cube or self.cube
+        signal = result.get('metadata', {}).get('low_signal_assessment')
+        if signal:
+            self.low_signal_note.setText('Completed map signal policy: ' + str(signal['status']))
         count = result['scores'].shape[2] if 'scores' in result else 1
         self.pc_component.blockSignals(True)
         selected = min(self.pc_component.currentIndex(), count-1)
@@ -1359,8 +1439,12 @@ class Workbench(W.QMainWindow):
         self.colorbar.setLevels(spec.limits)
         label_style = {'color':'#26313d','font-size':'11pt','siPrefixEnableRanges':()}
         self.colorbar.axis.setLabel(spec.colour_label,**label_style)
-        self.derived_plot.setTitle(spec.title,color='#17212b',size='12pt')
-        self.derived_graphics.setToolTip(spec.caption)
+        from html import escape
+        identity = spec.source.get('sequence')
+        map_source = f'frame {identity}' if identity is not None else Path(spec.source.get('source_file') or 'current data').name
+        self.derived_plot.setTitle(escape(f'{spec.title} · {map_source}'),color='#17212b',size='12pt')
+        from hyperlab.ui.presentation import observation_label
+        self.derived_graphics.setToolTip(f'{observation_label(spec.source)}\n{spec.caption}\n{json_text(spec.metadata)}')
         self.derived_plot.setLabel('bottom', spec.xlabel,**label_style)
         self.derived_plot.setLabel('left', spec.ylabel,**label_style)
         self.derived_graphics.show()
@@ -1468,9 +1552,11 @@ class Workbench(W.QMainWindow):
         if self.task_busy:
             self.notify('Wait for the current file operation to finish.')
             return
-        if self.session and self.session.state in ('streaming', 'recording', 'stopping'):
-            self.notify('Stop acquisition before opening replay data.')
+        if self.session and self.session.state == 'stopping':
+            self.notify('Wait for acquisition to finish stopping before opening data.')
             return
+        # Opening a file is an explicit viewing choice; the camera keeps its owner.
+        self.follow_camera = False
         path = Path(path)
         def read():
             if path.is_dir() or path.name in ('sequence.npy', 'sequence.npy.json'):
@@ -1508,8 +1594,6 @@ class Workbench(W.QMainWindow):
         if self.sequence:
             frame = self.sequence.frame(index)
             meta = dict(frame.metadata)
-            if frame.data.ndim == 3:
-                meta.setdefault('channel_labels', list(str(meta.get('pixel_format', 'RGB8'))[:3]))
             self.set_cube(Cube(frame.data if frame.data.ndim == 3 else frame.data[..., None],
                                dict(meta, data_level='raw_frame')), reset_axis=reset_axis)
         else:
@@ -1591,7 +1675,8 @@ class Workbench(W.QMainWindow):
                      f"Acquisition settings: {report['matching_settings']['status']}"]
             for index, item in enumerate(report['files']):
                 stats = item['summary']['per_channel']
-                labels = stats.get('channel_labels') or [str(i) for i in range(len(stats['mean']))]
+                from hyperlab.io.labels import display_labels
+                labels = display_labels(item['source_provenance'], len(stats['mean']))
                 means = ', '.join(f'{label}: {value:.6g}' if value is not None else f'{label}: unavailable'
                                   for label, value in zip(labels, stats['mean']))
                 lines.append(f"\n{chr(65 + index)} · {Path(item['path']).name}\nMean ({item['summary']['units']}): {means}\nSpatial SD: {stats['std']}\nValid samples: {stats['count']}")
@@ -1738,12 +1823,25 @@ class Workbench(W.QMainWindow):
                         completed,'Computing all recorded ROI samples…')
 
     def quality_details(self):
-        payload = {'display': self.quality_label.toolTip(),
-                   'rois': self.plot_spec.record() if self.plot_spec else None}
-        dialog = W.QDialog(self); dialog.setWindowTitle('Validity and pinned ROI statistics')
+        if self.cube is None or self.task_busy:
+            self.notify('Open data and finish the current operation before inspecting quality.')
+            return
+        from hyperlab.acquisition.readiness import measurement_readiness
+        from hyperlab.experiment_metadata import compute_pinned
+        cube, policy = self.cube, self.policy.currentData()
+        dialog = W.QDialog(self); dialog.setWindowTitle('Full-resolution quality · pinned observation')
         dialog.resize(700,520); layout = W.QVBoxLayout(dialog)
-        text = W.QPlainTextEdit(json_text(payload)); text.setReadOnly(True); layout.addWidget(text)
-        layout.addWidget(self.button('Close',dialog.accept)); dialog.exec()
+        text = W.QPlainTextEdit('Computing exact counts and quantiles from the pinned raw frame…')
+        text.setReadOnly(True); layout.addWidget(text)
+        layout.addWidget(self.button('Close',dialog.accept))
+        self._quality_dialog = dialog
+        dialog.show()
+        def complete(payload):
+            report, fingerprint = payload
+            self.last_readiness = dict(report, source_fingerprint=fingerprint)
+            text.setPlainText(json_text(self.last_readiness))
+        self.background(lambda: compute_pinned(cube, lambda: measurement_readiness(cube, policy=policy)),
+                        complete, 'Inspecting full-resolution quality of the pinned observation…')
 
     def sequence_statistics(self):
         if not self.sequence:
@@ -1901,6 +1999,26 @@ class Workbench(W.QMainWindow):
         self.minimum_denominator.setDecimals(8); self.minimum_denominator.setRange(1e-8, 1e12)
         self.minimum_denominator.setValue(1e-6)
         pair.addRow('Min. |denominator|', self.minimum_denominator)
+        self.minimum_denominator.setToolTip('Numerical denominator validity only; this is not a measured noise threshold.')
+        self.low_signal_controls = W.QWidget()
+        signal = W.QFormLayout(self.low_signal_controls); signal.setContentsMargins(0, 0, 0, 0)
+        self.low_signal_enabled = W.QCheckBox('Analyst signal threshold')
+        self.low_signal_enabled.setToolTip('Optional diagnostic exclusion using |A| + |B| in source units; no SNR estimate.')
+        self.low_signal_threshold = W.QDoubleSpinBox()
+        self.low_signal_threshold.setDecimals(6); self.low_signal_threshold.setRange(1e-6, 1e12)
+        self.low_signal_threshold.setValue(1)
+        self.low_signal_source = W.QLineEdit(); self.low_signal_source.setPlaceholderText('Reason / evidence source required')
+        for item in (self.low_signal_threshold, self.low_signal_source):
+            item.setEnabled(False)
+            self.low_signal_enabled.toggled.connect(item.setEnabled)
+        signal.addRow(self.low_signal_enabled); signal.addRow('Min. |A| + |B|', self.low_signal_threshold)
+        signal.addRow(self.low_signal_source)
+        self.low_signal_note = W.QLabel('Low-signal qualification: UNKNOWN')
+        signal.addRow(self.low_signal_note)
+        self.low_signal_enabled.toggled.connect(self.roi_changed)
+        self.low_signal_threshold.valueChanged.connect(self.roi_changed)
+        self.low_signal_source.textChanged.connect(self.roi_changed)
+        pair.addRow(self.low_signal_controls)
         form.addWidget(self.pair_controls)
         self.spectral_controls = W.QWidget()
         spectral = W.QFormLayout(self.spectral_controls); spectral.setContentsMargins(0, 0, 0, 0)
@@ -1911,6 +2029,11 @@ class Workbench(W.QMainWindow):
         self.local_window.setRange(3, 101); self.local_window.setSingleStep(2); self.local_window.setValue(5)
         self.local_degree.setRange(1, 6); self.local_degree.setValue(2)
         spectral.addRow('Window (odd)', self.local_window); spectral.addRow('Polynomial degree', self.local_degree)
+        self.max_gap_nm = W.QDoubleSpinBox(); self.max_gap_nm.setDecimals(3); self.max_gap_nm.setRange(0, 1e9)
+        self.max_gap_nm.setSpecialValueText('Unspecified')
+        self.max_gap_nm.setToolTip('Optional explicit maximum adjacent wavelength gap. Unspecified imposes no invented physical cutoff.')
+        self.max_gap_nm.valueChanged.connect(self.roi_changed)
+        spectral.addRow('Max. adjacent gap (nm)', self.max_gap_nm)
         form.addWidget(self.spectral_controls)
         self.trace_channel = W.QComboBox(); self.trace_channel.addItem('0')
         self.trace_channel.setToolTip('Stored channel for time traces; channels are never averaged together.')
@@ -1964,6 +2087,7 @@ class Workbench(W.QMainWindow):
         operation = self.analysis_method.currentData()
         spectral = operation in ('smooth', 'derivative1', 'derivative2', 'integral', 'continuum')
         self.pair_controls.setVisible(operation in ('difference', 'ratio', 'normalized_difference'))
+        self.low_signal_controls.setVisible(operation == 'normalized_difference')
         self.spectral_controls.setVisible(spectral)
         self.local_window.setEnabled(operation in ('smooth', 'derivative1', 'derivative2'))
         self.local_degree.setEnabled(self.local_window.isEnabled())
@@ -1972,6 +2096,7 @@ class Workbench(W.QMainWindow):
             self.run_button.setEnabled(False)
             return
         cap = capabilities(self.cube)
+        self.low_signal_threshold.setSuffix(' ' + self.cube.metadata['units'])
         gate = {'pairs':'roi', 'reference_rmse':'roi', 'normalized_difference':'ratio',
                 'smooth':'spectral_features', 'derivative1':'spectral_features',
                 'derivative2':'spectral_features', 'integral':'spectral_features'}.get(operation, operation)

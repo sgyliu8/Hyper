@@ -485,7 +485,7 @@ def test_persistent_state_restart_latest_exact_snapshot_record(tmp_path):
         assert session.session_id == identity
         assert session.latest_frame().metadata["sequence"] > displayed.metadata["sequence"]
         assert session.status()["latest_queue_length"] == 1
-        assert session.status()["preview_dropped"] > 0
+        assert session.status()["mailbox_replacement_events"] > 0
     finally:
         assert session.close(wait=True)
     assert session.status()["camera_released"]

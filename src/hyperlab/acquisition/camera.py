@@ -9,6 +9,7 @@ from uuid import uuid4
 from .frame import Frame, save_frame
 from .sequence import SequenceRecorder, atomic_json
 from .session import utc_now
+from hyperlab.profiling import StageTimings
 
 
 class CameraSession:
@@ -29,6 +30,7 @@ class CameraSession:
         self._state = "disconnected"
         self._error = None
         self._backend = None
+        self._backend_timings = None
         self._latest = None
         self._display_identity = None
         self._stop_requested = threading.Event()
@@ -43,7 +45,8 @@ class CameraSession:
         self._sequence = 0
         self._captured = 0
         self._displayed = 0
-        self._preview_dropped = 0
+        self._mailbox_replacement_events = 0
+        self.timings = StageTimings()
         self._device_gaps = 0
         self._previous_device_id = None
         self._fetch_timeouts = 0
@@ -207,7 +210,16 @@ class CameraSession:
                     "capture_fps": self._fps(self._capture_times) if self._state in ("streaming", "recording") else 0,
                     "display_fps": self._fps(self._display_times) if self._state in ("streaming", "recording") else 0,
                     "captured_frames": self._captured, "displayed_frames": self._displayed,
-                    "preview_dropped": self._preview_dropped, "device_frame_gaps": self._device_gaps,
+                    "mailbox_replacement_events": self._mailbox_replacement_events,
+                    "mailbox_replacement_definition": "Incoming frame replaced a cached latest identity before display acknowledgement; "
+                        "the replaced frame may still be rendered, so this overlaps displayed_frames and is not device loss",
+                    "counter_scope": "CameraSession object lifetime; cumulative across stream epochs and reconnects",
+                    "displayed_frames_definition": "Unique frame identities acknowledged after application image update; not measured screen paint",
+                    "latest_queue_definition": "Cached latest-frame occupancy; not a pending or unseen-frame count",
+                    "stage_timings": self.timings.snapshot(),
+                    "backend_stage_timings": self._backend_timings.snapshot() if self._backend_timings else None,
+                    "backend_timing_scope": "Current or most recently owned backend instance",
+                    "device_frame_gaps": self._device_gaps,
                     "fetch_timeouts": self._fetch_timeouts, "latest_queue_length": int(current is not None),
                     "latest_queue_capacity": 1, "frame_age_s": age,
                     "frame_age_definition": "host monotonic now minus host buffer receive; excludes uncalibrated device clock",
@@ -229,6 +241,7 @@ class CameraSession:
             from hyperlab.adapters.gentl import GenTLBackend
             factory = GenTLBackend
         self._backend = factory(self.cti, self.serial)
+        self._backend_timings = getattr(self._backend, 'timings', None)
         self._camera_released = False
         self._connection_metadata = dict(self._phase('open', self._backend.open, 30) or {})
         self._capabilities = dict(self._backend.capabilities)
@@ -418,7 +431,8 @@ class CameraSession:
 
     def _fetch(self):
         try:
-            raw, metadata, _ = self._backend.fetch(self.fetch_timeout)
+            with self.timings.measure('backend_fetch'):
+                raw, metadata, _ = self._backend.fetch(self.fetch_timeout)
         except Exception as exc:
             # GenTL timeout is expected for long exposure, but prolonged silence
             # eventually becomes an explicit stream error rather than eternal LIVE.
@@ -430,10 +444,11 @@ class CameraSession:
                 return
             raise
         self._last_received = time.monotonic()
-        metadata.update(session_id=self.session_id, sequence=self._sequence,
-                        stream_epoch=self.stream_epoch, stream_started_ns=self._stream_started_ns)
-        self._sequence += 1
-        frame = Frame(raw, metadata)
+        with self.timings.measure('metadata_frame_build'):
+            metadata.update(session_id=self.session_id, sequence=self._sequence,
+                            stream_epoch=self.stream_epoch, stream_started_ns=self._stream_started_ns)
+            self._sequence += 1
+            frame = Frame(raw, metadata)
         device_id = metadata.get("frame_id")
         if isinstance(device_id, int) and isinstance(self._previous_device_id, int) and device_id > self._previous_device_id + 1:
             missing = device_id - self._previous_device_id - 1
@@ -442,14 +457,15 @@ class CameraSession:
                 self._recording.failed_frame = dict(metadata)
                 self._recording.stop(error=f"Device frame ID gap: {missing} missing frame(s); recording stopped")
         self._previous_device_id = device_id
-        with self._lock:
+        with self.timings.measure('mailbox_publish'), self._lock:
             if self._latest is not None and self._latest.identity != self._display_identity:
-                self._preview_dropped += 1
+                self._mailbox_replacement_events += 1
             self._latest = frame
             self._captured += 1
             self._capture_times.append(self._last_received)
         if self._recording and not self._recording.stop_event.is_set():
-            self._recording.submit(frame)
+            with self.timings.measure('writer_admission'):
+                self._recording.submit(frame)
 
     def _run(self):
         try:

@@ -12,6 +12,7 @@ import shutil
 import time
 import numpy as np
 from hyperlab.acquisition.session import utc_now
+from hyperlab.profiling import StageTimings
 
 
 def _review_producer(cti):
@@ -103,6 +104,7 @@ class GenTLBackend:
         self.failed_frame_metadata = None
         self.owner = None
         self.node_evidence = {}
+        self.timings = StageTimings()
 
     def _owner(self):
         import threading
@@ -337,7 +339,8 @@ class GenTLBackend:
     def fetch(self, timeout=0.25, *, keep_transport=False):
         self._owner()
         from time import monotonic_ns
-        buffer = self._wait_for_buffer(timeout)
+        with self.timings.measure('fetch_wait'):
+            buffer = self._wait_for_buffer(timeout)
         primary = None
         result = None
         try:
@@ -355,34 +358,36 @@ class GenTLBackend:
             color = fmt in ("RGB8", "BGR8")
             if not color and not re.fullmatch(r"(?:Mono|Bayer(?:RG|GR|GB|BG))(?:8|10|12|14|16)(?:p|Packed)?", fmt):
                 raise RuntimeError(f"Unmapped pixel format {fmt}")
-            values = component.data.copy()
-            shape = (component.height, component.width, 3) if color else (component.height, component.width)
-            if values.size != int(np.prod(shape)):
-                raise RuntimeError("Payload size cannot map to one sensor frame")
-            raw = values.reshape(shape)
-            chunk = {}
-            if self.readback.get("ChunkModeActive") is True:
-                for name in ("ChunkExposureTime", "ChunkGain", "ChunkFrameID", "ChunkTimestamp"):
-                    value = _attribute(_attribute(self.nodes, name), "value")
-                    if value is not None:
-                        chunk[name] = _json_scalar(value)
-            metadata = dict(self.metadata, frame_id=_json_scalar(_attribute(buffer, "frame_id")),
-                            device_timestamp_ns=_json_scalar(_attribute(buffer, "timestamp_ns")),
-                            host_monotonic_ns=received, host_utc=received_utc, host_received_at=received_utc,
-                            pixel_format=fmt, transport_pixel_format=fmt,
-                            effective_bits=int(re.search(r"\d+", fmt)[0]), container_bits=raw.dtype.itemsize * 8,
-                            adc_bits=self.readback.get("mvSensorDigitizationBitDepth"),
-                            shape=list(shape), dtype=raw.dtype.str, axis_order="HWC" if color else "HW",
-                            axis_names=["y", "x", "color_channel"] if color else ["y", "x"],
-                            channel_labels=list(fmt[:3]) if color else None,
-                            cfa_pattern={"RG": "RGGB", "GR": "GRBG", "GB": "GBRG", "BG": "BGGR"}.get(fmt[5:7]) if fmt.startswith("Bayer") else None,
-                            cfa_pattern_origin="delivered", cfa_offset=[0, 0], flip_x=False, flip_y=False,
-                            sensor_roi_offset=[self.readback.get("OffsetX"), self.readback.get("OffsetY")],
-                            exposure_us=self.readback.get("ExposureTime"), gain=self.readback.get("Gain"),
-                            chunk_settings=chunk, valid=True, buffer_complete=True,
-                            acquisition_source="LIVE", data_source="LIVE", display_mode="LIVE", data_level="raw_frame",
-                            synthetic=False, wavelengths=None, units="DN", calibration_source=None,
-                            processing_steps=[], scene_validation="NOT_TESTED")
+            with self.timings.measure('owned_copy_and_shape'):
+                values = component.data.copy()
+                shape = (component.height, component.width, 3) if color else (component.height, component.width)
+                if values.size != int(np.prod(shape)):
+                    raise RuntimeError("Payload size cannot map to one sensor frame")
+                raw = values.reshape(shape)
+            with self.timings.measure('metadata_and_chunk'):
+                chunk = {}
+                if self.readback.get("ChunkModeActive") is True:
+                    for name in ("ChunkExposureTime", "ChunkGain", "ChunkFrameID", "ChunkTimestamp"):
+                        value = _attribute(_attribute(self.nodes, name), "value")
+                        if value is not None:
+                            chunk[name] = _json_scalar(value)
+                metadata = dict(self.metadata, frame_id=_json_scalar(_attribute(buffer, "frame_id")),
+                                device_timestamp_ns=_json_scalar(_attribute(buffer, "timestamp_ns")),
+                                host_monotonic_ns=received, host_utc=received_utc, host_received_at=received_utc,
+                                pixel_format=fmt, transport_pixel_format=fmt,
+                                effective_bits=int(re.search(r"\d+", fmt)[0]), container_bits=raw.dtype.itemsize * 8,
+                                adc_bits=self.readback.get("mvSensorDigitizationBitDepth"),
+                                shape=list(shape), dtype=raw.dtype.str, axis_order="HWC" if color else "HW",
+                                axis_names=["y", "x", "color_channel"] if color else ["y", "x"],
+                                channel_labels=list(fmt[:3]) if color else None,
+                                cfa_pattern={"RG": "RGGB", "GR": "GRBG", "GB": "GBRG", "BG": "BGGR"}.get(fmt[5:7]) if fmt.startswith("Bayer") else None,
+                                cfa_pattern_origin="delivered", cfa_offset=[0, 0], flip_x=False, flip_y=False,
+                                sensor_roi_offset=[self.readback.get("OffsetX"), self.readback.get("OffsetY")],
+                                exposure_us=self.readback.get("ExposureTime"), gain=self.readback.get("Gain"),
+                                chunk_settings=chunk, valid=True, buffer_complete=True,
+                                acquisition_source="LIVE", data_source="LIVE", display_mode="LIVE", data_level="raw_frame",
+                                synthetic=False, wavelengths=None, units="DN", calibration_source=None,
+                                processing_steps=[], scene_validation="NOT_TESTED")
             result = (raw, metadata, payload)
         except Exception as exc:
             primary = exc
@@ -405,7 +410,8 @@ class GenTLBackend:
                     primary.add_note(f"Failed buffer identity read also failed: {identity_error}")
         finally:
             try:
-                buffer.queue()
+                with self.timings.measure('buffer_requeue'):
+                    buffer.queue()
             except Exception as exc:
                 if primary is None:
                     primary = exc

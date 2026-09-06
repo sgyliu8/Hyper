@@ -9,6 +9,7 @@ import threading
 import time
 import numpy as np
 from .session import utc_now
+from hyperlab.profiling import StageTimings
 
 
 def atomic_json(path, metadata):
@@ -48,6 +49,7 @@ class SequenceWriter:
         self.checkpoint_frames = checkpoint_frames
         self.closed = False
         self._samples = OrderedDict()
+        self.timings = StageTimings()
         try:
             atomic_json(self.path.with_suffix(".npy.json"), self.meta)
         except Exception:
@@ -66,7 +68,8 @@ class SequenceWriter:
             raise ValueError("Only valid acquired frames can enter the prefix")
         json.dumps(record, allow_nan=False)
         index = self.count
-        self.array[index] = frame
+        with self.timings.measure('writer_array_copy'):
+            self.array[index] = frame
         self.meta["frames"].append(dict(record, index=index))
         self.count += 1
         # Keep only first/middle/latest samples, not another copy of the recording.
@@ -81,12 +84,13 @@ class SequenceWriter:
     def checkpoint(self):
         if self.closed:
             return
-        self.array.flush()
-        # fsync the file as well as the mapped pages before publishing completion.
-        with self.path.open("r+b") as stream:
-            os.fsync(stream.fileno())
-        self.meta["frame_count"] = self.count
-        atomic_json(self.path.with_suffix(".npy.json"), self.meta)
+        with self.timings.measure('writer_checkpoint'):
+            self.array.flush()
+            # fsync the file as well as the mapped pages before publishing completion.
+            with self.path.open("r+b") as stream:
+                os.fsync(stream.fileno())
+            self.meta["frame_count"] = self.count
+            atomic_json(self.path.with_suffix(".npy.json"), self.meta)
 
     def finish(self, *, error=None, stopped=False, duration_complete=False):
         if self.closed:
@@ -266,6 +270,7 @@ class SequenceRecorder:
         self.failed_payload = None
         self.path = self.directory / "sequence.npy"
         self.metadata = None
+        self._writer_timings = None
         self._frame = frame
         self._template = (frame.data.shape, frame.data.dtype.str,
                           *(frame.metadata.get(key) for key in
@@ -327,6 +332,7 @@ class SequenceRecorder:
                             display_mode="REPLAY")
             writer = self._writer_factory(self.directory, self._frame.data.shape, self._frame.data.dtype,
                                           self.max_frames, metadata=metadata)
+            self._writer_timings = getattr(writer, 'timings', None)
             self._frame = None
             while True:
                 with self._admission:
@@ -387,4 +393,5 @@ class SequenceRecorder:
                 "completed": metadata.get("completed", False), "partial": metadata.get("partial", True),
                 "save_reopen_verified": metadata.get("save_reopen_verified", False),
                 "writer_fps": self.written / max((self.ended or time.monotonic()) - self.started, 0.001),
-                "expected_bytes": self.expected_bytes, "free_bytes_at_start": self.free_bytes}
+                "expected_bytes": self.expected_bytes, "free_bytes_at_start": self.free_bytes,
+                "stage_timings": self._writer_timings.snapshot() if self._writer_timings else None}

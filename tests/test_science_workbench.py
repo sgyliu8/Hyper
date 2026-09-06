@@ -37,7 +37,7 @@ def test_recorded_opposite_channels_are_not_averaged_and_partial_prefix_retained
         np.testing.assert_equal(red.series[0]['x'], [0,1,2,3])
         assert red.metadata['recording']['partial'] and red.metadata['frame_count'] == 4
         assert red.metadata['recording']['expected_frames'] == 6
-        assert red.metadata['channel_label'] == 'R' and red.metadata['settings_match']
+        assert red.metadata['channel_label'] == 'R' and red.metadata['settings_check']['status'] == 'UNKNOWN'
 
 
 def test_median_ribbon_is_asymmetric_quartiles_in_ui_and_export(qtbot,tmp_path):

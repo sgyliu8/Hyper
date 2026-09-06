@@ -367,36 +367,60 @@ def render_figure(spec, *, width_mm=180, height_mm=115, dpi=300):
 
 def recorded_roi_plot(sequence, rectangles, names, colors, *, policy='diagnostic', band=0, cancelled=None):
     from .analysis import roi_statistics
+    from .experiments import _setting_values, _unknown, matching_settings
     from .io import Cube
-    x,xlabel = sequence_coordinates(sequence.metadata['frames'])
+    from .io.labels import display_labels
+    if sequence.frame_count < 1:
+        raise ValueError('Recorded ROI analysis requires at least one persisted frame')
+    x,xlabel = sequence_coordinates(sequence.metadata['frames'][:sequence.frame_count])
     values = np.full((len(rectangles),sequence.frame_count),np.nan)
     valid_counts = np.zeros_like(values,dtype=np.int64)
-    channel, settings = None, []
+    channel, settings, settings_sources, records, identities = None, [], [], [], []
     for index in range(sequence.frame_count):
         if cancelled is not None and cancelled.is_set():
             raise InterruptedError('Recorded ROI analysis cancelled; no partial curve presented as complete')
         frame = sequence.frame(index)
         cube = Cube(frame.data if frame.data.ndim==3 else frame.data[...,None],dict(frame.metadata))
-        if not isinstance(band, (int, np.integer)) or not 0 <= band < cube.shape[2]:
+        if isinstance(band, (bool, np.bool_)) or not isinstance(band, (int, np.integer)) or not 0 <= band < cube.shape[2]:
             raise ValueError('Trace channel must be a stored feature index in every frame')
-        label = cube.metadata.get('channel_labels', [str(i) for i in range(cube.shape[2])])[band]
+        label = display_labels(cube.metadata, cube.shape[2])[band]
         if channel is not None and label != channel:
             raise ValueError('Stored channel identity changed inside the sequence')
         channel = label
-        settings.append(plain(cube.metadata.get('readback_settings') or cube.metadata.get('current_settings')))
+        record = dict(frame.metadata)
+        records.append(record)
+        identities.append(frame.identity if record.get('session_id') is not None and record.get('sequence') is not None else None)
+        resolved = _setting_values(record)
+        base = 'readback_settings' if record.get('readback_settings') else 'current_settings'
+        sources = {key: base for key in resolved}
+        for target, chunk in (('ExposureTime', 'ChunkExposureTime'), ('Gain', 'ChunkGain')):
+            if not _unknown((record.get('chunk_settings') or {}).get(chunk)):
+                sources[target] = 'chunk_settings.'+chunk
+        settings.append(plain(resolved))
+        settings_sources.append(sources)
         for i,rect in enumerate(rectangles):
             stats = roi_statistics(cube,rect,policy=policy,bands=[band],robust=False)
             values[i,index] = stats['mean'][band]
             valid_counts[i,index] = stats['count'][band]
-    settings_match = bool(settings) and settings[0] is not None and all(s == settings[0] for s in settings)
+    settings_check = matching_settings(records) if len(records) >= 2 else {
+        'status': 'UNKNOWN', 'unknown': ['At least two observations required for settings consistency'],
+        'mismatches': [], 'compared_fields': [], 'unavailable': [],
+        'value_evidence': 'per-frame chunks where available, otherwise session readback'}
+    status = settings_check['status']
     return PlotSpec('lines',f'ROI trend · channel {channel} · all recorded frames',xlabel,'ROI mean (DN)',
         source={'source_file':str(sequence.path),'acquisition_source':sequence.metadata.get('acquisition_source','UNKNOWN')},
         series=[{'name':name,'color':colors[i],'style':'-','x':x[:sequence.frame_count],'y':values[i],
-                 'rect':rectangles[i],'valid_counts':valid_counts[i]} for i,name in enumerate(names)],
+                 'rect':rectangles[i],'valid_counts':valid_counts[i], 'sample_indices':list(range(sequence.frame_count)),
+                 'feature_indices':[int(band)]*sequence.frame_count, 'frame_identities':identities}
+                for i,name in enumerate(names)],
         metadata={'frame_count':sequence.frame_count,'sampling':'all persisted frames','policy':policy,
                   'channel_index':int(band),'channel_label':channel,'frame_settings':settings,
-                  'settings_match':settings_match, 'recording':plain({k:v for k,v in sequence.metadata.items() if k != 'frames'})},
-        caption='Recorded host clock or explicit frame index; missing samples remain gaps. No playback-clock timing.')
+                  'frame_setting_sources':settings_sources, 'settings_check':settings_check,
+                  'settings_match':None if status == 'UNKNOWN' else status == 'MATCH',
+                  'pooling_qualification':'settings consistent only' if status == 'MATCH' else 'not qualified',
+                  'recording':plain({k:v for k,v in sequence.metadata.items() if k != 'frames'})},
+        caption='Recorded host clock or explicit frame index; missing samples remain gaps. No playback-clock timing. '
+                f'Settings consistency: {status}. Raw observations; illumination and same-setting repeatability are not established.')
 
 
 def export_figure_bundle(spec, directory, *, width_mm=180, height_mm=115, dpi=300,
@@ -423,7 +447,8 @@ def export_figure_bundle(spec, directory, *, width_mm=180, height_mm=115, dpi=30
     with (directory/'series.csv').open('x', newline='', encoding='utf-8') as stream:
         writer = csv.writer(stream)
         writer.writerow(['series', 'feature_index', 'x', 'y', 'spatial_sd_ddof0', 'normalized',
-                         'spatial_q25', 'spatial_q75', 'used_count'])
+                         'spatial_q25', 'spatial_q75', 'used_count', 'sample_index',
+                         'channel_index', 'channel_label', 'frame_identity', 'settings_consistency'])
         for item in spec.series:
             for i, (x, y) in enumerate(zip(item['x'], item['y'])):
                 sd = item.get('sd')
@@ -432,7 +457,11 @@ def export_figure_bundle(spec, directory, *, width_mm=180, height_mm=115, dpi=30
                                  item['normalized'][i] if 'normalized' in item else '',
                                  item['lower'][i] if 'lower' in item else '',
                                  item['upper'][i] if 'upper' in item else '',
-                                 item.get('used_counts', item.get('valid_counts', ['']*len(item['x'])))[i]])
+                                 item.get('used_counts', item.get('valid_counts', ['']*len(item['x'])))[i],
+                                 item.get('sample_indices', ['']*len(item['x']))[i],
+                                 spec.metadata.get('channel_index', ''), spec.metadata.get('channel_label', ''),
+                                 item.get('frame_identities', ['']*len(item['x']))[i],
+                                 spec.metadata.get('settings_check', {}).get('status', '')])
     if any('distribution' in item for item in spec.series):
         with (directory/'distributions.csv').open('x',newline='',encoding='utf-8') as stream:
             writer = csv.writer(stream)

@@ -1,6 +1,35 @@
-# Current handoff — 0.4.0 materials and thermal-paint workbench
+# Current handoff — technical-first increment in progress
 
-The latest owner request is implemented as S1–S9 in the
+The owner supplied `HyperLab_Next_Codex_Technical_First.md` and requested complete
+implementation plus repair of UI state semantics. The new
+[technical-first review and acceptance record](TECHNICAL_FIRST_REVIEW.md) is the
+current plan. Continue on `feature/materials-science-v040` / Draft PR 2, preserving
+the previous delivery. Normal single-owner imaging is authorized; device resets,
+driver/firmware/permanent changes and unknown FP commands remain outside scope.
+
+Slice 1 implements F1–F6, independent camera/view/completed-result labels, explicit
+return from saved data to live preview, sampled display with full-resolution
+inspection, bounded host-stage timing and on-demand pinned quality/readiness.
+The final Slice 1 offline suite passes **495 tests** (33.67 s), including the
+decimal wavelength-gap boundary regression. Native updated-code and package
+verification are still pending. The new baseline real-scene run saved a visible
+RGB8 frame at 20 ms/gain 0: 2,129 captured, 156 displayed, capture median 34.045 fps,
+display median 2.535 fps; zero observed device gaps/timeouts and normal release.
+Its legacy `preview_dropped=2128` is an overlapping mailbox event counter, not
+measured loss. The original receipt stays unchanged. New counters use
+`mailbox_replacement_events` with explicit scope. The target has printed material
+and glare; it carries no thermal-paint/defect ground truth.
+
+Three fresh AI reviewers completed rounds 1 and 2 with actual counterexamples and
+cross-challenges. Round 3 must inspect completed code and verification. Slice 2
+(mask ROIs, linked distributions/brush and Study) and final Slice 3 delivery remain
+to be executed. Full local receipts and failed test attempts are preserved in
+`local/diagnostics/technical-first-20260906`. The previous binary remains the
+installed delivery until the new package is verified. Licensing/release are pending.
+
+## Historical 0.4.0 materials and thermal-paint delivery
+
+The previous owner request was implemented as S1–S9 in the
 [research, three-round review and delivery record](SCIENCE_ROADMAP_REVIEW.md).
 Current branch: `feature/materials-science-v040`, based on the already merged
 0.3.1 PR at `904cc2f`. The earlier PR was merged externally during this work;
