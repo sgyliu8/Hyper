@@ -2102,6 +2102,8 @@ class Workbench(W.QMainWindow):
             self.brush_overlay.clear(); self.brush_mask_overlay.clear()
             self.derived_graphics.viewport().update()
             self.brush_note.setText('No selection for the current ROI')
+        if distribution_task:
+            QtCore.QTimer.singleShot(0,self.map_tools,self.map_tools.layout().invalidate)
         if self.map_distributions is None:
             return
         if self.task_busy:

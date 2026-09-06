@@ -173,3 +173,38 @@ def test_profile_switch_repaints_old_selection_in_window_backing_store(mapped,qt
         if font_id >= 0:
             QtGui.QFontDatabase.removeApplicationFont(font_id)
     assert after == before
+
+
+def test_ecdf_controls_retain_full_text_height_after_profile(qtbot,request):
+    font_ids=[]
+    for name in ('segoeui.ttf','segoeuib.ttf'):
+        path=QtCore.QStandardPaths.locate(QtCore.QStandardPaths.StandardLocation.FontsLocation,name)
+        if path:
+            font_ids.append(QtGui.QFontDatabase.addApplicationFont(path))
+    mapped=request.getfixturevalue('mapped')
+    mapped.tabs.setCurrentIndex(1); mapped.resize(2048,1104); mapped.show()
+    options=next(item for item in mapped.findChildren(W.QToolButton) if item.text().startswith('Plot and view options'))
+    options.setChecked(True)
+    mapped.recording_label.setText('Completed recording receipt'); mapped.recording_label.show()
+    qtbot.wait(30)
+    mapped.side_scroll.verticalScrollBar().setValue(mapped.analysis_method.mapTo(mapped.sidebar,QtCore.QPoint()).y()-5)
+    mapped.right_task.setCurrentIndex(mapped.right_task.findData('profile')); mapped.inspect_roi.setCurrentIndex(1)
+    qtbot.waitUntil(lambda:not mapped.task_busy,timeout=10000); qtbot.wait(30)
+    mapped.right_task.setCurrentIndex(mapped.right_task.findData('ecdf')); qtbot.wait(30)
+    button=mapped.findChild(W.QPushButton,'map_brush')
+    option=W.QStyleOptionButton(); option.initFrom(button); option.text=button.text()
+    content=button.style().subElementRect(W.QStyle.SubElement.SE_PushButtonContents,option,button)
+    text=button.style().itemTextRect(button.fontMetrics(),content,int(QtCore.Qt.AlignmentFlag.AlignCenter),True,button.text())
+    measurements=(button.height(),button.sizeHint().height(),content,text)
+    controls_geometry=mapped.brush_controls.geometry()
+    note_geometry=mapped.brush_note.geometry()
+    note_full_height=mapped.brush_note.height() >= mapped.brush_note.heightForWidth(mapped.brush_note.width())
+    for font_id in font_ids:
+        if font_id >= 0:
+            QtGui.QFontDatabase.removeApplicationFont(font_id)
+    assert measurements[0] >= measurements[1] and content.contains(text), measurements
+    assert mapped.map_tools.rect().contains(mapped.brush_controls.geometry())
+    assert mapped.map_tools.rect().contains(mapped.brush_note.geometry())
+    assert not controls_geometry.intersects(note_geometry)
+    assert note_full_height
+    assert mapped.brush_note.text() == 'No selected map range.'
