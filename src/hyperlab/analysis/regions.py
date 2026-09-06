@@ -289,6 +289,30 @@ def strip_profile(cube, roi, *, bands=None, policy='diagnostic', exclusions=(), 
         nearest[closer] = squared[closer]
         position[closer] = distance[index] + t[closer]*segment_length
     indices = np.clip(np.searchsorted(edges, position, side='right') - 1, 0, bins - 1)
+    boundary_arithmetic = 'Multiple segments: float64 projected distances and edges; no snapping tolerance'
+    active_segments = np.flatnonzero(lengths)
+    if len(active_segments) == 1:
+        # For one segment the length root cancels: bin coordinate = dot*bins/S.
+        # A float error envelope triggers exact comparison, never edge snapping.
+        from fractions import Fraction
+        start, end = points[active_segments[0]:active_segments[0]+2]
+        delta = end-start
+        squared_length = float(delta @ delta)
+        along_x, along_y = (x-start[0])*delta[0], (y-start[1])*delta[1]
+        scaled = ((along_x+along_y)/squared_length)*bins
+        indices = np.floor(np.clip(scaled, 0, bins-1)).astype(np.int64)
+        boundary = np.rint(scaled)
+        error_bound = 16*np.finfo(float).eps*np.maximum(1., ((abs(along_x)+abs(along_y))/squared_length)*bins)
+        ambiguous = np.flatnonzero((boundary > 0) & (boundary < bins) & (abs(scaled-boundary) <= error_bound))
+        if ambiguous.size:
+            sx, sy = (Fraction(float(value)) for value in start)
+            dx, dy = Fraction(float(end[0]))-sx, Fraction(float(end[1]))-sy
+            exact_squared = dx*dx+dy*dy
+            for sample in ambiguous:
+                edge = int(boundary[sample])
+                dot = (Fraction(float(x[sample]))-sx)*dx+(Fraction(float(y[sample]))-sy)*dy
+                indices[sample] = edge if dot*bins >= exact_squared*edge else edge-1
+        boundary_arithmetic = 'Single segment: normalized projection; exact binary-input rational comparisons near bin edges; no snapping tolerance'
     member = region['membership']
     selected, excluded = region['selected'][member], region['excluded'][member]
 
@@ -327,6 +351,7 @@ def strip_profile(cube, roi, *, bands=None, policy='diagnostic', exclusions=(), 
             'canonical_path_points': points.tolist(), 'output_reversed': reversed_output,
             'projection': 'Raw pixel centres to nearest path segment; ties choose first canonical segment; round caps clamp to endpoints',
             'binning': 'Equal canonical half-open distance bins, last endpoint included; reverse bin arrays for the requested path direction',
+            'bin_boundary_arithmetic': boundary_arithmetic,
             'aggregation': 'Unweighted per-feature mean of policy-valid selected raw pixels in each cross-strip bin; no signal interpolation',
             'std_ddof': 0, 'std_interpretation': 'spatial SD, not uncertainty of the mean or temporal noise',
             'count_semantics': 'geometry_count is membership before exclusions; excluded_count may overlap source quality reasons; count + geometry_excluded_count = counts.valid',

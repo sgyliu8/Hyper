@@ -16,7 +16,7 @@ def atomic_json(path, metadata):
     path = Path(path)
     temporary = path.with_name(path.name + ".tmp")
     with temporary.open("w", encoding="utf-8") as stream:
-        json.dump(metadata, stream, indent=2, allow_nan=False)
+        stream.write(json.dumps(metadata, allow_nan=False))
         stream.flush()
         os.fsync(stream.fileno())
     temporary.replace(path)
@@ -85,12 +85,15 @@ class SequenceWriter:
         if self.closed:
             return
         with self.timings.measure('writer_checkpoint'):
-            self.array.flush()
+            with self.timings.measure('writer_data_flush'):
+                self.array.flush()
             # fsync the file as well as the mapped pages before publishing completion.
-            with self.path.open("r+b") as stream:
-                os.fsync(stream.fileno())
+            with self.timings.measure('writer_data_fsync'):
+                with self.path.open("r+b") as stream:
+                    os.fsync(stream.fileno())
             self.meta["frame_count"] = self.count
-            atomic_json(self.path.with_suffix(".npy.json"), self.meta)
+            with self.timings.measure('writer_manifest_publish'):
+                atomic_json(self.path.with_suffix(".npy.json"), self.meta)
 
     def finish(self, *, error=None, stopped=False, duration_complete=False):
         if self.closed:

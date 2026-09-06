@@ -8,7 +8,7 @@ import sys
 
 
 def emit(value):
-    print(json.dumps(value, indent=2, ensure_ascii=False,
+    print(json.dumps(value, indent=2, ensure_ascii=True,
                      default=lambda item: item.tolist() if hasattr(item, 'tolist') else str(item)))
 
 

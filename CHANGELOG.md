@@ -25,6 +25,11 @@
 - Match right-task point colours to ROI colours and export unknown saturation
   explicitly rather than treating unavailable assessment as zero.
 
+- Preserve Unicode paths through legacy-code-page CLI output and correct exact
+  straight-strip bin ties without snapping neighboring pixels across a boundary.
+- Serialize complete recording manifests in one write; retain all durability
+  steps and separately time data flush, file fsync and manifest publication.
+
 ## 0.3.1 — live ROI correction, 2026-09-05
 
 - Correct repeated density-axis scaling and let the display run between bounded

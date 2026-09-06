@@ -113,3 +113,17 @@ def test_unconfirmed_parent_blocks_live_runtime(offline_cli, capsys, tmp_path):
     assert result == 2
     assert "parent identity is unconfirmed" in capsys.readouterr().err
     assert offline_cli["forbidden_imports"] == []
+
+
+def test_json_output_preserves_unicode_on_legacy_windows_pipe(monkeypatch):
+    import io
+    import sys
+    from hyperlab.__main__ import emit
+    raw = io.BytesIO()
+    output = io.TextIOWrapper(raw, encoding='cp1252')
+    value = {'workspace': 'C:/HyperLab Validation/中文 workspace', 'status': 'PASS'}
+    with monkeypatch.context() as changed:
+        changed.setattr(sys, 'stdout', output)
+        emit(value)
+        output.flush()
+    assert json.loads(raw.getvalue().decode('cp1252')) == value

@@ -13,9 +13,9 @@ scene usefulness, reference applicability and spectroscopy are separate outcomes
 
 | Slice | Implementation | Required verification | Current status |
 |---|---|---|---|
-| 1 | F1 labels, F2 mailbox events, F3 settings evidence, F4 independent UI states, F5 signal qualification, F6 wavelength support; measured preview optimization/readiness | Reproductions, focused numerical/Qt regressions, real baseline and updated native run | 495 offline tests PASS; first updated native run ~6.5 displayed fps, target not yet met |
-| 2 | Stable mask-backed ROIs, exclusions/line strips, exact map distributions and spatial brush, linked task plots; observation Study | Geometry/tail/aggregation oracles, relocation and duplicate handling, actual saved observations | Implemented; focused numerical, geometry and Qt regressions PASS; full/native acceptance pending |
-| 3 | Physical support/export integration, bounded H2/H3 asset advancement, documentation and package verification | Three actual-code reviews; offline suite, wheel/frozen/native/outside-CWD checks; exact source/package/CI identities | PLANNED |
+| 1 | F1 labels, F2 mailbox events, F3 settings evidence, F4 independent UI states, F5 signal qualification, F6 wavelength support; measured preview optimization/readiness | Reproductions, focused numerical/Qt regressions, real baseline and updated native run | F1–F6 implemented and regression-tested; real RGB/Bayer frames saved; workload display medians now 16–17 fps (below-target intervals retained) |
+| 2 | Stable mask-backed ROIs, exclusions/line strips, exact map distributions and spatial brush, linked task plots; observation Study | Geometry/tail/aggregation oracles, relocation and duplicate handling, actual saved observations | Implemented; exact sparse/aggregation/geometry/Study checks PASS; two real saved observations pass 81 independent numerical/provenance checks |
+| 3 | Physical support/export integration, bounded H2/H3 asset advancement, documentation and package verification | Three actual-code reviews; offline suite, wheel/frozen/native/outside-CWD checks; exact source/package/CI identities | Source review complete; final installed/native/CI acceptance in progress |
 
 ## Three reviewers, three rounds
 
@@ -23,28 +23,67 @@ Three separate AI reviewers cover measurement physics (A), statistics (B), and
 software/performance/UX (C). These are agent reviews, not external human peer
 review. New round-one reports inspected actual functions and ran counterexamples;
 new round-two reports read both other reviews and exchanged explicit challenges.
-The previous nine design reports remain historical evidence. Round three will
-inspect the implemented diff and test receipts, rather than re-approve this plan.
+The previous nine design reports remain historical evidence. Round three inspected
+the implemented diff and executed new counterexamples. Its failures and subsequent
+closure receipts are retained separately; review agreement is not physical validation.
 
 Private full reports and scripts are in
 `local/diagnostics/technical-first-20260906/reviews/`.
 
 | Issue | Round-one evidence | Round-two challenge and convergence | Round-three outcome |
 |---|---|---|---|
-| F1 | Persisted Bayer/Mono explicit None raises TypeError | Display-only shared labels; never mutate channel labels or create a colour axis | PENDING |
-| F2 | 2 captured + 2 displayed + 1 replacement | Rename overlapping mailbox events; reject a false loss partition or premature display acknowledgement | PENDING |
-| F3 | Sparse/empty/auto-only settings falsely MATCH; conflicting chunks missed | Reuse the existing chunk-first tri-state matcher; UNKNOWN traces remain available but unqualified | PENDING |
-| F4 | Old replay retains receive age and `stream None` | Camera, viewing and each completed result keep independent identity; explicit return to live | PENDING |
-| F5 | Equal small DN perturbations produce different weak/bright ND sensitivity | Numerical denominator validity differs from signal evidence; default UNKNOWN; optional analyst `abs(a)+abs(b)` threshold | PENDING |
-| F6 | Correct irregular-grid fits span large undocumented physical gaps | Keep fitting math; disclose window spans/indices/max delta/FWHM evidence; only explicit gap constraints reject crossings | PENDING |
-| Sparse tails | 5/1000 targets disappear from median/MAD/P99 | Exact ECDF and coordinate brush; preserve hits in sampled overview; selected contrast is not defect truth | PENDING |
-| Aggregation | Mean pixel ND = 0.4; ND of means = 2/3 | Pin and export the operation order; no hidden interchange | PENDING |
-| Geometry | Bounding boxes overcount polygons/holes | One membership path and geometry denominators for summaries and distributions | PENDING |
-| Study | Identical moved files have a different path-bound fingerprint | Keep old strict identity; verify all required assets and record a relocation association | PENDING |
+| F1 | Persisted Bayer/Mono explicit None raises TypeError | Display-only shared labels; never mutate channel labels or create a colour axis | PASS: None Bayer/Mono and RGB/BGR regressions; real Bayer raw/ROI display |
+| F2 | 2 captured + 2 displayed + 1 replacement | Rename overlapping mailbox events; reject a false loss partition or premature display acknowledgement | PASS: counter overlap/epoch regressions; real gaps/timeouts 0/0 |
+| F3 | Sparse/empty/auto-only settings falsely MATCH; conflicting chunks missed | Reuse the existing chunk-first tri-state matcher; UNKNOWN traces remain available but unqualified | PASS: chunk-first MATCH/MISMATCH/UNKNOWN; real exposure mismatch retained |
+| F4 | Old replay retains receive age and `stream None` | Camera, viewing and each completed result keep independent identity; explicit return to live | PASS: independent source labels; stale editor/export/worker counterexamples fixed |
+| F5 | Equal small DN perturbations produce different weak/bright ND sensitivity | Numerical denominator validity differs from signal evidence; default UNKNOWN; optional analyst `abs(a)+abs(b)` threshold | PASS: signed ND preserved; numerical and signal evidence separate |
+| F6 | Correct irregular-grid fits span large undocumented physical gaps | Keep fitting math; disclose window spans/indices/max delta/FWHM evidence; only explicit gap constraints reject crossings | PASS: physical support metadata and declared-gap counterexamples |
+| Sparse tails | 5/1000 targets disappear from median/MAD/P99 | Exact ECDF and coordinate brush; preserve hits in sampled overview; selected contrast is not defect truth | PASS: exact five-pixel selection retained despite unchanged median/MAD/P99 |
+| Aggregation | Mean pixel ND = 0.4; ND of means = 2/3 | Pin and export the operation order; no hidden interchange | PASS: independent 0.4 versus 2/3 oracle; order exported |
+| Geometry | Bounding boxes overcount polygons/holes | One membership path and geometry denominators for summaries and distributions | PASS: exact raw counts and straight-strip edge oracles; multi-segment floating policy remains explicit |
+| Study | Identical moved files have a different path-bound fingerprint | Keep old strict identity; verify all required assets and record a relocation association | PASS original relocation/duplicate/context regressions; two real observations verified |
 
 No unresolved round-two disagreement blocks these small implementations. Automatic
 noise estimation, statistical inference, a new claim/ack state machine, learned
 defect classes, thermal-history inversion and undocumented FP commands are excluded.
+
+## Actual-code convergence and integration findings
+
+Round 3 audited `aaed7ce8c22046ada9b544d7febf57894cce6aad` with a clean worktree.
+A found one received-frame geometry counterexample (1 FAIL / 5 PASS). B found
+four profile/transform export defects (4 FAIL / 4 PASS). C found five reachable
+source/editor/callback defects (5 FAIL / 3 PASS in safe isolated probes). A Qt
+failure-representation crash in an earlier offscreen probe is preserved separately;
+it was not a native camera crash or an additional successful test.
+
+At `395ff7885e0c76147232ef3c417f5bfcf38160f7`, the original cases were corrected:
+original receipt geometry survives Cube normalization; completed strip profiles
+retain their source fingerprint, actual channel identity, spatial bin edges and
+counts; residual/L2 plots shed incompatible amplitude branches and keep correct
+units/summary labels; modeless dialogs and asynchronous results follow stable ROI
+IDs and are invalidated before old file mappings are released. Independent A/B/C
+closure runs passed 48, 54 and 19 checks respectively (overlapping suites, not a
+new total denominator).
+
+A/B then exposed an unknown-saturation CSV ambiguity. The correction exports
+UNKNOWN with blank counts/threshold, while assessed counts retain the criterion
+and original signal units. A independently passed the original probe plus the
+committed profile export tests (19 checks) at `29a8ae5b9b0293759384719a34c5c219f9c1933e`.
+C/root also reproduced and fixed disappearing recording failures and inconsistent
+right-task point connections/colours. The complete source suite at that commit
+passed 648 tests in 60.38 s. Failed attempts remain alongside the passing receipts.
+
+Real and installed integration additionally exposed two cases not covered by that
+checkpoint: legacy Windows stdout could not emit a Chinese directory in `doctor`,
+and exact strip-bin boundary pixels could land in the preceding bin through
+floating roundoff. The CLI correction passes a legacy-code-page JSON roundtrip regression. A straight
+strip now uses normalized projection and exact binary-input rational comparisons
+only near a bin boundary; a representable point on either side is never snapped
+across it. Horizontal, vertical, reversed and diagonal counterexamples pass.
+Multi-segment distance binning retains its documented float64 policy. The two real
+20/40 ms observations pass 81 independent checks, including every map pixel,
+profile bin/count/SD, source-bound figure/CSV and Study asset. No threshold is
+relaxed to turn a failed case into a pass.
 
 ## Actual baseline and hardware boundary
 
@@ -79,6 +118,49 @@ excluded extrema, and stale polygon coordinate frames during source-shape
 changes. A hidden included ROI still contributes to common-feature normalization;
 visibility no longer silently changes the calculation set. All failed receipts
 remain local alongside their later regressions.
+
+The `395ff788` native session used one verified owner and the existing installed
+producer. RGB 20 ms workload telemetry (overlapping 2 s windows) gave:
+
+| Displayed workload | Rows | Capture median fps | Display median / P5 fps |
+|---|---:|---:|---:|
+| Preview | 45 | 34.027 | 15.996 / 14.240 |
+| Preview with two ROI results | 17 | 34.257 | 17.276 / 15.737 |
+| Preview with eight ROI results | 93 | 34.027 | 16.897 / 15.609 |
+| Preview with map/eight ROI results | 77 | 34.045 | 15.996 / 13.597 |
+| Initial bounded recording attempt | 5 | 34.306 | 11.296 / 9.630 |
+
+These are measured workload windows, not an all-ROI/map recomputation on every
+received frame or a guaranteed minimum FPS. Explicit analyses pin an observation
+and show Computing while running. Full distributions/maps can take longer.
+Representative preview UI-update median/P95 was 26.558/44.017 ms and image paint
+13.773/25.960 ms. Stage collectors hold the latest 240 observations; their
+percentiles can span prior work and overlapping stages are not additive.
+
+A measured Windows/Python 3.11 clock issue also contributed: the installed
+Harvesters polling loop uses a coarse `time.time` clock. A cooperative 8 ms yield
+after an empty poll leaves GUI work time while a monotonic outer deadline remains
+in force; available buffers return immediately. No producer, device timing,
+firmware or global timer setting changed. The Python clock implementation change
+is documented in the [official time reference](https://docs.python.org/3.13/library/time.html).
+
+Four fresh saved observations have matching requested/session exposure readback:
+RGB 10/20/40 ms and BayerRG12 40 ms, gain zero. Full raw saturation counts are
+36,014 / 7,062,528; 126,784 / 7,062,528; 236,887 / 7,062,528; and
+22,210 / 2,354,176 respectively. These are channel-sample denominators for RGB
+and sensor-site denominators for Bayer. Recorded Gamma qualification remains
+unknown, chunks are absent, and a session readback does not establish per-frame
+settings. Visible scene response is observed; material/illumination/reference
+conditions and the cause of the old almost-black image remain UNKNOWN.
+
+The initial 300-frame request failed after 96 durable frames with an eight-slot
+writer queue. A packaged 16-slot repeat failed after 112 durable frames. Each had
+one rejected frame and retained every accepted frame, its partial status, and
+reopen receipt. Buffer size alone did not solve the write bottleneck. The visible
+Last recording receipt survived preview, Stop and tab changes. Subsequent writer
+work preserves the eight-frame durable checkpoint, data flush/fsync and atomic
+manifest publication; it targets JSON serialization overhead. Final recording
+acceptance is recorded separately below, without replacing these failures.
 
 Reviewer A inspected 508 files in known vendor/cache roots without locating the
 missing control/calibration assets. No full-drive search or guessed control call
