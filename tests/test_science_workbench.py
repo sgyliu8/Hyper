@@ -207,5 +207,6 @@ def test_modeless_figure_source_closed_by_replay_switch_is_rejected(qtbot,tmp_pa
     window.set_cube(rgb())
     buttons=window._figure_dialog.findChild(W.QDialogButtonBox)
     buttons.button(W.QDialogButtonBox.StandardButton.Save).click(); complete(window,qtbot)
-    assert 'Source mapping is closed' in window.message.text()
+    assert not window._figure_dialog.isVisible()
+    assert 'The source was replaced' in window.message.text()
     assert window.run_button.isEnabled()

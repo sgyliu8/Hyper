@@ -100,6 +100,9 @@ class Workbench(W.QMainWindow):
         self.right_spec = None
         self.map_distributions = None
         self.map_brushes = []
+        self._right_task_pending = False
+        self._brush_pending = False
+        self._right_request = 0
         self._map_limits = {}
         self.roi_timer = QtCore.QTimer(self)
         self.roi_timer.setSingleShot(True)
@@ -477,6 +480,7 @@ class Workbench(W.QMainWindow):
             if self.task_busy:
                 self.notify('Wait for the current file operation to finish.')
                 return
+            self.close_source_dialogs()
             if self.sequence:
                 self.sequence.close()
                 self.sequence = None
@@ -484,6 +488,10 @@ class Workbench(W.QMainWindow):
                 self.cube.close()
                 self.cube = None
             self.product = self.product_source = None
+            self.right_spec = self.map_distributions = None
+            self.map_brushes = []
+            self.map_tools.hide()
+            self.brush_overlay.clear(); self.brush_mask_overlay.clear()
             self.map_spec = self.plot_spec = None
             self.plot_source = self.roi_source = None
             self.roi_result_context = None
@@ -589,6 +597,13 @@ class Workbench(W.QMainWindow):
                 self.update_controls()
         except queue.Empty:
             pass
+        if not self.task_busy and not self.closing:
+            if self._right_task_pending:
+                self._right_task_pending = False
+                self.update_right_task()
+            if self._brush_pending and not self.task_busy:
+                self._brush_pending = False
+                self.apply_map_brush()
         if self.session:
             for event in self.session.poll_events():
                 if event.get('path'):
@@ -728,6 +743,8 @@ class Workbench(W.QMainWindow):
         if self.annotation is not None and self.cube is not cube:
             self.annotation = None
             self.annotation_path = None
+        if not live and self.cube is not cube:
+            self.close_source_dialogs()
         self.cube = cube
         self.pixel_label.setText('Pixel: —')
         self.pixel_label.setToolTip('')
@@ -1022,12 +1039,16 @@ class Workbench(W.QMainWindow):
         self.reference_roi.blockSignals(False)
 
     def choose_reference_roi(self):
-        self.reference_roi_id = self.reference_roi.currentData()
+        self.set_reference_roi(self.reference_roi.currentData())
+
+    def set_reference_roi(self, roi_id):
+        self.reference_roi_id = roi_id
         for record in self.roi_records:
             if record and record['role'] != 'exclude':
                 role = 'reference' if record['roi_id'] == self.reference_roi_id else 'target'
                 if record['role'] != role:
                     record['role'] = role; record['revision'] += 1
+        self.refresh_reference_selector()
         self.roi_changed()
 
     def _update_roi_labels(self):
@@ -1761,6 +1782,12 @@ class Workbench(W.QMainWindow):
             elif item.get('drawstyle') == 'steps-mid' and item.get('histogram'):
                 x = np.repeat(item['histogram']['bin_edges'],2)[1:-1]
                 y = np.repeat(item['histogram']['counts'],2)
+            if item.get('sd') is not None:
+                sd = np.asarray(item['sd'])
+                lower = chart.plot(x,y-sd,pen=None,connect='finite')
+                upper = chart.plot(x,y+sd,pen=None,connect='finite')
+                shade = pg.mkColor(item['color']); shade.setAlpha(43)
+                chart.addItem(pg.FillBetweenItem(lower,upper,brush=shade))
             chart.plot(x,y,pen=pg.mkPen(item['color'],width=2.5,
                 style=QtCore.Qt.PenStyle.DashLine if item.get('style') == '--' else QtCore.Qt.PenStyle.SolidLine),
                 name=item['name'],connect='finite',symbol='o' if spec.categories else None,symbolSize=7)
@@ -1768,7 +1795,11 @@ class Workbench(W.QMainWindow):
             values = np.concatenate([np.asarray(item.get('ecdf',{}).get('values',item['x'])) for item in spec.series])
             values = values[np.isfinite(values)]
             if values.size:
-                low,high = float(values.min()),float(values.max())
+                if getattr(self, '_right_brush_product', None) is self.map_distribution_product:
+                    low,high = self.brush_low.value(),self.brush_high.value()
+                else:
+                    low,high = float(values.min()),float(values.max())
+                self._right_brush_product = self.map_distribution_product
                 self.brush_low.setValue(low); self.brush_high.setValue(high)
                 self.brush_region = pg.LinearRegionItem((low,high),brush=pg.mkBrush(190,73,124,28))
                 chart.addItem(self.brush_region)
@@ -1779,10 +1810,21 @@ class Workbench(W.QMainWindow):
         chart.enableAutoRange(); self.chart_row.setSizes([1,1]); self.vertical.setSizes([440,300])
 
     def update_right_task(self):
+        self._right_request += 1
+        if self.map_brushes and self.map_brushes[0]['metadata']['roi']['roi_id'] != self.inspect_roi.currentData():
+            self.map_brushes = []
+            self.brush_overlay.clear(); self.brush_mask_overlay.clear()
+            self.brush_note.setText('No selection for the current ROI')
         if self.map_distributions is None:
             return
-        from hyperlab.plots import map_distribution_plot
+        if self.task_busy:
+            self._right_task_pending = True
+            self.right_spec = None
+            self.shape_chart.clear(); self.shape_chart.setTitle('Computing selected ROI…')
+            return
+        from hyperlab.plots import map_distribution_plot, strip_profile_plot, roi_transform_plot
         from hyperlab.analysis.regions import strip_profile
+        from hyperlab.experiment_metadata import compute_pinned
         task = self.right_task.currentData(); context = self.map_distribution_context
         if task in ('ecdf','histogram'):
             spec = map_distribution_plot(self.map_distributions, source=source_identity(self.product_source),
@@ -1795,23 +1837,24 @@ class Workbench(W.QMainWindow):
             return
         if task == 'profile':
             if record['geometry']['type'] != 'strip':
+                self.right_spec = None
+                self.shape_chart.clear(); self.shape_chart.setTitle('Select a line / strip ROI')
                 self.brush_note.setText('Select a line / strip ROI for a profile.'); return
-            cube = self.product_source
-            def completed(result):
-                if self.product_source is not cube or self.right_task.currentData() != 'profile':
+            cube, product, request = self.product_source, self.map_distribution_product, self._right_request
+            def completed(payload):
+                if (self.product_source is not cube or self.map_distribution_product is not product or
+                        self._right_request != request or self.inspect_roi.currentData() != record['roi_id']):
                     return
-                spec = PlotSpec('lines','Raw line / strip profile','Distance along path (px)',f"Mean ({cube.metadata['units']})",
-                    source=source_identity(cube), metadata=result['metadata'], series=[{'name':item['label'],
-                    'x':result['position_px'],'y':item['mean'],'color':COLORS[i % len(COLORS)],'style':'-',
-                    'count':item['count'],'sd':item['std']} for i,item in enumerate(result['curves'])],
-                    caption='Exact raw pixel centres projected onto the path; cross-strip mean, no interpolation or physical-length calibration.')
+                result, fingerprint = payload
+                if fingerprint != context.get('source_fingerprint'):
+                    raise ValueError('Source changed since the map was computed; recompute the map before its profile.')
+                spec = strip_profile_plot(result, source=source_identity(cube), source_fingerprint=fingerprint,
+                                          analysis_context=context)
                 self.draw_right_plot(spec)
-            self.background(lambda:strip_profile(cube,record,policy=context['policy'],exclusions=context['exclusions']),
+            self.background(lambda:compute_pinned(cube, lambda:strip_profile(cube,record,policy=context['policy'],exclusions=context['exclusions'])),
                             completed,'Computing exact cross-strip profile…'); return
         if not self.plot_spec or not self.plot_spec.metadata.get('roi_comparison'):
             return
-        from copy import deepcopy
-        spec = deepcopy(self.plot_spec)
         reference_id = context['reference_roi_id']
         indices = context.get('analyzed_roi_indices',range(len(self.roi_results)))
         ref = next((self.roi_results[i][context['summary']] for i,original in enumerate(indices)
@@ -1819,22 +1862,15 @@ class Workbench(W.QMainWindow):
         if task == 'residual' and ref is None:
             self.brush_note.setText('Select an included reference ROI and recompute this map.'); return
         common = np.all(np.isfinite([item[context['summary']] for item in self.roi_results]),axis=0)
-        for item in spec.series:
-            item.pop('sd',None); item.pop('lower',None); item.pop('upper',None)
-            if task == 'shape':
-                y=np.asarray(item['y']); norm=np.linalg.norm(y[common])
-                item['y']=np.where(common,y/norm,np.nan) if norm else np.full(y.shape,np.nan)
-            else:
-                item['y']=np.asarray(item['y'])-ref
-        spec.title='L2 normalized shape' if task == 'shape' else 'ROI minus reference summary'
-        spec.ylabel='Normalized mean (dimensionless)' if task == 'shape' else f"Residual ({self.product_source.metadata['units']})"
-        spec.caption='Descriptive ROI summary transformation; no pixel registration or defect truth.'
-        spec.metadata.update(right_task=task,common_feature_indices=np.flatnonzero(common).tolist(),
-                             reference_roi_id=reference_id if task == 'residual' else None)
+        spec = roi_transform_plot(self.plot_spec, task, reference=ref, common=common, reference_roi_id=reference_id)
         self.draw_right_plot(spec)
 
     def apply_map_brush(self):
-        if self.map_distributions is None or self.task_busy:
+        if self.map_distributions is None:
+            return
+        if self.task_busy:
+            self._brush_pending = True
+            self.brush_note.setText('Computing the latest selected ROI and range…')
             return
         from hyperlab.analysis.distributions import brush_map
         context=self.map_distribution_context
@@ -1842,8 +1878,15 @@ class Workbench(W.QMainWindow):
         if record is None:
             return
         product=self.map_distribution_product; bounds=[self.brush_low.value(),self.brush_high.value()]
+        task = self.right_task.currentData()
         def completed(result):
             if self.map_distributions is None or self.map_distribution_product is not product:
+                return
+            if self.right_task.currentData() != task:
+                return
+            if (self.inspect_roi.currentData() != record['roi_id'] or
+                    [self.brush_low.value(),self.brush_high.value()] != bounds):
+                self._brush_pending = True
                 return
             self.map_brushes=[result]
             self.brush_low.setValue(result['metadata']['value_range'][0])
@@ -1878,6 +1921,15 @@ class Workbench(W.QMainWindow):
         if self.product is not None:
             self.show_product(self.product, self.product_source)
 
+    def close_source_dialogs(self):
+        for dialog in self.findChildren(W.QDialog):
+            if dialog.property('source_bound') or dialog in [getattr(self, name, None) for name in
+                    ('_reference_dialog', '_annotation_dialog', '_roi_bounds_dialog')]:
+                dialog.setProperty('source_invalidated', True)
+                dialog.reject()
+        self._right_task_pending = self._brush_pending = False
+        self._right_request += 1
+
     def figure_export(self):
         choices = {'Current chart': self.plot_spec}
         sources = {'Current chart': (self.plot_source, self.plot_annotation)}
@@ -1895,6 +1947,7 @@ class Workbench(W.QMainWindow):
             return
         dialog = W.QDialog(self)
         dialog.setWindowTitle('Figure export · SVG / PDF / PNG and source data')
+        dialog.setProperty('source_bound', True)
         form = W.QFormLayout(dialog)
         selected = W.QComboBox(); selected.addItems(list(choices))
         form.addRow('Figure', selected)
@@ -1909,6 +1962,8 @@ class Workbench(W.QMainWindow):
         buttons = W.QDialogButtonBox(W.QDialogButtonBox.StandardButton.Save | W.QDialogButtonBox.StandardButton.Cancel)
         form.addRow(buttons)
         def save():
+            if dialog.property('source_invalidated'):
+                self.notify('The source was replaced. Open Figure export for the current result.'); return
             if self.task_busy:
                 self.notify('Wait for the current background operation before exporting.'); return
             from dataclasses import replace
@@ -1990,6 +2045,7 @@ class Workbench(W.QMainWindow):
             except ValueError as error:
                 raise ValueError(f'{error}; use CLI inspect --axis-order for an NPY file without axis metadata.') from error
         def loaded(value):
+            self.close_source_dialogs()
             if self.sequence:
                 self.sequence.close()
                 self.sequence = None
@@ -2025,6 +2081,7 @@ class Workbench(W.QMainWindow):
         if self.session and self.session.state in ('streaming', 'recording', 'stopping'):
             self.notify('Stop acquisition before loading synthetic data.')
             return
+        self.close_source_dialogs()
         if self.sequence:
             self.sequence.close()
         self.sequence = None
@@ -2296,6 +2353,7 @@ class Workbench(W.QMainWindow):
             save_state(self)
         except (OSError,ValueError) as error:
             self.notify(f'Could not save workspace settings: {error}')
+        self.close_source_dialogs()
         if self.sequence:
             self.sequence.close()
         if self.cube is not None:

@@ -68,8 +68,14 @@ def measurement_readiness(source, *, selected_task='descriptive contrast', polic
     sequence = meta.get('sequence')
     if isinstance(sequence, (bool, np.bool_)) or not isinstance(sequence, (int, np.integer)) or sequence < 0:
         missing.append('sequence')
-    declared_shape = meta.get('shape')
-    shape_matches = None if declared_shape is None else list(declared_shape) == list(source.data.shape)
+    declared_shape = source.frame_receipt_shape if isinstance(source, Cube) else meta.get('shape')
+    possible_shapes = [list(source.data.shape)]
+    if isinstance(source, Cube) and source.shape[2] == 1:
+        possible_shapes.append(list(source.shape[:2]))  # HW sensor frame represented as HW1 for analysis.
+    shape_matches = None if declared_shape is None else (
+        isinstance(declared_shape, (list, tuple)) and
+        all(not isinstance(size, (bool, np.bool_)) and isinstance(size, (int, np.integer)) and size > 0
+            for size in declared_shape) and list(declared_shape) in possible_shapes)
     if shape_matches is None:
         missing.append('shape')
     complete, declared_valid = meta.get('buffer_complete'), meta.get('valid')
@@ -82,7 +88,8 @@ def measurement_readiness(source, *, selected_task='descriptive contrast', polic
         frame_status = 'PASS'
     report['frame_received'] = {'status': frame_status, 'buffer_complete': complete,
         'declared_valid': declared_valid, 'identity': identity, 'missing_identity': missing,
-        'shape': list(source.data.shape), 'declared_shape_matches': shape_matches, 'dtype': str(source.data.dtype),
+        'shape': list(source.data.shape), 'declared_frame_shape': deepcopy(declared_shape),
+        'declared_shape_matches': shape_matches, 'dtype': str(source.data.dtype),
         'pixel_format': meta.get('pixel_format'),
         'origin': 'SYNTHETIC' if meta.get('synthetic') else meta.get('acquisition_source', meta.get('data_source', 'unknown')),
         'scope': 'Recorded raw-frame receipt; not current camera connection or end-to-end latency'}

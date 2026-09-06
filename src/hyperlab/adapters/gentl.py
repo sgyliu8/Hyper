@@ -333,8 +333,12 @@ class GenTLBackend:
             buffer = self.camera.try_fetch(timeout=min(.001, remaining))
             if buffer is not None:
                 return buffer
-            # Cooperatively release Python between finite native polls.
-            time.sleep(min(.001, max(0, deadline - time.monotonic())))
+            # Harvesters uses time.time for its inner deadline. On Windows
+            # Python 3.11 that clock advances in ~15.6 ms ticks, so a nominal
+            # 1 ms poll can busy-loop for a full tick. Yield an 8 ms GUI work
+            # interval between empty polls; the outer fetch deadline still bounds
+            # silence, and ready buffers are returned without a deliberate delay.
+            time.sleep(min(.008, max(0, deadline - time.monotonic())))
 
     def fetch(self, timeout=0.25, *, keep_transport=False):
         self._owner()
