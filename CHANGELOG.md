@@ -1,32 +1,35 @@
-# Changelog
+# Changes
 
-## Startup fix — 2026-09-05
+## 0.3.1 — live ROI correction, 2026-09-05
 
-- Added a double-clickable CMD GUI launcher that works from Windows PowerShell
-  with Restricted execution policy and returns the terminal immediately.
-- Corrected startup/capture examples to avoid persistent policy changes and
-  clarified the `.\.venv\Scripts\python.exe` path.
+- Correct repeated density-axis scaling and let the display run between bounded
+  native buffer polls; preserve acquisition errors and immutable buffer evidence.
+- Fix Compare ROIs on live/stopped camera frames with nested immutable metadata;
+  raw frame data and evidence remain protected.
+- Show single-plane ROI means with visible markers and spatial SD error bars,
+  alongside policy-matched intensity distributions using shared bins. A single
+  plane does not produce an invented spectrum or a trivial L2 curve of ones.
+- Match the figure examples with orange/blue/green curves, darker axes, readable
+  legends, consistent dashed lines and translucent SD ribbons. Reserve usable
+  chart height and distinguish excluded image pixels with a slate background.
+- Export single-plane distribution counts, bin edges and densities with figures.
+- Match PCA/difference maps to white publication figures, with blue-white-red
+  scales, readable numerical colorbars and a separate grey invalid-pixel layer.
+- Label difference/ratio maps with recorded RGB/BGR channel names. Keep recording
+  and snapshot errors visible without misreporting a healthy camera connection.
 
-## 0.1.0 — 2026-09-05
+## 0.3.0 — research preview, 2026-09-05
 
-- Identified the mvBlueFOX3-M2024C imaging module and separate unassociated NXP
-  VCOM interface through live Windows PnP inventory.
-- Downloaded and statically reviewed the official signed Balluff 3.7.2 package;
-  installed it with recorded user approval, exit code 0 and no reboot. Target
-  imaging-interface status changed from code 28 to code 0.
-- Acquired real RGB8 and BayerRG12 1936×1216 sensor frames through the signed x64
-  GenTL producer; saved original transport payloads, NPY data, receipts and previews
-  locally, with normal stop/release and saved-array shape/dtype readback.
-- Added bounded session pixel-format/exposure/gain options with device validation,
-  readback and restoration; restored RGB8/20 ms after the BayerRG12/100 ms test.
-- Corrected Windows PowerShell module-path signature-check failure and explicit
-  RGB/BGR color-axis mapping; retained the original failed execution receipts.
-- Added read-only inventory/comparison, immutable raw persistence, offline analysis,
-  one desktop GUI and lightweight tests. RGB color axes do not become spectra;
-  GUI exports ROI CSV, while derived analysis arrays remain an API capability.
-- Passed H1 sensor-image acceptance with user-confirmed scene/full-lens occlusion
-  at matching BayerRG12/100 ms/gain 0 settings; the mean changed 817.57 to 4.60 DN.
-  Original frames and initial receipts remain unchanged; this does not validate spectra.
-- Documented the bounded legacy protocol/calibration search, including inaccessible
-  sources and rate limits. H0 remains PARTIAL for chassis/cable identity; H2–H4
-  remain BLOCKED. No real wavelength reconstruction or reflectance is claimed.
+- Correct time trends to use unique source frames and recorded clock coordinates.
+- Require fresh stream epochs for recording/benchmark admission; preserve node
+  communication errors and explicit recording loss accounting.
+- Add multiple named ROIs, optional spatial SD and simultaneous raw/L2 curves,
+  map colorbars/units, PC selection, explained variance and loadings.
+- Add reproducible SVG/PDF/PNG figures with PlotSpec JSON and CSV/NPY source data.
+- Package the Windows inventory resource; persist workspace, ROI/view state,
+  references and device profiles independently of the current working directory.
+- Add private reference import/export, Locate, redacted support reports, an
+  independent wheel smoke and one Windows onedir ZIP build.
+
+Long-duration/spectral hardware qualification and original-code licensing remain pending. Older engineering
+history is in [the archived Phase 2 handoff](docs/dev/archive/PHASE2_HANDOFF.md).

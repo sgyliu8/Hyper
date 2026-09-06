@@ -12,7 +12,13 @@ def test_round_trip_preserves_truth_and_mask(tmp_path, suffix):
     path = tmp_path / ("synthetic" + suffix)
     save_cube(original, path)
     loaded = load_cube(path)
-    np.testing.assert_array_equal(loaded.data, original.data)
+    if suffix == ".hdr":
+        # External ENVI cannot express a pixel mask as bbl; exported invalid
+        # samples are NaN, while the source and separate exact mask are retained.
+        np.testing.assert_array_equal(loaded.data[original.valid_mask], original.data[original.valid_mask])
+        assert np.isnan(loaded.data[~original.valid_mask]).all()
+    else:
+        np.testing.assert_array_equal(loaded.data, original.data)
     np.testing.assert_array_equal(loaded.valid_mask, original.valid_mask)
     assert loaded.metadata["synthetic"] is True
     assert loaded.metadata["data_source"] == "SYNTHETIC"
@@ -38,7 +44,8 @@ def test_envi_interleaves_offsets_and_endian(tmp_path, interleave, byte_order):
     result = load_cube(header)
     np.testing.assert_array_equal(result.data, original)
     assert isinstance(result.data, np.memmap)
-    assert result.metadata["wavelength_units"] == "Nanometers"
+    assert result.metadata["wavelength_units"] == "nm"
+    assert result.metadata["wavelength_units_original"] == "Nanometers"
 
 
 def test_missing_wavelength_is_not_invented(tmp_path):

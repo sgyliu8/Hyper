@@ -1,144 +1,91 @@
-# HyperLab: HinaLea instrument recovery
+# HyperLab
 
-The imaging interface is restored: the approved Balluff Impact Acquire 3.7.2
-installation completed without a reboot, Windows reports code 0, and the
-mvBlueFOX3-M2024C module delivered real 1936×1216 RGB8 and BayerRG12 frames.
-Transport bytes, NPY samples, metadata and previews were saved locally; stop,
-release and saved-array readback succeeded. Session settings were restored.
+A local Windows research workbench for inspecting imaging data, comparing regions
+and exporting reproducible scientific figures. Offline analysis works without a
+camera. An experimental acquisition backend supports the mvBlueFOX3 USB3 Vision
+imaging module used in the investigated HinaLea system.
 
-**H1 sensor-image acquisition passes**, including the user-confirmed full-lens
-occlusion comparison at matched settings. **Full hyperspectral recovery remains
-incomplete.** H0 identity is PARTIAL because chassis labels and the second cable
-association remain incomplete. H2–H4 are BLOCKED by the unknown
-HinaLea scanner interface and this instrument's wavelength/reconstruction
-calibration. The separate NXP LPC13xx VCOM interface remains unassociated and
-unopened. An RGB image or Bayer sensor plane is not a hyperspectral cube.
+![Offline validation](https://github.com/sgyliu8/Hyper/actions/workflows/offline.yml/badge.svg?branch=feature%2Fscientific-workbench-portable-v3)
 
-See [HANDOFF](HANDOFF.md), [hardware findings](docs/HARDWARE_FINDINGS.md),
-[sources](docs/SOURCES.md) and [acceptance plan](docs/TEST_PLAN.md).
+**0.3.1 research preview:** install the explicit branch below. The repository's
+default branch is still `recovery/hinalea-local`. Original-code licensing and
+public release remain pending; this is not a completed open-source license grant.
 
-## Start on this computer
+- Multiple named rectangle ROIs, raw amplitude and optional L2 shape comparison,
+  spatial SD, single-plane intensity distributions, validity masks and recorded-time trends.
+- Difference, ratio and angle maps; PCA scores, explained variance and loadings.
+- Shared plot data for interactive Qt charts and SVG/PDF/PNG figure bundles.
+- NPY/NPZ/ENVI data, explicit source/axis metadata, private reference exchange,
+  saved workspace, view and ROI configuration.
 
-PowerShell, working directory `C:\Project\HyperSpectral`:
+![Synthetic ROI comparison in the native Windows workbench](docs/assets/workbench-roi-031-native.jpg)
 
-```powershell
-Set-Location C:\Project\HyperSpectral
-.\.venv\Scripts\python.exe -X utf8 -m hyperlab doctor
-.\.venv\Scripts\python.exe -X utf8 -m hyperlab probe --inventory
-.\.venv\Scripts\python.exe -X utf8 -m hyperlab probe --standard-interfaces
-.\Start-HyperLab.cmd
-.\.venv\Scripts\python.exe -X utf8 -m hyperlab demo
-```
+This is a native Windows desktop capture at 125% display scale, using the
+0.3.1 Windows package and built-in synthetic data. It is not a camera
+acquisition or a material identification result. A separate
+[offscreen Qt layout render](docs/assets/workbench-synthetic.png) documents layout
+checks. [Reproducible figure examples](docs/user/SCIENTIFIC_FIGURES.md)
+retain their numerical data separately from display styling.
 
-`Start-HyperLab.cmd` can also be double-clicked. It opens the GUI and returns the
-terminal immediately, without changing PowerShell execution policy. The Python
-path is `.\.venv\Scripts\python.exe` (not `..venv\Scripts\python.exe`).
-To run the GUI directly in the current terminal, use
-`.\.venv\Scripts\python.exe -X utf8 -m hyperlab app`.
-If using the PowerShell launcher, invoke it with
-`powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-HyperLab.ps1`;
-this policy applies only to that child process. Do not copy terminal prompts such
-as `PS C:\...>` or `>>` into commands.
+## Install and start
 
-`demo` explicitly generates SYNTHETIC data. `app` starts without opening a camera.
-All new private diagnostics and outputs go under `local/` and stay out of Git.
-The exact executed environment uses Python 3.11.9 x64, NumPy 2.4.6, Matplotlib
-3.11.1 and Pillow 12.3.0. Harvester 1.4.3 / GenICam 1.6.0 are installed in .venv;
-their presence does not supply a Windows USB3 Vision driver.
-
-For a fresh checkout:
+Windows x64 with Python 3.11 is the tested desktop environment. Linux CI tests
+offline computation and offscreen Qt; macOS is not qualified. No camera/runtime
+is needed for the following evaluation flow:
 
 ```powershell
+git clone --branch feature/scientific-workbench-portable-v3 --single-branch https://github.com/sgyliu8/Hyper.git
+cd Hyper
 py -3.11 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e '.[test,camera]'
-.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m pip install .
+.\.venv\Scripts\python.exe -m hyperlab doctor
+.\.venv\Scripts\python.exe -m hyperlab demo
 ```
 
-MATLAB R2025a and Image Acquisition Toolbox are present, but actual `imaqhwinfo`
-returned `InstalledAdaptors: {}`. Python/Tk is the one maintained GUI; switching
-languages would not supply the missing FP protocol or spectral calibration.
-
-## Capture on this computer
-
-The installed and signature-verified x64 producer is
-`C:\Program Files\Balluff\ImpactAcquire\bin\x64\mvGenTLProducer.cti`.
-Run from an ordinary PowerShell in the project directory; each command creates a
-new timestamped private output directory:
+After installation, `Start-HyperLab.cmd` opens the English Qt workbench. The
+launcher does not connect hardware. [Installation](docs/user/INSTALL.md) covers
+an independent wheel, the local Windows ZIP, workspace selection and exact
+build evidence. The default data directory is Documents/HyperLabData; use
+**Workspace…** to choose an existing experiment folder.
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Capture-CandidateFrame.ps1 -CtiPath 'C:\Program Files\Balluff\ImpactAcquire\bin\x64\mvGenTLProducer.cti'
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Capture-CandidateFrame.ps1 -CtiPath 'C:\Program Files\Balluff\ImpactAcquire\bin\x64\mvGenTLProducer.cti' -PixelFormat BayerRG12 -ExposureUs 100000 -Gain 0
+.\.venv\Scripts\python.exe -m hyperlab figure-demo --output "$env:USERPROFILE\Documents\HyperLabFigures"
 ```
 
-The first command preserves current format/exposure/gain. The second requests one
-BayerRG12 sensor plane at 100 ms and gain 0, validates the camera's available
-format and parameter ranges, reads back the session settings, and restores their
-previous values after acquisition. The live test restored RGB8 / 20 ms / gain 0.
-No UserSet is saved and no FP controller is commanded. Current enabled trigger
-or test-pattern settings stop acquisition with an explanation.
+Use a new output directory each time. This command produces five synthetic
+figure bundles without a camera or downloaded dataset.
 
-The wrapper selects the one observed VID/PID/MI imaging interface; the CLI
-re-probes, requires code 0, derives its parent serial privately and opens exactly
-that USB3 Vision mvBlueFOX3. Fetch timeout is five seconds. A session saves
-`transport_payload.bin`, `frame.npy`, `frame.npy.json` and `preview.png`, then
-stops/releases and checks the reopened NPY shape/dtype. Bayer samples remain a
-single HW mosaic; RGB/BGR samples use HWC color channels with no wavelength axis.
+## Hardware and scientific scope
 
-The equivalent CLI is `python -m hyperlab acquire --device <exact-local-PnP-ID>
---single-frame --cti <installed-producer-path>`. Optional session arguments are
-`--pixel-format BayerRG12 --exposure-us 100000 --gain 0`; the wrapper above avoids
-copying full device IDs into commands. `--recipe` is rejected before device access
-because no HinaLea scan recipe is verified. H1 physical acceptance was verified
-with user-confirmed full-lens occlusion: at matched BayerRG12/100 ms/gain 0, mean
-intensity changed from 817.57 to 4.60 DN. This verifies sensor imagery and the
-optical path, not FP scanning or spectral measurements.
+Image acquisition needs the official Windows USB3 Vision driver, Balluff Impact
+Acquire 3.7.2 and optional `.[camera]` Python dependencies. Connect discovers
+supported devices/runtimes and asks for a selection when there is more than one.
+See [Hardware and drivers](docs/user/HARDWARE_AND_DRIVERS.md).
 
-The guarded `scripts/Install-ReviewedRuntime.ps1` has already run with recorded
-approval and exit code 0; its private receipt is
-`local/diagnostics/install-20260905T132833738.log.json`. Reinstallation is not the
-next recovery step. Original failure receipts are retained in the hardware report.
+Historical RGB8/BayerRG12 sensor imaging and a user occlusion check passed.
+The [0.3.1 real-camera follow-up](docs/dev/ROI_LIVE_FIX.md) exercised BayerRG12
+preview, named ROI comparison, exact-frame saving, bounded recording and normal
+Stop/settings restoration/release. Longer stability and recovery qualification
+remain separate from this bounded imaging/UI check.
+FP control and device-matched spectral reconstruction have not been recovered.
+A Bayer image or time sequence is not a hyperspectral cube. No temperature or
+defect-probability claim is derived from uncalibrated DN.
 
-## Offline use
+## Guides and development
 
-```powershell
-.\.venv\Scripts\python.exe -m hyperlab inspect local\synthetic\initial\demo.npy
-.\.venv\Scripts\python.exe -m hyperlab app local\synthetic\initial\demo.npy
-.\.venv\Scripts\python.exe -m hyperlab app local\acquisitions\scene-ready-rgb\frame.npy
-.\.venv\Scripts\python.exe -m hyperlab inspect your-array.npy --axis-order KHW
-.\.venv\Scripts\python.exe examples\generate_synthetic.py
-```
+[Quick start](docs/user/QUICKSTART.md) · [User guide](docs/user/USER_GUIDE.md) ·
+[Scientific figures](docs/user/SCIENTIFIC_FIGURES.md) ·
+[Data and calibration](docs/user/DATA_AND_CALIBRATION.md) ·
+[Troubleshooting](docs/user/TROUBLESHOOTING.md) · [Changes](CHANGELOG.md)
 
-The desktop app opens ENVI HDR+binary (BSQ/BIL/BIP), NPY+JSON and NPZ. Unmapped arrays
-require an explicit axis order; ambiguous NPZ requires its dataset name. Use the
-band/state slider, three composite indices, and two half-open rectangle ROIs
-`x0,y0,x1,y1`. ROI curves/CSV contain mean, population standard deviation and valid
-count. Buttons provide difference, ratio/invalid mask, sampled PCA and angle to ROI1.
-Angles are radians; without wavelength evidence the comparison is a state-vector
-difference. Scores are descriptive, not defect diagnoses. Composite is display RGB,
-not a colorimetric calibration. The GUI exports ROI CSV files. Derived maps/masks
-are available through the analysis API; GUI export of those arrays is not implemented.
+Developers: [Architecture](docs/dev/ARCHITECTURE.md), [test plan](docs/dev/TEST_PLAN.md),
+[current handoff](docs/dev/HANDOFF.md), [Phase 3 findings](docs/dev/REVIEW_PHASE3.md),
+[release plan](docs/dev/RELEASE_PLAN.md) and [sources](docs/dev/SOURCES.md).
+Use `pip install -e ".[test]"` for development; ordinary users do not need test
+packages. Contributions should include a focused reproduction and preserve data
+meaning. Do not attach raw captures, serial numbers or calibration to public issues.
+Preview the redacted support report in Diagnostics before sharing it yourself.
 
-The GUI distinguishes LIVE / REPLAY / SYNTHETIC explicitly. Single-frame access
-is gated by the reviewed producer and exact device; unsupported scan and GUI
-exposure/gain controls remain disabled. Session exposure/gain are supported by
-the CLI and wrapper above. RGB/BGR frames display as color data, with spectral
-analysis controls disabled. Background analysis keeps the UI responsive; Stop discards a pending background result, it does not
-pretend to interrupt a native device call. Single-frame calls have a bounded timeout.
-
-Large NPY/ENVI arrays use memmap and analysis uses bands/chunks/sampled PCA. NPZ must
-materialize the selected array; convert large data to NPY/ENVI first. No automatic
-HDF5/MAT/TIFF or proprietary DAT interpretation is claimed. See
-[examples and API contracts](examples/README.md) and [architecture](docs/ARCHITECTURE.md).
-
-Reflectance processing is available as a Python analysis function only for data with
-an evidenced wavelength axis, linear intensity and matching acquisition/reference
-conditions. It subtracts dark values in floating point, masks saturation/low
-denominators and does not silently clamp output. It cannot recover missing FP mapping.
-
-## Privacy and Git
-
-The remote `sgyliu8/Hyper` was verified public and empty before initialization.
-Only source, redacted documentation, lightweight tests and synthetic generators
-are eligible for publication. `local/`, .venv, raw images, calibration, installers,
-full serials, licenses and diagnostic logs are ignored. No public real dataset is
-downloaded. No model training, PatchCore, cloud service or database is included.
+[Third-party notices](THIRD_PARTY_NOTICES.md) explain dependency licenses and
+excluded manufacturer assets. No driver, private calibration or dataset is
+relicensed or distributed by this repository.

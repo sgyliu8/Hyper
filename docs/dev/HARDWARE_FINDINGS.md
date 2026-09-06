@@ -1,9 +1,13 @@
 # Hardware findings — 2026-09-05
 
-The imaging driver and normal single-frame acquisition now work. Full instrument
-recovery remains incomplete because full chassis/cable identity, the HinaLea
-scanner protocol and device-matched spectral calibration remain unresolved. The
-user-confirmed scene/occlusion comparison passed H1 sensor-image acceptance.
+The installed driver and earlier single-frame/occlusion evidence passed H1.
+During Phase 2, a Tk baseline frame also succeeded, but three subsequent persistent
+CameraSession benchmark attempts failed before streaming. The last could not read
+the GenCP MaxDeviceResponseTime register; physical USB reconnection is pending.
+Current persistent preview/recording is therefore BLOCKED, despite PnP code 0.
+See [HANDOFF](HANDOFF.md) for current receipts. The historical results below do
+not establish current link health. Chassis/cable identity, scanner protocol and
+device-matched spectral calibration remain unresolved.
 
 ## Verified scope and current inventory
 
