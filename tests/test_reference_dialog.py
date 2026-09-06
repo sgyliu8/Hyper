@@ -70,7 +70,12 @@ def test_clicked_correction_preserves_sources_and_opens_new_cube(window, tmp_pat
     assert dialog.receipt["applicability"]["status"] == "MATCH"
     assert dialog.run_button.isEnabled()
     if not relative:
-        qtbot.mouseClick(dialog.relative, QtCore.Qt.MouseButton.LeftButton)
+        option = W.QStyleOptionButton()
+        dialog.relative.initStyleOption(option)
+        indicator = dialog.relative.style().subElementRect(
+            W.QStyle.SubElement.SE_CheckBoxIndicator, option, dialog.relative)
+        qtbot.mouseClick(dialog.relative, QtCore.Qt.MouseButton.LeftButton, pos=indicator.center())
+        assert not dialog.relative.isChecked()
         assert not dialog.run_button.isEnabled()
         dialog.factor.setValue(.9)
         dialog.factor_source.setText("Declared constant factor in analytic synthetic test")

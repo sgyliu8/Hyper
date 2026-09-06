@@ -92,8 +92,8 @@ isolated under ignored diagnostics, with no new production dependency.
 ## Final delivery evidence
 
 The delivery executable and wheel contain source commit
-`a5c055fe4bb4f6da61fe6818f195262b39237ab1`, version 0.4.0. Subsequent changes to
-this record and the handoff are documentation only. The new branch is
+`a5c055fe4bb4f6da61fe6818f195262b39237ab1`, version 0.4.0. Subsequent closeout and
+platform-test edits do not change packaged production code. The new branch is
 `feature/materials-science-v040`, based on the already merged `904cc2f` baseline;
 the earlier PR was merged externally during this increment. This work does not
 merge, change the default branch or publish a binary release. Hosted checks
@@ -162,6 +162,16 @@ in local logs; the final suite and correctly invoked installation smokes pass.
 The local export verifier initially expected a 2-D native array; native derived
 files correctly retain the singleton feature axis, while publication map arrays
 are 2-D. The corrected verifier explicitly checks both contracts before comparison.
+
+The first hosted Linux suite retained one failure (417 passed): the reference
+test's default click at the center of a full-width checkbox missed its clickable
+indicator/text area under that platform's font/style. A separate wide-checkbox
+experiment reproduces the missed center click and successful indicator click.
+The fixture now obtains the indicator rectangle from Qt's current style, clicks
+its center and explicitly asserts the toggle before checking the calibration
+gate. All eight reference-dialog tests pass locally after this test-only change;
+the hosted full-suite rerun is required at the corrected PR head. Production
+behavior, scientific criteria and the delivered binary are unchanged.
 
 Receipts, raw data, figures, UI screenshots and identifiers remain under ignored
 `local/diagnostics/science-20260906`. The local delivery index and startup wrapper

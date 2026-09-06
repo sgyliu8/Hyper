@@ -37,7 +37,11 @@ The final native review also reproduced a stale pixel readout after a new frame;
 new frames now clear the previous pixel value and quality tooltip. Both live and
 replay transitions have regressions. The delivery package is built from
 `a5c055fe4bb4f6da61fe6818f195262b39237ab1`.
-Later closeout edits are documentation only. The verified package is in
+Later closeout and platform-test edits do not change packaged production code.
+The first hosted Linux suite exposed a checkbox test click outside its style's
+indicator/text area. The fixture now clicks the actual Qt indicator and asserts
+the toggle; all eight reference-dialog tests pass locally after this test fix.
+The verified package is in
 `local/distribution/materials-science-0.4.0-delivery`; the local delivery index
 and `local/Start-HyperLab-0.4.cmd` point to it. Earlier 0.4.0 build directories
 are preserved but superseded. The visible native window is left on actual-frame
