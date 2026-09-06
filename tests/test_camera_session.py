@@ -9,6 +9,11 @@ from hyperlab.acquisition.sequence import load_sequence
 from hyperlab.adapters import gentl
 
 
+@pytest.fixture(autouse=True)
+def isolated_owner_history(monkeypatch):
+    monkeypatch.setattr('hyperlab.acquisition.camera._UNRELEASED_TARGETS', set())
+
+
 class FakeNode:
     def __init__(self, name, value, entries=None, limits=(0, 20_000_000), fail_restore=False):
         self.name, self._value = name, value
@@ -273,6 +278,24 @@ def test_buffer_identity_read_error_preserves_primary_and_requeues(tmp_path, mon
     finally:
         backend.close()
     assert camera.buffer.returns==1
+
+
+def test_gentl_transfer_is_exact_size_owned_and_frame_freezes_the_owner(tmp_path, monkeypatch):
+    from hyperlab.acquisition.frame import Frame
+    backend, camera, _ = make_backend(tmp_path, monkeypatch)
+    backend.open()
+    backend.configure({})
+    backend.start()
+    try:
+        raw, metadata, _ = backend.fetch(.2)
+        assert raw.flags.owndata and raw.base is None and raw.nbytes == 24
+        assert camera.buffer.returned and raw[0, 0] == 0
+        captured = Frame(raw, dict(metadata, session_id='synthetic', sequence=0))
+        assert captured.data is raw and not raw.flags.writeable
+        with pytest.raises(ValueError):
+            raw[:] = 99
+    finally:
+        backend.close()
 
 
 def test_genicam_typed_category_name_uses_inode_property(tmp_path, monkeypatch):

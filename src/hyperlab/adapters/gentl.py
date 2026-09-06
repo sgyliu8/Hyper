@@ -367,7 +367,8 @@ class GenTLBackend:
                 shape = (component.height, component.width, 3) if color else (component.height, component.width)
                 if values.size != int(np.prod(shape)):
                     raise RuntimeError("Payload size cannot map to one sensor frame")
-                raw = values.reshape(shape)
+                values.shape = shape
+                raw = values
             with self.timings.measure('metadata_and_chunk'):
                 chunk = {}
                 if self.readback.get("ChunkModeActive") is True:
