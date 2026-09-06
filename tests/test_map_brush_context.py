@@ -82,3 +82,51 @@ def test_old_brush_cannot_return_after_leaving_and_reentering_distribution(mappe
     assert len(mapped.brush_overlay.points()) == 0
     assert mapped.right_spec.brushes == []
     assert 'No selected map range' in mapped.brush_note.text()
+
+
+def test_brushed_rectangle_profile_instruction_clears_axes_and_valid_plots_restore_them(mapped, qtbot):
+    mapped.analyze('normalized_difference')
+    qtbot.waitUntil(lambda: not mapped.task_busy, timeout=10000)
+    mapped.inspect_roi.setCurrentIndex(0)
+    mapped.brush_low.setValue(-1); mapped.brush_high.setValue(1)
+    mapped.apply_map_brush()
+    qtbot.waitUntil(lambda: not mapped.task_busy, timeout=10000)
+    completed = mapped.right_spec
+    labels = (completed.xlabel, completed.ylabel, completed.caption)
+    selection = deepcopy(completed.brushes[0])
+    assert selection['metadata']['counts']['selected'] > 0
+    assert 'Map range selection complete' in mapped.message.text()
+    assert mapped.shape_chart.getAxis('left').labelText == completed.ylabel
+
+    def invalid_profile():
+        mapped.inspect_roi.setCurrentIndex(0)
+        mapped.right_task.setCurrentIndex(mapped.right_task.findData('profile'))
+        assert mapped.right_spec is None and mapped.map_brushes == []
+        assert mapped.message.text() == 'Select a line / strip ROI for a profile.'
+        assert len(mapped.shape_chart.listDataItems()) == 0
+        assert len(mapped.shape_chart.plotItem.legend.items) == 0
+        for name in ('left','bottom'):
+            assert mapped.shape_chart.getAxis(name).labelText == ''
+            assert not mapped.shape_chart.getAxis(name).isVisible()
+        assert mapped.shape_chart.toolTip() == 'Select a line / strip ROI for a profile.'
+
+    invalid_profile()
+    mapped.inspect_roi.setCurrentIndex(1)
+    qtbot.waitUntil(lambda: not mapped.task_busy, timeout=10000)
+    assert 'Profile complete' in mapped.message.text()
+    for name, label in (('bottom',mapped.right_spec.xlabel),('left',mapped.right_spec.ylabel)):
+        assert mapped.shape_chart.getAxis(name).isVisible()
+        assert mapped.shape_chart.getAxis(name).labelText == label
+
+    mapped.right_task.setCurrentIndex(mapped.right_task.findData('ecdf'))
+    assert mapped.shape_chart.getAxis('left').labelText == mapped.right_spec.ylabel
+    invalid_profile()
+    mapped.shape_normalize.setChecked(True)
+    mapped.roi_timer.stop(); mapped.analyze_rois()
+    qtbot.waitUntil(lambda: not mapped.task_busy, timeout=10000)
+    for name in ('left','bottom'):
+        assert mapped.shape_chart.getAxis(name).isVisible()
+        assert mapped.shape_chart.getAxis(name).labelText
+    assert (completed.xlabel, completed.ylabel, completed.caption) == labels
+    assert completed.brushes[0]['metadata'] == selection['metadata']
+    np.testing.assert_array_equal(completed.brushes[0]['mask'], selection['mask'])

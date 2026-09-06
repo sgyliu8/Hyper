@@ -1375,6 +1375,8 @@ class Workbench(W.QMainWindow):
         distributions = [item for item in spec.series if 'distribution' in item]
         self.shape_chart.setVisible(bool(normalized or distributions))
         if normalized or distributions:
+            for axis in ('left','bottom'):
+                self.shape_chart.showAxis(axis)
             units = spec.metadata.get('units', spec.ylabel.removeprefix('Mean (').removesuffix(')'))
             self.shape_chart.setTitle('ROI intensity distribution' if distributions else 'L2 normalized shape',
                                       color='#17212b',size='12pt')
@@ -1833,6 +1835,8 @@ class Workbench(W.QMainWindow):
     def draw_right_plot(self, spec, *, brush=False):
         self.right_spec = spec
         chart = self.shape_chart; chart.clear(); chart.plotItem.legend.clear(); chart.show()
+        for axis in ('left','bottom'):
+            chart.showAxis(axis)
         chart.setTitle(spec.title,color='#17212b',size='12pt'); chart.setToolTip(spec.caption)
         chart.setLabel('bottom',spec.xlabel,**{'color':'#26313d','siPrefixEnableRanges':()})
         chart.setLabel('left',spec.ylabel,**{'color':'#26313d','siPrefixEnableRanges':()})
@@ -1912,8 +1916,13 @@ class Workbench(W.QMainWindow):
         if task == 'profile':
             if record['geometry']['type'] != 'strip':
                 self.right_spec = None
-                self.shape_chart.clear(); self.shape_chart.setTitle('Select a line / strip ROI')
-                self.brush_note.setText('No selected map range. Select a line / strip ROI for a profile.'); return
+                message = 'Select a line / strip ROI for a profile.'
+                chart = self.shape_chart; chart.clear(); chart.plotItem.legend.clear()
+                chart.setTitle('Select a line / strip ROI'); chart.setToolTip(message)
+                for axis in ('left','bottom'):
+                    chart.setLabel(axis,''); chart.hideAxis(axis)
+                self.brush_note.setText('No selected map range. ' + message)
+                self.notify(message); return
             cube, product, request = self.product_source, self.map_distribution_product, self._right_request
             def completed(payload):
                 if (self.product_source is not cube or self.map_distribution_product is not product or
