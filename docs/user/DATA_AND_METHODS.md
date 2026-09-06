@@ -209,6 +209,27 @@ observation points are not automatically fitted or given 95% confidence bands.
 
 ## Export
 
+### Recording counters and persistence
+
+Admission, writing and later reading are separate stages. `admitted_frames`
+counts frames accepted by the recorder; `copied_frames` counts complete frames
+copied into its NPY writer; `data_fsynced_frames` counts frames covered by a
+successful file synchronization. `durable_frames` requires the published
+manifest checkpoint after that barrier, and `written_frames` is its alias.
+`readable_frames` is a separately reopened prefix and is null when verification
+is unavailable. At a settled attempt, admitted = durable + unpersisted; rejected
+frames were never admitted. A saved prefix can be useful while the requested
+target remains incomplete. Preserve errors even when a later checkpoint recovers
+the prefix. These software barriers do not certify power-loss durability of the
+computer or storage hardware.
+
+RAM burst retains admitted owned frames until saving and reopen verification,
+or explicit abandonment. RAM retention is volatile; acquired is never a claim
+of durable storage. The time sequence preserves each frame's original settings,
+epoch and receive clock. It has no wavelength axis or acknowledged FP scan state.
+
+### Figure bundles
+
 Select Figure export in Analysis; choose current chart, **Right task plot +
 selections** or derived map, title,
 width/height (mm) and DPI. The directory contains:

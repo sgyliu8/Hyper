@@ -11,6 +11,8 @@ import subprocess
 import sys
 import tomllib
 
+from public_files import read_allowlist, check_names, check_zip, check_directory, wheel_members
+
 
 def run(args, **kwargs):
     return subprocess.run(args, check=True, **kwargs)
@@ -27,11 +29,15 @@ def main():
     if status.strip():
         raise RuntimeError('Commit the reviewed source before building; worktree must be clean')
     commit = run(['git','rev-parse','HEAD'],cwd=root,capture_output=True,text=True).stdout.strip()
+    public_files = read_allowlist(root/'packaging/public_files.txt')
+    tracked = run(['git','ls-tree','-r','--name-only',commit],cwd=root,capture_output=True,text=True).stdout.splitlines()
+    check_names(tracked, public_files)
     output = args.output.resolve()
     output.mkdir(parents=True,exist_ok=False)
-    # git archive also proves that no untracked/private source enters the build.
+    # Explicit members are reviewed separately from clean Git state.
     source_zip = output/'source.zip'
-    run(['git','archive','--format=zip','-o',str(source_zip),commit],cwd=root)
+    run(['git','archive','--format=zip','-o',str(source_zip),commit,'--',*sorted(public_files)],cwd=root)
+    boundary = {'source': check_zip(source_zip, public_files)}
     import zipfile
     checkout = output/'source'
     with zipfile.ZipFile(source_zip) as archive:
@@ -39,6 +45,10 @@ def main():
     app_version = tomllib.loads((checkout/'pyproject.toml').read_text(encoding='utf-8'))['project']['version']
     wheel_dir = output/'wheel'
     run([sys.executable,'-m','build','--wheel','--outdir',str(wheel_dir)],cwd=checkout)
+    wheels = list(wheel_dir.glob('*.whl'))
+    if len(wheels) != 1:
+        raise RuntimeError('Expected exactly one newly built wheel')
+    boundary['wheel'] = check_zip(wheels[0], wheel_members(public_files, app_version))
     packages = ['numpy','matplotlib','pillow','PySide6','PySide6_Essentials','PySide6_Addons',
                 'shiboken6','pyqtgraph','psutil','harvesters','genicam','contourpy','cycler',
                 'fonttools','kiwisolver','packaging','pyparsing','python-dateutil','six','typing_extensions']
@@ -70,7 +80,8 @@ def main():
     if python_license.exists():
         shutil.copy2(python_license,notices/'PYTHON-LICENSE.txt')
     command = [sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onedir','--console',
-               '--name','HyperLab','--paths',str(checkout/'src'),
+               '--name','HyperLab','--icon',str(checkout/'src/hyperlab/resources/hyperlab-logo.png'),
+               '--paths',str(checkout/'src'),
                '--distpath',str(output/'desktop'),'--workpath',str(output/'build'),
                '--specpath',str(output),'--collect-data','hyperlab.resources',
                '--add-data',str(checkout/'THIRD_PARTY_NOTICES.md')+':.',
@@ -102,7 +113,8 @@ def main():
                 for item in value:
                     inspect_modules(item)
     inspect_modules(analysis)
-    if not modules or any(not Path(item[1]).resolve().is_relative_to(checkout/'src') for item in modules):
+    approved_modules = {(checkout/name).resolve() for name in public_files if name.startswith('src/') and name.endswith('.py')}
+    if not modules or any(Path(item[1]).resolve() not in approved_modules for item in modules):
         raise RuntimeError('Frozen HyperLab modules did not all come from the exact archived source')
     allowed = [Path(sys.prefix).resolve(),Path(sys.base_prefix).resolve(),windows.resolve()]
     if any(not any(Path(item[1]).resolve().is_relative_to(root) for root in allowed) for item in binaries):
@@ -119,9 +131,13 @@ def main():
               'archived_source_modules_verified':len(modules),
               'build_machine_scope':'Windows x64 development host; not a clean VM'}
     (desktop/'BUILD.json').write_text(json.dumps(record,indent=2),encoding='utf-8')
+    frozen_files = read_allowlist(checkout/'packaging/frozen_members.txt')
+    boundary['frozen_directory'] = check_directory(desktop, frozen_files)
     archive_path = Path(shutil.make_archive(str(output/f'HyperLab-{app_version}-{commit[:8]}-win-x64'),
                                           'zip',root_dir=output/'desktop',base_dir='HyperLab'))
-    artifacts = [archive_path,*wheel_dir.glob('*.whl')]
+    boundary['frozen_zip'] = check_zip(archive_path, frozen_files, prefix='HyperLab/')
+    record['distribution_boundary'] = boundary
+    artifacts = [source_zip,archive_path,*wheels]
     record['artifacts'] = []
     for artifact in artifacts:
         with artifact.open('rb') as stream:

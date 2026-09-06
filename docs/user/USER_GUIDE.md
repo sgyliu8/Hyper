@@ -99,6 +99,19 @@ memory/durability contract before starting. Accepted/captured is not durable.
 Preserve partial directories and errors; only the confirmed manifest prefix is
 readable. Never turn a short successful recording into sustained-rate qualification.
 
+In Record, choose Continuous or RAM burst, the frame target and duration limit.
+Continuous retains its per-checkpoint durability policy. RAM burst first holds a
+bounded set of owned frames, attempts normal camera stop, then saves them in order.
+Its preflight reports current memory/disk requirements; it does not guarantee
+future OS resources. An infeasible target is disabled, never silently reduced.
+During Acquiring or Persisting, acquired frames may still be volatile. Complete
+requires the target's readable durable prefix; otherwise the result is Partial.
+If saving fails, Retry uses a new directory and preserves the original failure.
+Abandon requires an explicit confirmation and reports the unsaved count. Closing
+waits for saving or keeps recovery available; a new recording cannot reuse retained
+buffers. A failed release remains an error and prevents reopening that target in
+the same process. A partial recording is not evidence of a stable sustained rate.
+
 Open sequence.npy.json or its directory to inspect recorded frames. The interactive
 trace contains visited unique samples; Plot all recorded ROI samples traverses
 every persisted frame. Its time uses recorded receive clocks or explicit frame
@@ -109,6 +122,14 @@ Export display PNG, derived values/mask, ROI tables or Publication figure + data
 as distinct outputs. Figure size uses mm/DPI; SVG/PDF preserve text where applicable.
 Exports retain completed-source identity and never overwrite originals. Check
 Data and methods for formulas, denominators, units and the full bundle contents.
+
+For a separate copy, choose Export → Share copy · preview first. Review the
+rendered copy before saving it to a new local directory. This removes or aliases
+identifying metadata and preserves supported numerical definitions, values and
+geometry. Unsupported custom definitions require the internal export. Removed
+identities leave external compatibility UNKNOWN; a known mismatch remains a
+mismatch. Values, images and grouping can still identify a sample, so the copy
+is not anonymous. Nothing is uploaded, and the original export is unchanged.
 
 [Installation](INSTALL.md) · [Data and methods](DATA_AND_METHODS.md) ·
 [Troubleshooting](TROUBLESHOOTING.md)

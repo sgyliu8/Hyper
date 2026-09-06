@@ -58,6 +58,10 @@ storage, scene and settings; finite successful runs do not prove sustained rates
 
 ## Examples and support
 
+![HyperLab 0.6 runtime with an explicitly synthetic example](docs/assets/workbench-060-synthetic-native.jpg)
+
+The illustration uses synthetic data, not a camera or material-validation result.
+
 `python -m hyperlab demo` opens explicitly synthetic data.
 `python -m hyperlab figure-demo --output NEW_DIRECTORY` creates illustrative
 figure/data bundles; use a new directory. See [data examples](examples/README.md).

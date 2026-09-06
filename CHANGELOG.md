@@ -1,5 +1,23 @@
 # Changes
 
+## 0.6.0 — local research preview
+
+- Add a bounded RAM burst with explicit resource preflight, stop-before-save,
+  acquired/durable/readable counts, persistence recovery and explicit abandonment.
+- Reconcile recording checkpoint counters after short writes and interrupted
+  finalization; retain every partial prefix and original target.
+- Center signed maps at zero and ratio maps at one in both interactive and
+  exported figures. Display-limit changes preserve exact values and selections.
+- Align exported maps to raw pixel edges and keep line-profile gaps/counts.
+- Separate Study mathematical definitions from declared measurement conditions;
+  show original grouped points and within-observation reference contrasts.
+- Keep analysis actions reachable, shorten source labels, show actual indexed
+  features and allow independent inspection of excluded comparison strips.
+- Add a runtime logo and a previewed, metadata-reduced figure-copy workflow.
+  Internal exports retain their complete provenance.
+- Check exact source, wheel and Windows distribution members against reviewed
+  allowlists. Consolidate the user guides and retain dependency notices.
+
 ## 0.5.0 — technical-first research preview
 
 - Separate camera state, viewed observation and completed analysis identity;
