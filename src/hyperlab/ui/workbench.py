@@ -609,6 +609,7 @@ class Workbench(W.QMainWindow):
         dialog = W.QDialog(self)
         dialog.setWindowTitle('Bounded recording · raw time sequence')
         form = W.QFormLayout(dialog)
+        form.setSizeConstraint(W.QLayout.SizeConstraint.SetFixedSize)
         mode = W.QComboBox(); mode.setObjectName('recording_mode')
         mode.addItem('Continuous · save while acquiring', 'continuous')
         mode.addItem('RAM burst · stop, then persist', 'ram_burst')

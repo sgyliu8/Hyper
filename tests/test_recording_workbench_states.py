@@ -135,3 +135,51 @@ def test_modal_recording_rejects_changed_owner_or_state(window,tmp_path,transiti
     window.session=None; window.closing=False
     assert calls == [] and not window.output_dir.exists()
     assert 'source or state changed' in window.message.text() and 'not started' in window.message.text()
+
+
+@pytest.mark.parametrize('font_points',[9,11])
+def test_recording_budget_fits_after_mode_and_resource_changes(window,qtbot,monkeypatch,font_points):
+    import hyperlab.acquisition.sequence as sequence
+    font_path=QtCore.QStandardPaths.locate(QtCore.QStandardPaths.StandardLocation.FontsLocation,'segoeui.ttf')
+    font_id=QtGui.QFontDatabase.addApplicationFont(font_path) if font_path else -1
+    if font_path:
+        assert font_id >= 0
+    frame=Frame(np.zeros((1216,1936,3),dtype=np.uint8),{'session_id':'synthetic-budget','sequence':1})
+    window.setFont(QtGui.QFont('Segoe UI',font_points)); window.resize(1362,892); window.show()
+    window.session=SimpleNamespace(state='streaming',status=lambda:{},latest_frame=lambda:frame)
+    monkeypatch.setattr(sequence,'available_memory_bytes',lambda:32*1024**3)
+    measurements=[]
+    def inspect():
+        dialog=window.findChild(W.QDialog)
+        dialog.setStyleSheet(f'QWidget {{font-family:"Segoe UI"; font-size:{font_points}pt;}}')
+        mode=dialog.findChild(W.QComboBox,'recording_mode')
+        count=dialog.findChild(W.QSpinBox,'recording_frames')
+        budget=dialog.findChild(W.QLabel,'recording_budget')
+        buttons=dialog.findChild(W.QDialogButtonBox)
+        try:
+            count.setValue(20)
+            mode.setCurrentIndex(mode.findData('ram_burst'))
+            for unavailable in (False,True):
+                if unavailable:
+                    monkeypatch.setattr(sequence,'available_memory_bytes',lambda:1)
+                    count.setValue(300)
+                qtbot.wait(10)
+                measurements.append({'height':budget.height(),'required_height':budget.heightForWidth(budget.width()),
+                    'font':budget.fontInfo().family(),'font_points':budget.fontInfo().pointSizeF(),
+                    'budget_inside':dialog.rect().contains(budget.geometry()),
+                    'buttons_inside':dialog.rect().contains(buttons.geometry()),
+                    'fits_window':dialog.width() <= window.width() and dialog.height() <= window.height(),
+                    'has_warning':('Unavailable:' in budget.text()) == unavailable,
+                    'ok_enabled':buttons.button(W.QDialogButtonBox.StandardButton.Ok).isEnabled() == (not unavailable)})
+        finally:
+            dialog.reject()
+    QtCore.QTimer.singleShot(0,inspect)
+    window.record_dialog(); window.session=None
+    if font_id >= 0:
+        QtGui.QFontDatabase.removeApplicationFont(font_id)
+    assert len(measurements) == 2
+    for item in measurements:
+        assert item['height'] >= item['required_height'], item
+        assert all(item[key] for key in ('budget_inside','buttons_inside','fits_window','has_warning','ok_enabled')), item
+        if font_path:
+            assert item['font'] == 'Segoe UI' and item['font_points'] == pytest.approx(font_points,abs=.5), item
