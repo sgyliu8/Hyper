@@ -35,6 +35,8 @@
   work and show successful profile/selection completion explicitly.
 - Replace Study progress messages with the actual completed or failed outcome
   in both the dialog and main workbench.
+- Finish quality, trace, reference and import operations with source-specific
+  outcomes; clear obsolete map counts and empty-profile axes/instructions.
 
 ## 0.3.1 — live ROI correction, 2026-09-05
 

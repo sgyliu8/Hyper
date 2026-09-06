@@ -15,7 +15,7 @@ scene usefulness, reference applicability and spectroscopy are separate outcomes
 |---|---|---|---|
 | 1 | F1 labels, F2 mailbox events, F3 settings evidence, F4 independent UI states, F5 signal qualification, F6 wavelength support; measured preview optimization/readiness | Reproductions, focused numerical/Qt regressions, real baseline and updated native run | F1–F6 implemented and regression-tested; real RGB/Bayer frames saved; workload display medians now 16–17 fps (below-target intervals retained) |
 | 2 | Stable mask-backed ROIs, exclusions/line strips, exact map distributions and spatial brush, linked task plots; observation Study | Geometry/tail/aggregation oracles, relocation and duplicate handling, actual saved observations | Implemented; exact sparse/aggregation/geometry/Study checks PASS; two real saved observations pass 81 independent numerical/provenance checks |
-| 3 | Physical support/export integration, bounded H2/H3 asset advancement, documentation and package verification | Three actual-code reviews; offline suite, wheel/frozen/native/outside-CWD checks; exact source/package/CI identities | Source review and installed acceptance PASS at e457cc06; final native UI integration fixes and CI closeout in progress |
+| 3 | Physical support/export integration, bounded H2/H3 asset advancement, documentation and package verification | Three actual-code reviews; offline suite, wheel/frozen/native/outside-CWD checks; exact source/package/CI identities | Local implementation, 698 source tests, wheel/frozen installation and saved-real-data native UI PASS; H2/H3/H4 remain unvalidated; hosted identity receipts are separate |
 
 ## Three reviewers, three rounds
 
@@ -258,7 +258,44 @@ access is not described as full-paper reproduction.
 
 ## Delivery identities
 
-Final code commits, package code revision/hash, actual native configuration and
-terminal CI receipts will be entered here after verification. A GitHub PR check's
-associated head SHA is distinct from its actual `refs/pull/.../merge` checkout.
-Both identities must be recorded; no unfinished run is PASS.
+| Evidence | Actual identity and outcome |
+|---|---|
+| Production code | `fc01ac9b73a1d86b28512689bc6fa038d6c41be6`, version 0.5.0 |
+| Complete local source suite | 698 PASS in 66.51 s; previous 697/679/664-test checkpoints and initial counterexamples retained |
+| Non-editable wheel | Doctor and offline smoke PASS outside checkout, fresh space/Chinese-path configuration; all 50 installed Python modules match wheel bytes |
+| Frozen Windows program | Doctor and offline smoke PASS under the same isolation; 45 archived-source modules verified; no vendor CTI/SYS files bundled |
+| Latest hardware run | Installed `3d1bc8d5e2b8b0c9ea0b7e2eeda8b19bd2de7467`; RGB8, 1936 by 1216, 20 ms, gain 0; 20/20 short recording complete/reopened, raw snapshot saved, normal stop/release |
+| Final installed UI | `fc01ac9b`: actual saved real-frame ND/ECDF to invalid-profile instruction and valid-strip recovery; no additional hardware session |
+| Windows ZIP | `HyperLab-0.5.0-fc01ac9b-win-x64.zip`, 84,345,708 bytes; SHA256 `bac25af7521a603516c5e4c756329001973e72901f9fc7577ba529c545aa5866` |
+| Wheel artifact | `hyperlab-0.5.0-py3-none-any.whl`, 205,457 bytes; SHA256 `821eb25540b59ee1970a5ff8c25406683b979adcf7b8f1ffad7d3069b43d0b49` |
+
+The latest hardware session captured 2,838 and displayed 1,701 frames, with zero
+device gaps/timeouts and normal stop in 0.063 s. All 20 saved frame values were
+independently traversed and hashed. The snapshot contains 265 nonzero values out
+of 7,062,528, maximum 47 DN: frame receipt PASS, optical cause and scene/reference
+qualification UNKNOWN. It is not a qualified dark reference. Earlier visible
+captures supply the saved-data analysis example; no synthetic scene replaces it.
+This short smoke does not qualify the failed 300-frame target.
+
+All four ROI definitions, revision 2, reference choice and raw memberships survived
+Start/save/reopen. Actual quality, brush, valid-profile and Study operations ended
+with their specific outcomes. The final reached defect was an empty profile panel
+retaining ECDF axes after selecting a rectangle. `fc01ac9b` clears those labels and
+the old status and restores axes when a valid plot returns. The original failure,
+52 focused passing checks and native before/after screenshots remain private.
+Only Workbench presentation and its regression changed after the hardware run;
+acquisition, storage and numerical kernels are unchanged. The earlier native
+receipt retains its actual code identity.
+
+One later native ROI export independently matches all nine RGB CSV rows and 27
+median/quantile cells, geometric/excluded/common-support counts, five output hashes
+and two input hashes. Its original frame is unchanged. This is descriptive
+real-image analysis with analyst region labels, not an accuracy experiment.
+
+Local packages and complete evidence remain in ignored `local/`. For hosted
+verification, inspect the delivered branch's [Draft PR 2 checks](https://github.com/sgyliu8/Hyper/pull/2/checks).
+A check's associated head SHA is distinct from its actual `refs/pull/.../merge`
+checkout. The private terminal CI receipt records both; a queued/running/cancelled
+job is never PASS. Documentation-only closeout commits may follow the packaged
+production revision; verify that their source diff is empty. Licensing, public
+binary release, FP control and physical spectroscopy remain pending.

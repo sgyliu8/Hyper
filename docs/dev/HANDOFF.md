@@ -1,4 +1,4 @@
-# Current handoff — technical-first 0.5.0 verification
+# Current handoff — technical-first 0.5.0 local delivery
 
 The technical-first increment is implemented on `feature/materials-science-v040`
 for Draft PR 2. The [review and acceptance record](TECHNICAL_FIRST_REVIEW.md)
@@ -16,21 +16,40 @@ preview epochs and RGB/Bayer changes. Different dimensions create new generic
 ROIs with explicit placement feedback. Completed results clear on Start. Task
 controls and terminal operation messages follow their actual context.
 
-Verification at the preceding production checkpoint `e457cc06`: 664 full source
-tests PASS; non-editable wheel and frozen doctor/offline smoke PASS from outside
-checkout with fresh space/Chinese-path configurations. Two actual RGB observations
-pass 81 independent numerical/provenance checks. Native ECDF/one-pixel strip
-exports pass 57 further checks. Final UI fixes pass 70 focused regressions and
-27 Study regressions (overlap exists; do not sum as a new suite denominator).
-The final rebuild, full suite, native smoke and hosted CI are being recorded
-before delivery; preceding package results do not validate subsequent code.
+Production code is `fc01ac9b73a1d86b28512689bc6fa038d6c41be6`. The complete source
+suite passes **698 tests** (66.51 s). The non-editable wheel and frozen program
+both pass doctor/offline smoke outside the checkout, with fresh configurations
+and space/Chinese paths. All 50 installed Python modules match the wheel bytes;
+the frozen build verifies 45 archived-source modules. Package hashes and the
+source/CI identity distinction are in the review record. Subsequent documentation
+commits do not change the production code packaged at this revision.
+
+Two actual RGB observations pass 81 independent numerical/provenance checks.
+Native ECDF/one-pixel strip and Study exports pass 93 further checks (57 + 36).
+A later native ROI export independently matches all 27 quantile cells, nine CSV
+rows, pixel denominators and source/output hashes. These evidence groups have
+overlapping scope and are not a new combined test-suite denominator.
+
+The final hardware smoke ran the installed `3d1bc8d5` package: **20/20** recorded
+frames completed/reopened; a raw snapshot saved; all four ROI definitions retained;
+2,838 captured / 1,701 displayed, zero device gaps/timeouts, normal stop in 0.063 s
+and successful release. All 20 saved frames were independently traversed/hashed.
+Quality, map selection, profile and Study operations showed terminal outcomes.
+Native inspection then found stale ECDF axes when a rectangle was chosen for a
+strip profile. The final `fc01ac9b` patch only clears this invalid presentation
+and restores axes for valid plots; acquisition/storage code is unchanged. The
+final package was tested natively on saved real data, without another camera
+session. Do not relabel the `3d1bc8d5` hardware receipt as an `fc01ac9b` run.
 
 A visible printed scene was acquired using RGB 10/20/40 ms and BayerRG12 40 ms,
 gain zero. This is actual imaging evidence, not a thermal-paint/defect dataset.
 Measured native capture was about 34 fps; preview workload medians were about
 16–17 displayed fps, with below-target windows retained. Host stage timings are
-not calibrated exposure-to-screen latency. The old almost-black frame's cause
-remains unknown. No matched radiometric references or material truth were invented.
+not calibrated exposure-to-screen latency. The latest short-smoke snapshot was
+again near-black: 265 nonzero / 7,062,528 values, maximum 47 DN. Its optical cause
+remains UNKNOWN, and it is not a qualified dark reference. The usable analysis
+view uses the earlier saved visible real scene, explicitly labelled as retained
+data. No matched radiometric references or material truth were invented.
 
 High-rate 300-frame recording remains FAIL: successive attempts retained 96,
 112 and 176 durable frames. The final attempt accepted/wrote 176, rejected one
@@ -49,7 +68,12 @@ normally released between package tests. Original-code licensing and public
 binary release remain pending.
 
 Local evidence and real data stay under ignored
-`local/diagnostics/technical-first-20260906`. Follow the
+`local/diagnostics/technical-first-20260906`. The private delivery report is
+`local/HYPERLAB-0.5-DELIVERY.md`; `local/Start-HyperLab-0.5.cmd` opens the reviewed
+package using process-scoped PowerShell execution-policy bypass. The launcher
+was exercised from outside the project and refuses a duplicate app owner.
+Hosted checks belong to the delivered branch/PR; retain terminal run receipts
+with their associated head and actual checkout SHA separately. Follow the
 [technical workflow](../user/TECHNICAL_WORKFLOW.md) and
 [Study/SOP guide](../guides/studies.md). Preserve the prior 0.4.0 package and
 failed cases. Stage reviewed source/tests/redacted English docs only; maintain
