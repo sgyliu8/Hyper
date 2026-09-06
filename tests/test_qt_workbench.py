@@ -42,6 +42,19 @@ def test_roi_coordinates_survive_zoom_pan_band(window):
     assert roi_rect((-1.2, 2), (5, 3), (10,10)) == (0,2,4,5)
 
 
+@pytest.mark.parametrize('live', [False, True])
+def test_new_frame_clears_previous_pixel_inspection(window, live):
+    window.set_cube(Cube(np.full((24, 32, 3), 118, np.uint8),
+                         {'data_level': 'raw_frame', 'pixel_format': 'RGB8', 'channel_labels': ['R', 'G', 'B']}))
+    # The native replay-to-camera check retained this prior pixel readout.
+    window.pixel_label.setText('Raw pixel x=5, y=5 · [118 118 118]')
+    window.pixel_label.setToolTip('{"valid": 3}')
+    window.set_cube(Cube(np.zeros((24, 32, 3), np.uint8),
+                         {'data_level': 'raw_frame', 'pixel_format': 'RGB8', 'channel_labels': ['R', 'G', 'B']}), live=live)
+    assert window.pixel_label.text() == 'Pixel: —'
+    assert not window.pixel_label.toolTip()
+
+
 def test_one_plane_gate_and_product_source(window):
     original = make_synthetic_cube()
     window.set_cube(original)
@@ -98,11 +111,13 @@ def test_stopped_snapshot_retains_exact_raw_frame(window):
 
 def test_readback_and_metric_schema(window):
     window.last_status = FakeSession().status()
+    window.last_status['state'] = 'recording'
+    window.display_mode = 'LIVE'
     window.update_status()
     assert '49998' in window.readback_label.text()
     assert '125 ms' in window.metrics_label.text()
     assert 'Writer 17.0' in window.metrics_label.text()
-    assert 'writer queue 1' in window.metrics_label.text()
+    assert 'queue 1' in window.metrics_label.text()
 
 
 def test_sequence_reopen_via_recorded_npy_and_time_is_not_band(window, qtbot, tmp_path):
@@ -190,15 +205,15 @@ def test_recording_start_is_not_saved_and_failure_remains_visible(window, tmp_pa
     assert window.recent_list.count() == 1
     assert window.recent_list.item(0).text().startswith('PARTIAL')
     assert window.message.text() == 'writer overflow'
-    assert window.device_label.text() == 'Test camera'
+    assert window.device_label.text() == 'Camera: Previewing'
     events[:] = [{'kind':'error', 'error':'snapshot disk full', 'operation':'snapshot'}]
     window.tick()
     assert window.message.text() == 'snapshot disk full'
-    assert window.device_label.text() == 'Test camera'
+    assert window.device_label.text() == 'Camera: Previewing'
     session.state = 'error'
     events[:] = [{'kind':'error', 'error':'transport timeout'}]
     window.tick()
-    assert window.device_label.text() == 'Communication fault'
+    assert window.device_label.text() == 'Camera: Communication fault'
 
 
 def test_linked_product_view_is_visible_without_range_feedback(window, qtbot):

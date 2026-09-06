@@ -18,11 +18,14 @@ def capabilities(cube):
     state = level == "raw_scan" and cube.wavelengths is None and not color
     axis = "color_channel" if color else "wavelength" if cube.wavelengths is not None else "state" if state else "sensor_plane"
     vector = (state or spectral) and not (bayer and k == 1) and len(indices) >= 2
+    wavelength_features = spectral and len(indices) >= 2 and bool(np.all(cube.wavelengths > 0))
     operations = {"roi": True, "histogram": True, "export": True,
                   "cfa": bayer and k == 1, "temporal": level == "raw_frame",
                   "pca": vector, "spectral_angle": vector,
                   "difference": len(indices) >= 2 and not (bayer and k == 1),
                   "ratio": len(indices) >= 2 and not (bayer and k == 1),
+                  "spectral_features": wavelength_features,
+                  "continuum": wavelength_features and level == "reflectance_cube" and len(indices) >= 3,
                   "reflectance": spectral and level == "spectral_cube"
                     and meta.get("linear_intensity") is True}
     reasons = {}
@@ -35,6 +38,10 @@ def capabilities(cube):
             reasons[operation] = "Temporal statistics require a sequence of matching frames."
         elif operation == "reflectance":
             reasons[operation] = "Requires a documented wavelength axis, linear_intensity=true and matched references."
+        elif operation == "spectral_features":
+            reasons[operation] = "Requires at least two documented, positive, ordered wavelengths with known units."
+        elif operation == "continuum":
+            reasons[operation] = "Requires a reflectance cube and at least three documented, positive, ordered wavelengths."
         elif len(indices) < 2:
             reasons[operation] = "Requires at least two enabled dimensions; one sensor channel is not a spectrum."
         elif color:

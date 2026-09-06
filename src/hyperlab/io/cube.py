@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from copy import deepcopy
 import json
 from pathlib import Path
 import re
@@ -32,6 +33,7 @@ class Cube:
     data: np.ndarray
     metadata: dict = field(default_factory=dict)
     valid_mask: np.ndarray | None = None
+    frame_receipt_shape: object = field(init=False, default=None, repr=False)
 
     def __post_init__(self):
         if self.data.ndim != 3 or any(n < 1 for n in self.data.shape):
@@ -39,6 +41,10 @@ class Cube:
         if self.data.dtype.kind not in "uif":
             raise ValueError("Cube requires real numeric data; complex/Bayer interpretation is not implicit")
         self.metadata = dict(self.metadata)
+        if self.metadata.get("data_level") == "raw_frame":
+            # Retain the receipt before normalizing the analysis axes. Keeping it
+            # outside metadata leaves existing source/annotation hashes unchanged.
+            self.frame_receipt_shape = deepcopy(self.metadata.get("recorded_frame_shape", self.metadata.get("shape")))
         if self.metadata.get("data_level") == "raw_sequence" or self.metadata.get("axis_kind") == "time":
             raise ValueError("A time sequence is not a Cube; use load_sequence and select an individual frame")
         for key, default in {
@@ -341,6 +347,9 @@ def save_cube(cube, path, *, interleave="bip", byte_order=0):
     """Save a new product; never overwrite an existing artifact or raw sidecar."""
     path = Path(path)
     meta = dict(cube.metadata)
+    if meta.get("data_level") == "raw_frame":
+        # New artifacts must retain absent/conflicting receipt evidence on replay.
+        meta["recorded_frame_shape"] = deepcopy(cube.frame_receipt_shape)
     meta.pop("valid_mask_file", None)
     if path.suffix.lower() not in {".npy", ".npz", ".hdr"}:
         raise ValueError("Output must be .npy, .npz or .hdr")

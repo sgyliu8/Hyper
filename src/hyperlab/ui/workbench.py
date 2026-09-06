@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from importlib.resources import files
 import json
 from pathlib import Path
 import queue
-import shutil
+import sys
 import time
 
 import numpy as np
@@ -29,14 +30,58 @@ def json_text(value):
                       default=lambda v: v.tolist() if isinstance(v, np.ndarray) else str(v))
 
 
+class TimedImageItem(pg.ImageItem):
+    def __init__(self, timings, **kwargs):
+        super().__init__(**kwargs)
+        self.timings = timings
+
+    def paint(self, *args):
+        with self.timings.measure('qt_image_paint'):
+            return super().paint(*args)
+
+
+class StoredFeatureSpinBox(W.QSpinBox):
+    """Retain the integer API while identifying its actual stored channel."""
+    def __init__(self):
+        super().__init__()
+        self.labels = []
+        self.valueChanged.connect(self.refresh_label)
+
+    def refresh_label(self):
+        self.setSuffix(' · ' + self.labels[self.value()] if self.value() < len(self.labels) else '')
+
+    def set_labels(self, labels):
+        self.labels = list(labels)
+        self.refresh_label()
+
+
 class Workbench(W.QMainWindow):
     def __init__(self, path=None, *, session_factory=None, benchmark_log=None, workspace=None):
         super().__init__()
-        self.setWindowTitle('HyperLab — Live workbench')
+        self.setWindowTitle('HyperLab')
+        self.logo = QtGui.QPixmap()
+        self.logo.loadFromData(files('hyperlab.resources').joinpath('hyperlab-logo.png').read_bytes(), 'PNG')
+        self.setWindowIcon(QtGui.QIcon(self.logo))
+        from hyperlab import __version__
+        self.runtime_details = {'version':__version__, 'executable':sys.executable,
+            'module':__file__, 'frozen':bool(getattr(sys, 'frozen', False)), 'build':'UNKNOWN for this runtime'}
+        build_path = Path(sys.executable).with_name('BUILD.json')
+        if self.runtime_details['frozen'] and build_path.is_file():
+            try:
+                self.runtime_details['build'] = json.loads(build_path.read_text(encoding='utf-8'))
+            except (OSError, ValueError) as error:
+                self.runtime_details['build'] = f'Build metadata unavailable: {type(error).__name__}'
         self.resize(1220, 820)
         self.setMinimumSize(960, 620)
         self.session_factory = session_factory
         self.session = None
+        self.discovering = False
+        self.connection_issue = None
+        self.follow_camera = False
+        self.full_resolution_view = False
+        from hyperlab.profiling import StageTimings
+        self.timings = StageTimings()
+        self._last_tick_ns = None
         from hyperlab.paths import load_config, workspace as resolve_workspace
         self.config = load_config()
         self.profile = self.config.get('device_profile')
@@ -49,6 +94,14 @@ class Workbench(W.QMainWindow):
         self.product = None
         self.product_source = None
         self.roi_results = []
+        self.roi_result_context = None
+        self.roi_source = None
+        self.science_result = None
+        self.annotation = None
+        self.annotation_path = None
+        self.plot_source = None
+        self.plot_annotation = None
+        self.completed_plot_mode = 0
         self.recent = []
         self.rois = []
         self.results = queue.Queue(maxsize=4)
@@ -56,6 +109,7 @@ class Workbench(W.QMainWindow):
         self.task_busy = False
         self.closing = False
         self.last_status = {}
+        self.recording_receipt = None
         self.last_quality = 0.0
         self.last_log = 0.0
         self.last_frame_identity = None
@@ -68,6 +122,17 @@ class Workbench(W.QMainWindow):
         self.roi_rows = []
         self.roi_labels = []
         self.roi_visible = []
+        self.roi_included = []
+        self.roi_records = []
+        self.roi_fills = []
+        self.roi_source_notice = ''
+        self.reference_roi_id = None
+        self.right_spec = None
+        self.map_distributions = None
+        self.map_brushes = []
+        self._right_task_pending = False
+        self._brush_pending = False
+        self._right_request = 0
         self._map_limits = {}
         self.roi_timer = QtCore.QTimer(self)
         self.roi_timer.setSingleShot(True)
@@ -108,10 +173,16 @@ class Workbench(W.QMainWindow):
         layout = W.QVBoxLayout(root)
         layout.setContentsMargins(14, 10, 14, 10)
         header = W.QHBoxLayout()
+        logo_label = W.QLabel()
+        logo_label.setObjectName('hyperlab_logo')
+        logo_label.setAccessibleName('HyperLab')
+        logo_label.setPixmap(self.logo.scaled(32, 32, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                                             QtCore.Qt.TransformationMode.SmoothTransformation))
+        header.addWidget(logo_label)
         title = W.QLabel('HyperLab')
         title.setStyleSheet('font-size:22px; font-weight:700; color:#123e52')
         header.addWidget(title)
-        self.device_label = W.QLabel('Disconnected · mvBlueFOX3')
+        self.device_label = W.QLabel('Camera: Disconnected')
         header.addWidget(self.device_label)
         header.addStretch()
         self.mode_label = W.QLabel('EMPTY')
@@ -123,7 +194,7 @@ class Workbench(W.QMainWindow):
         header.addWidget(self.disconnect_button)
         header.addWidget(self.button('Open data…', self.open_dialog, 'open'))
         header.addWidget(self.button('Workspace…', self.choose_output, 'workspace'))
-        header.addWidget(self.button('Diagnostics', lambda: self.diagnostics.setVisible(not self.diagnostics.isVisible())))
+        header.addWidget(self.button('Details', self.toggle_details, 'source_details'))
         layout.addLayout(header)
         self.tabs = W.QTabBar()
         for text in ('Acquisition', 'Analysis', 'Calibration'):
@@ -131,7 +202,8 @@ class Workbench(W.QMainWindow):
         layout.addWidget(self.tabs)
         actions = W.QHBoxLayout()
         self.preview_button = self.button('▶ Start preview', self.start_preview, 'preview')
-        self.preview_button.setStyleSheet('background:#147b83; color:white; font-weight:600; padding:9px 18px')
+        self.preview_button.setStyleSheet('QPushButton {background:#147b83; color:white; font-weight:600; padding:9px 18px;} '
+            'QPushButton:disabled {background:#dfe7eb; color:#71808b;}')
         self.stop_button = self.button('■ Stop acquisition', self.stop_preview, 'stop')
         self.save_button = self.button('Save current frame', self.snapshot, 'snapshot')
         self.record_button = self.button('Record…', self.record_dialog, 'record')
@@ -145,6 +217,17 @@ class Workbench(W.QMainWindow):
         self.side_toggle = self.button('Settings ▾', lambda: self.side_scroll.setVisible(not self.side_scroll.isVisible()))
         actions.addWidget(self.side_toggle)
         layout.addLayout(actions)
+        self.recording_label = W.QLabel()
+        self.recording_label.setObjectName('recording_result')
+        self.recording_label.setWordWrap(True)
+        self.recording_label.hide()
+        layout.addWidget(self.recording_label)
+        self.recording_recovery = W.QWidget()
+        recovery = W.QHBoxLayout(self.recording_recovery); recovery.setContentsMargins(0,0,0,0)
+        self.retry_recording_button = self.button('Retry persistence', self.retry_recording, 'record_retry')
+        self.abandon_recording_button = self.button('Abandon retained frames…', self.abandon_recording, 'record_abandon')
+        recovery.addWidget(self.retry_recording_button); recovery.addWidget(self.abandon_recording_button)
+        recovery.addStretch(); self.recording_recovery.hide(); layout.addWidget(self.recording_recovery)
         split = W.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.side_scroll = W.QScrollArea()
         self.side_scroll.setWidgetResizable(True)
@@ -156,6 +239,7 @@ class Workbench(W.QMainWindow):
         self._capture_panel()
         self._analysis_panel()
         self._calibration_panel()
+        layout.addWidget(self.analysis_actions)
         self.side_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         for combo in self.sidebar.findChildren(W.QComboBox):
             combo.setSizePolicy(W.QSizePolicy.Policy.Ignored, W.QSizePolicy.Policy.Fixed)
@@ -164,6 +248,7 @@ class Workbench(W.QMainWindow):
         for control in self.sidebar.findChildren(W.QAbstractSpinBox):
             control.setSizePolicy(W.QSizePolicy.Policy.Ignored, W.QSizePolicy.Policy.Fixed)
         self.tabs.currentChanged.connect(self.sidebar.setCurrentIndex)
+        self.tabs.currentChanged.connect(self.update_controls)
         self.vertical = W.QSplitter(QtCore.Qt.Orientation.Vertical)
         self.images = W.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.graphics = pg.GraphicsLayoutWidget()
@@ -175,7 +260,7 @@ class Workbench(W.QMainWindow):
             self.plot.getAxis(axis).enableAutoSIPrefix(False)
         self.plot.setAspectLocked(True)
         self.plot.invertY(True)
-        self.image = pg.ImageItem(axisOrder='row-major')
+        self.image = TimedImageItem(self.timings, axisOrder='row-major')
         self.image.setAutoDownsample(True)
         self.plot.addItem(self.image)
         self.saturation_overlay = pg.ImageItem(axisOrder='row-major')
@@ -191,6 +276,16 @@ class Workbench(W.QMainWindow):
         self.derived_invalid = pg.ImageItem(axisOrder='row-major')
         self.derived_invalid.setLookupTable(np.array([[0,0,0,0],[220,225,229,255]],dtype=np.uint8))
         self.derived_plot.addItem(self.derived_invalid)
+        self.brush_overlay = pg.ScatterPlotItem(pen=None, brush=pg.mkBrush(193, 73, 124, 180), size=4)
+        self.derived_plot.addItem(self.brush_overlay)
+        self.brush_mask_overlay = pg.ImageItem(axisOrder='row-major')
+        self.brush_mask_overlay.setLookupTable(np.array([[0,0,0,0],[193,73,124,100]],np.uint8))
+        self.derived_plot.addItem(self.brush_mask_overlay)
+        self.source_cursor = [pg.InfiniteLine(angle=angle, pen=pg.mkPen('#b04d77', width=1)) for angle in (0, 90)]
+        self.map_cursor = [pg.InfiniteLine(angle=angle, pen=pg.mkPen('#b04d77', width=1)) for angle in (0, 90)]
+        for plot, lines in ((self.plot, self.source_cursor), (self.derived_plot, self.map_cursor)):
+            for line in lines:
+                line.hide(); plot.addItem(line, ignoreBounds=True)
         invalid_legend = self.derived_plot.addLegend(offset=(-12,-12),labelTextColor='#26313d',
             labelTextSize='10pt',brush=pg.mkBrush(255,255,255,230),pen='#c5cbd0')
         invalid_legend.addItem(pg.ScatterPlotItem(pen=None,symbol='s',size=10,
@@ -215,6 +310,7 @@ class Workbench(W.QMainWindow):
         self.curves = [self.chart.plot(pen=pg.mkPen(c, width=2)) for c in ('#d47e22', '#247dc4')]
         self.chart_row.addWidget(self.chart)
         self.shape_chart = pg.PlotWidget(background='w')
+        self.shape_chart.scene().sigMouseMoved.connect(self.profile_hover)
         for chart in (self.chart,self.shape_chart):
             self._style_scientific_chart(chart)
         self.shape_chart.hide()
@@ -234,8 +330,13 @@ class Workbench(W.QMainWindow):
         axis.addWidget(self.axis_label)
         axis.addWidget(self.band, 1)
         layout.addLayout(axis)
+        self.source_label = W.QLabel('Viewed data: none')
+        self.source_label.setWordWrap(True)
+        self.source_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.source_label)
         self.analysis_label = W.QLabel('Analysis source: no computed chart')
         self.analysis_label.setWordWrap(True)
+        self.analysis_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.analysis_label)
         self.pixel_label = W.QLabel('Pixel: —')
         self.pixel_label.setWordWrap(True)
@@ -244,10 +345,11 @@ class Workbench(W.QMainWindow):
         layout.addWidget(self.pixel_label)
         layout.addWidget(self.metrics_label)
         self.graphics.scene().sigMouseMoved.connect(self.pixel_hover)
+        self.derived_graphics.scene().sigMouseMoved.connect(self.map_hover)
         self.message = W.QLabel('Connect opens a real camera session. Preview is not recorded by default.')
         self.message.setWordWrap(True)
         self.statusBar().addWidget(self.message, 1)
-        self.diagnostics = W.QDockWidget('Device, evidence and local output', self)
+        self.diagnostics = W.QDockWidget('Session details · current state and historical telemetry', self)
         detail = W.QWidget()
         dl = W.QVBoxLayout(detail)
         self.detail_text = W.QPlainTextEdit()
@@ -326,12 +428,12 @@ class Workbench(W.QMainWindow):
         self.plot_mode = W.QComboBox()
         self.plot_mode.addItems(['Histogram (sampled)', 'ROI time trend', 'ROI channel / state curves'])
         self.plot_mode.addItems(['PCA explained variance', 'PCA loadings'])
-        self.plot_mode.currentIndexChanged.connect(lambda: self.update_chart(self.image.image) if self.cube else None)
-        form.addWidget(self.plot_mode)
+        self.plot_mode.addItem('Computed feature / recorded trace')
+        self.plot_mode.currentIndexChanged.connect(self.chart_selected)
         self.quality_label = W.QLabel('Quality: —')
         self.quality_label.setWordWrap(True)
         form.addWidget(self.quality_label)
-        form.addWidget(self.button('View quality / ROI counts…', self.quality_details))
+        form.addWidget(self.button('Frame quality / readiness…', self.quality_details))
         form.addWidget(W.QLabel('Recent saves · double-click to reopen'))
         self.recent_list = W.QListWidget()
         self.recent_list.setSelectionMode(W.QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -351,8 +453,12 @@ class Workbench(W.QMainWindow):
             self.notify('A background operation is still running.')
             return
         self.task_busy = True
+        self.update_controls()
         self.notify(label)
-        future = self.executor.submit(function)
+        def measured():
+            with self.timings.measure('background_operation'):
+                return function()
+        future = self.executor.submit(measured)
         def completed(result):
             try:
                 self.results.put((callback, result.result(), None))
@@ -375,9 +481,12 @@ class Workbench(W.QMainWindow):
             if previous and not previous.close(wait=True):
                 raise RuntimeError('Previous camera session has not released its resources.')
             return discover_profiles()
+        self.discovering = True
+        self.connection_issue = None
         self.background(discover, self.choose_profile, 'Checking the current device and runtime…')
 
     def choose_profile(self, report):
+        self.discovering = False
         profiles = report['profiles']
         if not profiles:
             self.device_label.setText(report['issues'][0]['code'].replace('_',' ').title() if report['issues'] else 'No camera')
@@ -390,6 +499,7 @@ class Workbench(W.QMainWindow):
                       for i,p in enumerate(profiles)]
             name,ok = W.QInputDialog.getItem(self,'Select imaging device','Discovered supported cameras',labels,0,False)
             if not ok:
+                self.notify('Device selection cancelled.')
                 return
             selected = profiles[labels.index(name)]
         if self.profile and any(self.profile.get(key)!=selected.get(key) for key in ('serial','name','cti')):
@@ -419,9 +529,14 @@ class Workbench(W.QMainWindow):
 
     def start_preview(self):
         if self.session:
+            recording = self.session.status().get('recording') or {}
+            if recording.get('recording_mode') == 'ram_burst' and not recording.get('done'):
+                self.notify('Finish burst persistence or resolve retained frames before starting acquisition.')
+                return
             if self.task_busy:
                 self.notify('Wait for the current file operation to finish.')
                 return
+            self.close_source_dialogs()
             if self.sequence:
                 self.sequence.close()
                 self.sequence = None
@@ -429,7 +544,22 @@ class Workbench(W.QMainWindow):
                 self.cube.close()
                 self.cube = None
             self.product = self.product_source = None
+            self.right_spec = self.map_distributions = None
+            self.map_brushes = []
+            self.map_tools.hide()
+            self.brush_overlay.clear(); self.brush_mask_overlay.clear()
             self.map_spec = self.plot_spec = None
+            self.map_limits_note.setText('Colour limits: no map')
+            self.plot_source = self.roi_source = None
+            self.roi_result_context = None
+            self.science_result = None
+            self.plot_annotation = None
+            self.roi_results = []
+            self.display_mode = 'EMPTY'
+            self.image.clear()
+            self.chart.clear()
+            self.shape_chart.hide()
+            self.analysis_label.setText('Analysis source: no computed chart')
             self.derived_graphics.hide()
             self.temporal_plot.clear()
             self.band.blockSignals(True)
@@ -438,8 +568,10 @@ class Workbench(W.QMainWindow):
             self.band.blockSignals(False)
             self.freeze.setChecked(False)
             self.last_frame_identity = None
-            self.session.set_settings(self.requested_settings(), mode=self.session_mode.currentData())
-            self.session.start_preview()
+            if self.session.state not in ('streaming', 'recording'):
+                self.session.set_settings(self.requested_settings(), mode=self.session_mode.currentData())
+                self.session.start_preview()
+            self.follow_camera = True
 
     def stop_preview(self):
         if self.session:
@@ -461,32 +593,57 @@ class Workbench(W.QMainWindow):
             self.background(lambda: save_cube(cube, path), lambda _: self.add_recent(path), 'Saving a copy of the selected raw array…')
 
     def record_dialog(self):
-        if not self.session:
+        owner = self.session
+        if not owner:
             return
-        if self.session.state == 'recording':
-            self.session.stop_recording()
+        recording = owner.status().get('recording') or {}
+        if owner.state == 'recording':
+            owner.stop_recording()
             return
-        frame = self.session.latest_frame()
+        if recording.get('recording_mode') == 'ram_burst' and not recording.get('done'):
+            self.notify('Finish persistence or resolve retained frames before a new recording.')
+            return
+        frame = owner.latest_frame()
         if frame is None:
             return
         dialog = W.QDialog(self)
         dialog.setWindowTitle('Bounded recording · raw time sequence')
         form = W.QFormLayout(dialog)
+        form.setSizeConstraint(W.QLayout.SizeConstraint.SetFixedSize)
+        mode = W.QComboBox(); mode.setObjectName('recording_mode')
+        mode.addItem('Continuous · save while acquiring', 'continuous')
+        mode.addItem('RAM burst · stop, then persist', 'ram_burst')
+        form.addRow('Recording mode', mode)
         frames = W.QSpinBox()
+        frames.setObjectName('recording_frames')
         frames.setRange(1, 10000)
         frames.setValue(300)
         seconds = W.QDoubleSpinBox()
         seconds.setRange(1, 600)
         seconds.setValue(30)
         budget = W.QLabel()
+        budget.setObjectName('recording_budget')
         budget.setWordWrap(True)
         buttons = W.QDialogButtonBox(W.QDialogButtonBox.StandardButton.Ok | W.QDialogButtonBox.StandardButton.Cancel)
-        free = shutil.disk_usage(self.output_dir).free
+        directory = self.output_dir / ('sequence_' + stamp())
         def update_budget():
-            needed = frames.value() * frame.data.nbytes
-            budget.setText(f'Up to {needed / 1024**3:.2f} GiB; available {free / 1024**3:.1f} GiB.\nRecording stops at the frame or duration limit; preview continues. Writer overflow stops recording and preserves a partial sequence.')
-            buttons.button(W.QDialogButtonBox.StandardButton.Ok).setEnabled(needed + 2 * 1024**3 < free)
+            from hyperlab.acquisition.sequence import recording_preflight
+            report = recording_preflight(directory, frame, frames.value(), recording_mode=mode.currentData())
+            text = (f"{frames.value()} requested frames · {report['expected_bytes']/1024**3:.2f} GiB raw. "
+                    f"Disk available {report['free_bytes_at_start']/1024**3:.1f} GiB; reserve {report['disk_reserve_bytes']/1024**2:g} MiB.")
+            memory = report['memory_preflight']
+            if memory is not None:
+                text += (f"\nRAM required {memory['required_bytes']/1024**3:.2f} GiB; available {memory['available_bytes']/1024**3:.2f} GiB. "
+                         'Frames remain volatile until saved. At the frame/duration limit or Stop, acquisition stops before persistence. '
+                         'Keep the app open until complete or recovery is resolved.')
+            else:
+                text += '\nPreview continues after recording stops. Writer overflow preserves a partial sequence; sustained rate is not guaranteed.'
+            if report['reasons']:
+                text += '\nUnavailable: ' + '; '.join(report['reasons'])
+            budget.setText(text); budget.setToolTip(json_text(report))
+            buttons.button(W.QDialogButtonBox.StandardButton.Ok).setEnabled(report['allowed'])
         frames.valueChanged.connect(update_budget)
+        mode.currentIndexChanged.connect(update_budget)
         form.addRow('Maximum frames', frames)
         form.addRow('Maximum duration (s)', seconds)
         form.addRow(budget)
@@ -495,25 +652,66 @@ class Workbench(W.QMainWindow):
         buttons.rejected.connect(dialog.reject)
         update_budget()
         if dialog.exec() == W.QDialog.DialogCode.Accepted:
-            directory = self.output_dir / ('sequence_' + stamp())
-            self.session.start_recording(directory, frames.value(), duration_s=seconds.value())
+            if self.session is not owner or self.closing or owner.state != 'streaming':
+                self.notify('Camera source or state changed; recording was not started. Reopen Record for the current stream.')
+                return
+            owner.start_recording(directory, frames.value(), duration_s=seconds.value(), recording_mode=mode.currentData())
+
+    def retry_recording(self):
+        if self.session and (self.session.status().get('recording') or {}).get('can_retry'):
+            directory = self.output_dir / ('sequence_retry_' + stamp())
+            self.session.retry_recording(directory)
+            self.notify('Retrying persistence into a new directory; prior partial output is retained.')
+
+    def abandon_recording(self):
+        recording = (self.session.status().get('recording') or {}) if self.session else {}
+        if not recording.get('can_abandon'):
+            return
+        answer = W.QMessageBox.question(self, 'Abandon retained frames?',
+            f"Release {recording.get('retained_frames', 'unknown')} retained RAM frames? "
+            'Frames not confirmed on disk may be lost. Existing partial files are preserved.',
+            W.QMessageBox.StandardButton.Yes | W.QMessageBox.StandardButton.Cancel,
+            W.QMessageBox.StandardButton.Cancel)
+        if answer == W.QMessageBox.StandardButton.Yes and (self.session.status().get('recording') or {}).get('can_abandon'):
+            self.session.abandon_recording()
 
     def tick(self):
+        tick_ns = time.perf_counter_ns()
+        if self._last_tick_ns is not None:
+            self.timings.record('qt_timer_lateness', max(0, tick_ns - self._last_tick_ns - 33_000_000))
+        self._last_tick_ns = tick_ns
         try:
             while True:
                 callback, result, error = self.results.get_nowait()
                 self.task_busy = False
+                failed = bool(error)
                 if error:
+                    self.discovering = False
                     self.notify(f'{type(error).__name__}: {error}')
                 else:
                     try:
                         callback(result)
                     except Exception as callback_error:
+                        failed = True
                         self.notify(f'{type(callback_error).__name__}: {callback_error}')
+                if failed:
+                    self.plot_mode.blockSignals(True)
+                    self.plot_mode.setCurrentIndex(self.completed_plot_mode)
+                    self.plot_mode.blockSignals(False)
+                self.update_controls()
         except queue.Empty:
             pass
+        if not self.task_busy and not self.closing:
+            if self._right_task_pending:
+                self._right_task_pending = False
+                self.update_right_task()
+            if self._brush_pending and not self.task_busy:
+                self._brush_pending = False
+                self.apply_map_brush()
         if self.session:
             for event in self.session.poll_events():
+                if event.get('kind') == 'recording':
+                    self.update_recording_result(event)
                 if event.get('path'):
                     if event.get('kind') == 'snapshot' and event.get('succeeded'):
                         self.add_recent(Path(event['path']))
@@ -522,38 +720,45 @@ class Workbench(W.QMainWindow):
                 if event.get('kind') == 'error' or event.get('error'):
                     if event.get('kind') == 'error' and self.session.state == 'error':
                         from hyperlab.devices import connection_error_kind
-                        self.device_label.setText(connection_error_kind(event.get('error') or event))
+                        self.connection_issue = connection_error_kind(event.get('error') or event)
                     self.notify(str(event.get('error') or event))
                 if event.get('kind') == 'state':
                     self.notify(f"Device state: {event.get('state', self.session.state)}")
             self.last_status = self.session.status()
             frame = self.session.latest_frame()
-            if frame is not None and self.session.state in ('streaming', 'recording'):
+            if self.follow_camera and frame is not None and self.session.state in ('streaming', 'recording'):
                 age = max(0.0, (time.monotonic_ns() - frame.metadata['host_monotonic_ns']) / 1e9)
                 self.display_mode = 'FROZEN' if self.freeze.isChecked() else 'STALE' if self.last_status.get('stale', age > 2) else 'LIVE'
                 if not self.freeze.isChecked() and frame.identity != self.last_frame_identity:
                     self.displayed_frame = frame
                     self.last_frame_identity = frame.identity
                     meta = dict(frame.metadata, data_level='raw_frame', data_source='LIVE', acquisition_source='LIVE')
-                    if frame.data.ndim == 3:
-                        meta['channel_labels'] = list(str(meta.get('pixel_format', 'RGB8'))[:3])
-                    self.set_cube(Cube(frame.data if frame.data.ndim == 3 else frame.data[..., None], meta), live=True)
+                    with self.timings.measure('ui_frame_update'):
+                        self.set_cube(Cube(frame.data if frame.data.ndim == 3 else frame.data[..., None], meta), live=True)
                     self.session.mark_displayed(frame)
             elif self.displayed_frame is not None and self.display_mode in ('LIVE', 'FROZEN', 'STALE'):
                 self.display_mode = 'REPLAY'
+                self.follow_camera = False
             self.update_controls()
             now = time.monotonic()
             if now - self.last_log >= 1:
                 self.last_log = now
                 self.update_status()
+                queued_ns = time.perf_counter_ns()
+                QtCore.QTimer.singleShot(0, lambda started=queued_ns: self.timings.record('qt_queued_callback_delay', time.perf_counter_ns() - started))
                 if self.benchmark_log:
                     payload = dict(self.last_status, host_utc=datetime.now(timezone.utc).isoformat(),
                                    host_monotonic=now, display_mode=self.display_mode,
                                    rss_bytes=psutil.Process().memory_info().rss,
                                    ui_task_busy=self.task_busy, ui_result_queue=self.results.qsize())
+                    payload['ui_stage_timings'] = self.timings.snapshot()
+                    payload['view_recipe'] = {key: value for key, value in getattr(self, 'display_selection', {}).items()
+                                             if key in ('display_stride', 'raw_extent', 'statistics_scope', 'statistics_source')}
                     self.background_log(payload)
             if self.closing and self.last_status.get('closed'):
                 self.close()
+            elif self.closing and self.last_status.get('pending_close') == 'recovery_required':
+                self.notify(self.last_status.get('close_blocked_reason') or 'Resolve retained frames before closing.')
         self.update_source_label()
         if self.closing and not self.task_busy and (not self.session or self.session.status().get('closed')):
             self.close()
@@ -567,10 +772,67 @@ class Workbench(W.QMainWindow):
         if not self.task_busy:
             self.executor.submit(write)
 
+    def update_recording_result(self, recording):
+        if not recording:
+            return
+        self.recording_recovery.setVisible(bool(recording.get('can_retry') or recording.get('can_abandon')))
+        self.retry_recording_button.setEnabled(recording.get('can_retry') is True)
+        self.abandon_recording_button.setEnabled(recording.get('can_abandon') is True)
+        if recording.get('phase'):
+            fields = ('path','recording_mode','phase','admitted_frames','max_frames','copied_frames',
+                'data_fsynced_frames','durable_frames','readable_frames','unpersisted_frames','volatile_frames',
+                'retained_frames','retained_bytes','rejected_frames','abandoned_frames','discarded_ram_frames','error','done',
+                'completed','partial','save_reopen_verified','can_retry','can_abandon')
+            receipt = {key:recording.get(key) for key in fields}
+            self.recording_receipt = receipt
+            phase = {'acquiring':'Acquiring', 'waiting_for_camera_stop':'Stopping before save',
+                     'persisting':'Persisting', 'recovery_required':'Recovery required',
+                     'complete':'COMPLETE', 'partial':'PARTIAL', 'abandoned':'ABANDONED'}.get(receipt['phase'], 'Unknown phase')
+            if receipt['phase'] == 'complete' and not (receipt['done'] and receipt['completed'] is True and
+                    receipt['partial'] is False and receipt['save_reopen_verified'] is True):
+                phase = 'UNKNOWN · inconsistent completion receipt'
+            mode = 'RAM burst' if receipt['recording_mode'] == 'ram_burst' else 'Continuous recording'
+            readable = receipt['readable_frames'] if receipt['readable_frames'] is not None else 'unconfirmed'
+            text = (f"{mode}: {phase} · admitted {receipt['admitted_frames']} / {receipt['max_frames']}"
+                    f" · durable {receipt['durable_frames']} · reopened {readable}")
+            if receipt['retained_frames']:
+                text += f" · retained in RAM {receipt['retained_frames']} · unpersisted {receipt['unpersisted_frames']}"
+            if receipt['error']:
+                text += ' · ' + receipt['error']
+            self.recording_label.setText(text)
+            self.recording_label.setToolTip('Admitted, copied, data-fsynced, durable and reopened counts are separate. '
+                'A RAM admission is volatile until persistence completes.\n' + json_text(receipt))
+            self.recording_label.setStyleSheet('padding:5px 8px; background:#e6edf2; color:#263e4b;')
+            self.recording_label.show()
+            return
+        if not recording.get('done'):
+            return
+        receipt = {key:recording.get(key) for key in ('path', 'written_frames', 'max_frames',
+            'accepted_frames', 'explicitly_failed_frames', 'rejected_frames', 'overflow',
+            'completed', 'partial', 'error', 'save_reopen_verified')}
+        if receipt == self.recording_receipt:
+            return
+        self.recording_receipt = receipt
+        complete = receipt['completed'] is True and receipt['partial'] is False
+        outcome = 'COMPLETE' if complete else 'PARTIAL' if receipt['partial'] is True else 'UNKNOWN'
+        written, maximum = (receipt[key] if receipt[key] is not None else '—'
+                            for key in ('written_frames', 'max_frames'))
+        text = f'Last recording: {outcome} · {written} / {maximum} frames written'
+        if not complete:
+            text += ' · ' + (receipt['error'] or 'Reason not recorded')
+        text += ' · reopen verified' if receipt['save_reopen_verified'] else ' · reopen not verified'
+        self.recording_label.setText(text)
+        self.recording_label.setToolTip('Latest terminal recording receipt; independent of camera state. '
+            'The frame limit is an upper bound; a duration-limited recording may complete earlier.\n' + json_text(receipt))
+        self.recording_label.setStyleSheet('padding:5px 8px; border-radius:4px; ' +
+            ('background:#e6f1eb; color:#256348;' if complete else 'background:#fff0da; color:#775120;'))
+        self.recording_label.show()
+
     def update_status(self):
         status = self.last_status
         metrics = status.get('metrics', status)
         recording = status.get('recording') or {}
+        self.update_recording_result(recording)
         def metric(name):
             value = metrics.get(name)
             return f'{value:.1f}' if isinstance(value, (int, float)) else '—'
@@ -579,13 +841,23 @@ class Workbench(W.QMainWindow):
         screen_age = '—'
         if self.displayed_frame is not None and self.display_mode in ('LIVE','FROZEN','STALE'):
             screen_age = f"{max(0,time.monotonic_ns()-self.displayed_frame.metadata.get('host_monotonic_ns',time.monotonic_ns()))/1e6:.0f}"
-        self.metrics_label.setText(f"Capture {metric('capture_fps')} fps  |  Display {metric('display_fps')} fps  |  Writer {recording.get('writer_fps', 0):.1f} fps  |  receive age {age_text} ms / screen age {screen_age} ms  |  preview drop {metrics.get('preview_dropped', '—')}  |  device gaps {metrics.get('device_frame_gaps', '—')}  |  writer queue {recording.get('queue_length', 0)}")
+        live_view = self.display_mode in ('LIVE', 'FROZEN', 'STALE') and status.get('state') in ('streaming', 'recording')
+        if live_view:
+            text = f"Capture {metric('capture_fps')} fps  |  Display {metric('display_fps')} fps  |  Latest capture age {age_text} ms  |  Displayed frame age {screen_age} ms"
+            if status.get('state') == 'recording':
+                writer_fps = recording.get('writer_fps')
+                rate = f'{writer_fps:.1f}' if isinstance(writer_fps, (int, float)) else '—'
+                text += f"  |  Writer {rate} fps · queue {recording.get('queue_length', '—')}"
+            self.metrics_label.setText(text)
+        else:
+            self.metrics_label.clear()
+        self.metrics_label.setVisible(live_view)
         frame_meta = status.get('frame_metadata') or {}
         connection = status.get('connection_metadata') or {}
         readback = frame_meta.get('readback_settings') or connection.get('readback_settings') or connection.get('current_settings') or {}
         self.readback_label.setText(f"Frame/session readback: {readback.get('PixelFormat', '—')} · {readback.get('ExposureTime', '—')} µs · gain {readback.get('Gain', '—')}\nPer-frame settings require chunk evidence.")
         if self.diagnostics.isVisible():
-            self.detail_text.setPlainText(json_text({'profile': self.profile, 'session': status}))
+            self.refresh_details()
         if status.get('state') == 'ready':
             for name, control, multiplier in (('ExposureTime', self.exposure, .001), ('Gain', self.gain, 1)):
                 node = status.get('capabilities', {}).get(name, {})
@@ -597,34 +869,118 @@ class Workbench(W.QMainWindow):
 
     def update_controls(self):
         state = self.session.state if self.session else 'disconnected'
-        self.connect_button.setEnabled(state in ('disconnected', 'error') and not self.task_busy)
-        self.disconnect_button.setEnabled(state in ('ready', 'streaming', 'recording', 'error'))
-        self.preview_button.setEnabled(state == 'ready')
+        recording = self.last_status.get('recording') or {}
+        burst_pending = recording.get('recording_mode') == 'ram_burst' and not recording.get('done')
+        from hyperlab.ui.presentation import camera_label
+        self.device_label.setText(camera_label(state, discovering=self.discovering))
+        if state == 'error' and self.connection_issue:
+            self.device_label.setText('Camera: ' + self.connection_issue)
+        self.device_label.setToolTip((self.profile or {}).get('name', 'No verified camera selected'))
+        self.connect_button.setEnabled(state in ('disconnected', 'error') and not self.task_busy and not burst_pending)
+        self.disconnect_button.setEnabled(state in ('ready', 'streaming', 'recording', 'error') and
+            (not burst_pending or recording.get('phase') == 'acquiring'))
+        returning = state in ('streaming', 'recording') and not self.follow_camera
+        self.preview_button.setEnabled((state == 'ready' or returning) and not burst_pending and not self.closing)
+        self.preview_button.setText('Return to live' if returning else '▶ Start preview')
         self.stop_button.setEnabled(state in ('streaming', 'recording'))
         self.record_button.setEnabled(state == 'recording' or (state == 'streaming' and
             self.last_status.get('has_current_frame', self.displayed_frame is not None)))
         self.record_button.setText('Stop recording' if state == 'recording' else 'Record…')
+        if burst_pending:
+            acquiring = state == 'recording' and recording.get('phase') == 'acquiring'
+            self.record_button.setEnabled(acquiring)
+            self.record_button.setText('Stop and save burst' if acquiring else 'Persistence pending')
         self.save_button.setEnabled(self.cube is not None)
+        active = state in ('streaming', 'recording')
+        acquisition = self.tabs.currentIndex() == 0
+        self.analysis_actions.setVisible(self.tabs.currentIndex() == 1)
+        for item in (self.preview_button, self.save_button, self.record_button, self.freeze):
+            item.setVisible(acquisition or active)
+        self.stop_button.setVisible(acquisition or active)
+        self.metrics_label.setVisible(state in ('streaming', 'recording') and self.display_mode in ('LIVE', 'FROZEN', 'STALE'))
+        if hasattr(self, 'run_button'):
+            self.method_changed()
+            available = not self.task_busy
+            self.results_button.setEnabled(available and bool(self.roi_results or self.product))
+            self.results_button.setToolTip('Inspect completed calculations.' if self.results_button.isEnabled()
+                                          else 'Complete an analysis to inspect its results.')
+            self.figure_action.setEnabled(available and any(spec is not None for spec in (self.plot_spec,self.map_spec,self.right_spec)))
+            self.share_action.setEnabled(self.figure_action.isEnabled())
+            self.roi_export_action.setEnabled(available and bool(self.roi_results))
+            self.derived_export_action.setEnabled(available and self.product is not None)
+            self.display_export_action.setEnabled(available and self.cube is not None)
+            self.robust_map_limits.setEnabled(available)
+            self.lock_map_limits.setEnabled(available)
         for item in (self.format, self.exposure, self.gain, self.session_mode, self.apply_button):
-            item.setEnabled(state in ('disconnected', 'ready'))
+            item.setEnabled(state in ('disconnected', 'ready') and not burst_pending and not self.closing)
+
+    def toggle_details(self):
+        self.diagnostics.setVisible(not self.diagnostics.isVisible())
+        if self.diagnostics.isVisible():
+            self.refresh_details()
+
+    def refresh_details(self):
+        def completed(spec):
+            return {'title':spec.title, 'source':spec.source, 'recipe':spec.metadata,
+                    'interpretation':spec.caption} if spec is not None else None
+        self.detail_text.setPlainText(json_text({'viewing_mode':self.display_mode,
+            'runtime':self.runtime_details,
+            'viewed_source':source_identity(self.cube) if self.cube else None,
+            'effective_display':getattr(self, 'effective_display', None),
+            'completed_chart':completed(self.plot_spec), 'completed_map':completed(self.map_spec),
+            'completed_right_plot':completed(self.right_spec),
+            'profile':self.profile, 'session':self.last_status,
+            'ui_stage_timings':self.timings.snapshot()}))
+        self._last_details_identity = self._details_identity()
+
+    def _details_identity(self):
+        display = getattr(self, 'effective_display', {})
+        return (id(self.cube), id(self.plot_spec), id(self.map_spec), id(self.right_spec), self.display_mode,
+                display.get('requested'), display.get('effective'), display.get('fallback_reason'))
 
     def update_source_label(self):
-        acquisition = self.cube.metadata.get('acquisition_source', self.cube.metadata.get('data_source', 'unknown')) if self.cube else 'unknown'
-        level = self.cube.metadata.get('data_level') if self.cube else '—'
-        frame_text = f' · #{self.displayed_frame.metadata.get("sequence")}' if self.displayed_frame is not None else ''
-        self.mode_label.setText(f'{self.display_mode}{frame_text} · {level} · source {acquisition}')
+        from hyperlab.ui.presentation import observation_label, viewing_label
+        self.mode_label.setText('Viewing: ' + viewing_label(self.display_mode))
+        meta = self.cube.metadata if self.cube else {}
+        self.source_label.setText('Viewed data: ' + observation_label(meta, compact=True) if self.cube else 'Viewed data: none')
+        self.source_label.setToolTip(json_text(source_identity(self.cube)) if self.cube else '')
+        # Live Details use the existing status poll; offline identities update without per-tick serialization.
+        if (self.diagnostics.isVisible() and (not self.session or not self.follow_camera) and
+                self._details_identity() != getattr(self, '_last_details_identity', None)):
+            self.refresh_details()
 
     def set_cube(self, cube, *, live=False, reset_axis=True):
         old_shape = self.cube.shape if self.cube is not None else None
+        self.roi_source_notice = ''
+        if self.annotation is not None and self.cube is not cube:
+            self.annotation = None
+            self.annotation_path = None
+        if not live and self.cube is not cube:
+            self.close_source_dialogs()
         self.cube = cube
+        self.pixel_label.setText('Pixel: —')
+        self.pixel_label.setToolTip('')
         if not live:
+            self.follow_camera = False
             if reset_axis:
                 self.analysis_version += 1
+                self.annotation = None
+                self.annotation_path = None
+                self.science_result = None
+                self.roi_result_context = None
+                self.roi_source = None
+                self.plot_source = None
+                self.plot_annotation = None
             self.display_mode = 'SYNTHETIC' if cube.metadata.get('data_source') == 'SYNTHETIC' else 'REPLAY'
             self.displayed_frame = None
             self.product = None
             self.product_source = None
             self.map_spec = None
+            self.map_limits_note.setText('Colour limits: no map')
+            self.right_spec = None
+            self.map_distributions = None
+            self.map_brushes = []
+            self.map_tools.hide()
             self.derived_graphics.hide()
             self.roi_results = []
             if reset_axis:
@@ -634,16 +990,41 @@ class Workbench(W.QMainWindow):
                 self.plot_mode.setCurrentIndex(0)
                 self.plot_mode.blockSignals(False)
                 self.last_quality = 0.0
+        if old_shape != cube.shape:
+            matching_coordinates = bool(self.rois) and all(
+                record and record['coordinate_frame']['shape_hw'] == list(cube.shape[:2])
+                for record in self.roi_records)
+            if not matching_coordinates:
+                new_coordinates = bool(self.rois)
+                self.reset_rois(force=True, new_coordinates=new_coordinates)
+                if new_coordinates:
+                    self.roi_source_notice = ('Raw image dimensions changed; new default ROIs created. '
+                                              'Review placement and choose the reference.')
+            elif live and old_shape is None:
+                self.roi_source_notice = ('ROI coordinates retained for matching raw dimensions; '
+                                          'verify placement in the current scene.')
         self.band.blockSignals(True)
         self.band.setRange(0, (self.sequence.frame_count - 1) if self.sequence else cube.shape[2] - 1)
         if not live and reset_axis:
             self.band.setValue(0)
         self.band.blockSignals(False)
         if old_shape != cube.shape:
-            for control in (self.pair_a, self.pair_b):
+            for control in (self.pair_a, self.pair_b, self.feature_first, self.feature_last):
                 control.setMaximum(cube.shape[2] - 1)
             self.pair_b.setValue(min(1, cube.shape[2] - 1))
-            self.reset_rois(force=True)
+            self.feature_last.setValue(cube.shape[2] - 1)
+        from hyperlab.io.labels import display_labels
+        labels = display_labels(cube.metadata, cube.shape[2])
+        for control in (self.pair_a, self.pair_b, self.feature_first, self.feature_last):
+            control.set_labels(labels)
+        labels = [f'{i} · {label}' for i,label in enumerate(labels)]
+        if labels != [self.trace_channel.itemText(i) for i in range(self.trace_channel.count())]:
+            channel = max(0, self.trace_channel.currentIndex())
+            self.trace_channel.blockSignals(True)
+            self.trace_channel.clear()
+            self.trace_channel.addItems(labels)
+            self.trace_channel.setCurrentIndex(min(channel, len(labels)-1))
+            self.trace_channel.blockSignals(False)
         self.render_current()
         if not live or old_shape != cube.shape:
             self.update_capabilities()
@@ -651,8 +1032,28 @@ class Workbench(W.QMainWindow):
             self.fit()
         from hyperlab.ui.state import restore_view
         restore_view(self)
-        self.update_controls()
-        self.update_source_label()
+        if not live:
+            self.update_controls()
+            self.update_source_label()
+        if self.roi_source_notice:
+            self.notify(self.roi_source_notice)
+
+    def chart_selected(self):
+        if self.cube is None:
+            return
+        mode = self.plot_mode.currentIndex()
+        unavailable = ((mode in (3, 4) and (self.product is None or 'scores' not in self.product))
+                       or (mode == 5 and self.completed_plot_mode != 5))
+        if unavailable:
+            self.plot_mode.blockSignals(True)
+            self.plot_mode.setCurrentIndex(self.completed_plot_mode)
+            self.plot_mode.blockSignals(False)
+            self.notify('Run the corresponding analysis before choosing this chart.')
+            return
+        if mode == 2:
+            self.analyze_rois()
+        else:
+            self.update_chart(self.image.image)
 
     def render_current(self):
         if self.cube is None:
@@ -660,28 +1061,42 @@ class Workbench(W.QMainWindow):
         raw = self.cube.data
         is_color = bool(self.cube.metadata.get('channel_labels'))
         band = min(self.band.value(), raw.shape[2] - 1)
+        fast = self.display_mode in ('LIVE', 'STALE') and not self.full_resolution_view
+        stride = (max(1, int(np.ceil(raw.shape[0] / 640))), max(1, int(np.ceil(raw.shape[1] / 960)))) if fast else (1, 1)
+        fallback = None
         try:
             selected = display_selection(self.cube, band, policy=self.policy.currentData(),
-                                         cfa=self.view_mode.currentIndex() == 1 and not is_color)
+                                         cfa=self.view_mode.currentIndex() == 1 and not is_color,
+                                         display_stride=stride, diagnostics=not fast, timings=self.timings)
         except ValueError as error:
-            self.notify(str(error))
-            selected = display_selection(self.cube, band, policy=self.policy.currentData())
+            fallback = str(error)
+            selected = display_selection(self.cube, band, policy=self.policy.currentData(),
+                                         display_stride=stride, diagnostics=not fast, timings=self.timings)
         self.display_selection = selected
+        effective = ('Delivered RGB' if is_color else 'CFA-cell RGB' if self.view_mode.currentIndex() == 1 and not fallback else 'Raw gray')
+        self.effective_display = {'requested':self.view_mode.currentText(), 'effective':effective, 'fallback_reason':fallback}
+        self.view_mode.setToolTip(f'Effective display: {effective}' + (f'\nFallback: {fallback}' if fallback else ''))
         shown = selected['image']
         if self.auto_levels.isChecked():
             self.levels = selected['levels']
         else:
             self.levels = (self.low.value(), max(self.low.value() + 1e-12, self.high.value()))
-        self.image.setImage(shown, autoLevels=False, levels=self.levels)
+        with self.timings.measure('image_item_enqueue'):
+            self.image.setImage(shown, autoLevels=False, levels=self.levels)
         h, w = raw.shape[:2]
-        self.image.setRect(QtCore.QRectF(0, 0, w, h))
+        extent = tuple(selected.get('display_extent', [0, 0, w, h]))
+        image_geometry = (shown.shape[:2], extent)
+        if image_geometry != getattr(self, '_image_geometry', None):
+            self.image.setRect(QtCore.QRectF(*extent))
+            self._image_geometry = image_geometry
         if self.overlay.isChecked():
             limit = selected['saturation_value']
             if limit is not None:
                 saturated = selected['saturated_mask']
-                rgba = np.zeros((h, w, 4), dtype=np.uint8)
+                rgba = np.zeros(saturated.shape + (4,), dtype=np.uint8)
                 rgba[saturated] = [255, 50, 35, 125]
                 self.saturation_overlay.setImage(rgba, autoLevels=False)
+                self.saturation_overlay.setRect(QtCore.QRectF(0, 0, w, h))
                 self.saturation_overlay.show()
             else:
                 self.saturation_overlay.hide()
@@ -690,28 +1105,37 @@ class Workbench(W.QMainWindow):
         if self.sequence:
             self.axis_label.setText(f'Time frame T={self.band.value()} / {self.sequence.frame_count - 1} · time axis, not spectral')
         elif is_color:
-            self.axis_label.setText('R / G / B channels · not spectral')
+            self.axis_label.setText(' / '.join(self.cube.metadata['channel_labels']) + ' channels · not spectral')
         elif self.cube.wavelengths is not None:
             self.axis_label.setText(f"λ[{band}] = {self.cube.wavelengths[band]:g} {self.cube.metadata.get('wavelength_units') or 'unknown unit'} · {self.cube.metadata.get('wavelength_evidence', 'declared')}")
         else:
             self.axis_label.setText(f'Fixed optical state · DN' if raw.shape[2] == 1 else f'Scan state index {band} · not nm')
+        if not is_color and self.view_mode.currentIndex() == 1:
+            self.axis_label.setText(self.axis_label.text() + f' · Display: {effective}' + (' (CFA unavailable; Details)' if fallback else ''))
+        if selected['display_stride'] != [1, 1]:
+            sy, sx = selected['display_stride']
+            self.axis_label.setText(self.axis_label.text() + f' · Overview samples {sx}×{sy}; 1:1 for full detail')
         if time.monotonic() - self.last_quality > 0.5:
             self.last_quality = time.monotonic()
-            self.update_chart(shown, selected=selected)
+            with self.timings.measure('chart_update'):
+                self.update_chart(shown, selected=selected)
 
     def fit(self):
+        self.full_resolution_view = False
         if self.cube is not None:
             h, w = self.cube.shape[:2]
             self.plot.setRange(xRange=(0, w), yRange=(0, h), padding=0.025)
 
     def one_to_one(self):
+        self.full_resolution_view = True
+        self.render_current()
         box = self.plot.getViewBox()
         (x0, x1), (y0, y1) = box.viewRange()
         width, height = box.width(), box.height()
         box.setRange(xRange=((x0+x1-width)/2, (x0+x1+width)/2),
                      yRange=((y0+y1-height)/2, (y0+y1+height)/2), padding=0)
 
-    def _roi_row(self, name, color):
+    def _roi_row(self, name, color, record=None):
         row = W.QWidget()
         layout = W.QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -721,6 +1145,10 @@ class Workbench(W.QMainWindow):
         show = W.QCheckBox('Show')
         show.setChecked(True)
         layout.addWidget(show)
+        use = W.QCheckBox('Use'); use.setChecked(True)
+        use.setToolTip('Include in amplitude/common-support comparisons. A strip can be inspected with Use off. '
+            'Exclude geometry removes pixels from statistics, brushes and profiles, not raw/global map display.')
+        layout.addWidget(use)
         remove = self.button('×', lambda: self.remove_roi(self.roi_rows.index(row)))
         remove.setToolTip('Remove this ROI from the analysis definition')
         remove.setMaximumWidth(28)
@@ -730,7 +1158,10 @@ class Workbench(W.QMainWindow):
         self.roi_colors.append(color)
         self.roi_rows.append(row)
         self.roi_visible.append(show)
+        self.roi_included.append(use)
+        self.roi_records.append(record)
         edit.textChanged.connect(self.roi_changed)
+        use.toggled.connect(self.roi_changed)
         show.toggled.connect(lambda visible: self.set_roi_visible(self.roi_rows.index(row), visible))
 
     def set_roi_visible(self, index, visible):
@@ -738,17 +1169,21 @@ class Workbench(W.QMainWindow):
             self.rois[index].setVisible(visible)
         self.roi_changed()
 
-    def add_roi(self, name=None, rect=None, color=None):
+    def add_roi(self, name=None, rect=None, color=None, *, record=None, kind='rectangle'):
         if len(self.roi_names) >= 8:
-            self.notify('Up to eight rectangular ROIs are supported.')
+            self.notify('Up to eight ROI definitions are supported.')
             return
         index = len(self.roi_names)
-        self._roi_row(name or f'ROI {chr(65+index)}', color or COLORS[index])
+        self._roi_row(name or f'ROI {chr(65+index)}', color or COLORS[index], record)
         if self.cube is not None:
-            self._create_roi(index, rect)
+            self._create_roi(index, rect, kind=kind)
+        if record:
+            self.roi_visible[-1].setChecked(record['visible'])
+            self.roi_included[-1].setChecked(record['included'])
         self.roi_changed()
 
-    def _create_roi(self, index, rect=None):
+    def _create_roi(self, index, rect=None, *, kind='rectangle'):
+        from hyperlab.analysis.regions import make_roi, resolve_roi
         h, w = self.cube.shape[:2]
         if rect is None:
             x, y = w * (.12 + .26 * (index % 3)), h * (.22 + .28 * (index // 3))
@@ -756,25 +1191,122 @@ class Workbench(W.QMainWindow):
         else:
             x, y, x1, y1 = rect
             width, height = x1-x, y1-y
-        roi = pg.RectROI([x, y], [width, height], pen=pg.mkPen(self.roi_colors[index], width=2),
-                         movable=True, rotatable=False, maxBounds=QtCore.QRectF(0,0,w,h))
+        record = self.roi_records[index]
+        if record is None:
+            geometry = {'type':'rectangle', 'bounds':[x, y, x+width, y+height]}
+            if kind == 'polygon':
+                geometry = {'type':'polygon', 'vertices':[[x,y],[x+width,y],[x+width,y+height],[x,y+height]], 'holes':[]}
+            elif kind == 'strip':
+                geometry = {'type':'strip', 'points':[[x,y],[x+width,y+height]], 'width_px':10.0}
+            record = make_roi((h,w), geometry, name=self.roi_names[index].text(), color=self.roi_colors[index],
+                              role='reference' if index == 0 else 'target')
+            self.roi_records[index] = record
+            if self.reference_roi_id is None and index == 0:
+                self.reference_roi_id = record['roi_id']
+        geometry = record['geometry']; kind = geometry['type']
+        pen = pg.mkPen(self.roi_colors[index], width=2)
+        if kind == 'rectangle':
+            x, y, x1, y1 = geometry['bounds']
+            roi = pg.RectROI([x,y], [x1-x,y1-y], pen=pen, movable=True, rotatable=False,
+                             maxBounds=QtCore.QRectF(0,0,w,h))
+        elif kind in ('polygon', 'strip'):
+            roi = pg.PolyLineROI(geometry.get('vertices', geometry.get('points')), closed=kind == 'polygon', pen=pen)
+        else:
+            roi = pg.ImageItem(axisOrder='row-major')
         self.plot.addItem(roi)
         self.rois.append(roi)
+        fill = pg.ImageItem(axisOrder='row-major'); fill.setZValue(-.1)
+        self.plot.addItem(fill); self.roi_fills.append(fill)
         roi.setVisible(self.roi_visible[index].isChecked())
         label = pg.TextItem(self.roi_names[index].text(), color=self.roi_colors[index], anchor=(0,1))
         self.plot.addItem(label)
         self.roi_labels.append(label)
-        roi.sigRegionChanged.connect(self.roi_changed)
+        if hasattr(roi, 'sigRegionChanged'):
+            roi.sigRegionChanged.connect(self.roi_changed)
+        self._update_roi_fill(index)
         self._update_roi_labels()
+
+    def _update_roi_fill(self, index):
+        from hyperlab.analysis.regions import resolve_roi
+        record = self.roi_records[index]
+        target = self.rois[index] if record['geometry']['type'] == 'mask' else self.roi_fills[index]
+        if record['geometry']['type'] == 'rectangle':
+            target.hide(); return
+        selection = resolve_roi(self.cube.shape, record)
+        x0,y0,x1,y1 = selection['bbox']
+        if x0 == x1 or y0 == y1:
+            target.hide(); return
+        color = pg.mkColor(record['color'])
+        rgba = np.zeros(selection['selected'].shape + (4,), np.uint8)
+        rgba[selection['selected']] = [color.red(), color.green(), color.blue(), 50]
+        target.setImage(rgba, autoLevels=False)
+        target.setRect(QtCore.QRectF(x0,y0,x1-x0,y1-y0))
+        target.setVisible(self.roi_visible[index].isChecked())
+
+    def regions(self):
+        """Return copied stable definitions; geometry stays in the raw coordinate frame."""
+        from copy import deepcopy
+        for i, roi in enumerate(self.rois):
+            old = self.roi_records[i]
+            record = deepcopy(old)
+            kind = record['geometry']['type']
+            if kind == 'rectangle':
+                record['geometry']['bounds'] = list(roi_rect(roi.pos(), roi.size(), self.cube.shape))
+            elif kind in ('polygon', 'strip'):
+                points = [roi.mapToParent(point) for _, point in roi.getLocalHandlePositions()]
+                record['geometry']['vertices' if kind == 'polygon' else 'points'] = [[p.x(),p.y()] for p in points]
+            record.update(name=self.roi_names[i].text().strip() or f'ROI {i+1}',
+                          visible=self.roi_visible[i].isChecked(), included=self.roi_included[i].isChecked())
+            if record != old:
+                record['revision'] += 1
+                self.roi_records[i] = record
+        return deepcopy(self.roi_records[:len(self.rois)])
+
+    def refresh_reference_selector(self):
+        if not hasattr(self, 'reference_roi'):
+            return
+        self.reference_roi.blockSignals(True)
+        self.reference_roi.clear()
+        self.reference_roi.addItem('Select reference ROI', None)
+        for record in self.roi_records:
+            if record and record['included'] and record['role'] != 'exclude':
+                self.reference_roi.addItem(record['name'], record['roi_id'])
+        self.reference_roi.setCurrentIndex(max(0, self.reference_roi.findData(self.reference_roi_id)))
+        self.reference_roi.blockSignals(False)
+
+    def choose_reference_roi(self):
+        self.set_reference_roi(self.reference_roi.currentData())
+
+    def set_reference_roi(self, roi_id):
+        self.reference_roi_id = roi_id
+        for record in self.roi_records:
+            if record and record['role'] != 'exclude':
+                role = 'reference' if record['roi_id'] == self.reference_roi_id else 'target'
+                if record['role'] != role:
+                    record['role'] = role; record['revision'] += 1
+        self.refresh_reference_selector()
+        self.roi_changed()
 
     def _update_roi_labels(self):
         for i, roi in enumerate(self.rois):
             self.roi_labels[i].setVisible(roi.isVisible())
             self.roi_labels[i].setText(self.roi_names[i].text(), color=self.roi_colors[i])
-            self.roi_labels[i].setPos(roi.pos())
+            if self.roi_records[i]['geometry']['type'] == 'mask':
+                from hyperlab.analysis.regions import resolve_roi
+                self.roi_labels[i].setPos(*resolve_roi(self.cube.shape, self.roi_records[i])['bbox'][:2])
+            elif isinstance(roi, pg.PolyLineROI):
+                point = roi.mapToParent(roi.getLocalHandlePositions()[0][1])
+                self.roi_labels[i].setPos(point)
+            else:
+                self.roi_labels[i].setPos(roi.pos())
 
     def roi_changed(self, *args):
         self.analysis_version += 1
+        if self.cube is not None:
+            self.regions()
+            for index in range(len(self.rois)):
+                self._update_roi_fill(index)
+        self.refresh_reference_selector()
         self._update_roi_labels()
         if self.cube is not None and self.plot_mode.currentIndex() == 2:
             self.roi_timer.start(160)
@@ -783,40 +1315,53 @@ class Workbench(W.QMainWindow):
         if not 0 <= index < len(self.roi_names):
             return
         if len(self.roi_names) <= 1:
-            self.notify('Keep at least one ROI; use Show to hide its curve.')
+            self.notify('Keep at least one ROI; clear Use to exclude it from calculations.')
             return
         row = self.roi_rows.pop(index)
         row.setParent(None)
         row.deleteLater()
         self.roi_names.pop(index)
         self.roi_visible.pop(index)
+        self.roi_included.pop(index)
+        self.roi_records.pop(index)
         self.roi_colors.pop(index)
         if index < len(self.rois):
             self.plot.removeItem(self.rois.pop(index))
             self.plot.removeItem(self.roi_labels.pop(index))
+            self.plot.removeItem(self.roi_fills.pop(index))
         self.roi_changed()
 
-    def reset_rois(self, force=False):
+    def reset_rois(self, force=False, *, new_coordinates=False):
         if self.cube is None or (self.rois and not force):
             return
-        for item in [*self.rois, *self.roi_labels]:
+        for item in [*self.rois, *self.roi_labels, *self.roi_fills]:
             self.plot.removeItem(item)
-        self.rois, self.roi_labels = [], []
+        self.rois, self.roi_labels, self.roi_fills = [], [], []
+        self.roi_records = [None] * len(self.roi_names)
+        self.reference_roi_id = None
         for index in range(len(self.roi_names)):
+            if new_coordinates:
+                name, show, use = self.roi_names[index], self.roi_visible[index], self.roi_included[index]
+                for control in (name, show, use):
+                    control.blockSignals(True)
+                name.setText(f'ROI {chr(65+index)}')
+                show.setChecked(True); use.setChecked(True)
+                for control in (name, show, use):
+                    control.blockSignals(False)
             self._create_roi(index)
         self.roi_changed()
 
     def rectangles(self):
-        return [roi_rect(roi.pos(), roi.size(), self.cube.shape) for roi in self.rois]
+        from hyperlab.analysis.regions import resolve_roi
+        return [resolve_roi(self.cube.shape, record)['bbox'] for record in self.regions()]
 
     def pixel_hover(self, scene_position):
         if self.cube is None or not self.plot.sceneBoundingRect().contains(scene_position):
             return
-        point = self.image.mapFromScene(scene_position)
-        # ImageItem may display a half-resolution CFA image; scale back to raw coordinates.
-        sx = self.cube.shape[1] / self.image.image.shape[1]
-        sy = self.cube.shape[0] / self.image.image.shape[0]
-        x, y = int(np.floor(point.x() * sx)), int(np.floor(point.y() * sy))
+        point = self.plot.getViewBox().mapSceneToView(scene_position)
+        # Inspection uses raw axes even when an overview displays sampled pixels.
+        x, y = int(np.floor(point.x())), int(np.floor(point.y()))
+        self.move_cursors(x, y)
         if 0 <= x < self.cube.shape[1] and 0 <= y < self.cube.shape[0]:
             values = self.cube.data[y, x]
             from hyperlab.analysis.core import _quality
@@ -824,6 +1369,24 @@ class Workbench(W.QMainWindow):
             valid, counts, _ = _quality(self.cube,self.cube.data[selection],selection,self.policy.currentData())
             self.pixel_label.setText(f'Raw pixel x={x}, y={y} · {np.array2string(values, precision=7, threshold=8)} · {self.policy.currentData()} valid channels {np.count_nonzero(valid)}/{valid.size}')
             self.pixel_label.setToolTip(json_text({name: int(mask.sum()) for name,mask in counts.items()}))
+
+    def move_cursors(self, x, y):
+        for lines in (self.source_cursor, self.map_cursor):
+            for line, value in zip(lines, (y+.5, x+.5)):
+                line.setValue(value); line.setVisible(self.link_views.isChecked())
+
+    def map_hover(self, scene_position):
+        if self.map_spec is None or not self.derived_plot.sceneBoundingRect().contains(scene_position):
+            return
+        point = self.derived_plot.getViewBox().mapSceneToView(scene_position)
+        x,y = int(np.floor(point.x())),int(np.floor(point.y()))
+        if 0 <= y < self.map_spec.image.shape[0] and 0 <= x < self.map_spec.image.shape[1]:
+            self.move_cursors(x,y)
+            value = self.map_spec.image[y,x]
+            validity = 'valid' if self.map_spec.valid_mask[y,x] else 'invalid / masked'
+            from hyperlab.ui.presentation import observation_label
+            self.pixel_label.setText(f'Map pixel ({x}, {y}): {value:g} · {validity} · {self.map_spec.colour_label}')
+            self.pixel_label.setToolTip('Pinned map source: ' + observation_label(self.map_spec.source))
 
     def update_chart(self, shown, *, selected=None):
         if self.cube is None:
@@ -843,11 +1406,15 @@ class Workbench(W.QMainWindow):
         saturation = (f"{100*counts['saturated']/eligible:.2f}% ({counts['saturated']}/{eligible} eligible)"
                       if selected['saturation_value'] is not None and eligible else 'unknown')
         mean = f"{selected['raw_mean']:.2f}" if selected['raw_mean'] is not None else 'unavailable'
-        self.quality_label.setText(f"{policy} mean {mean} · raw saturation {saturation}\n"
+        scope = selected.get('statistics_scope', 'full raw frame')
+        self.quality_label.setText(f"{scope.capitalize()} · {policy} mean {mean} · saturation {saturation}\n"
             f"Display histogram: {selected['sample_count']}/{selected['sample_total']} selected samples\n"
             'Invalid and ignored samples do not affect contrast.')
         self.quality_label.setToolTip(json_text({'raw_counts': counts, **{k:v for k,v in selected.items()
             if k not in ('image','valid_mask','values','saturated_mask')}}))
+        # Pending controls do not replace the completed chart's source or recipe.
+        if self.task_busy and self.plot_spec is not None:
+            return
         mode = self.plot_mode.currentIndex()
         source = source_identity(cube)
         if mode == 0:
@@ -858,12 +1425,16 @@ class Workbench(W.QMainWindow):
                 if k not in ('image','valid_mask','values','saturated_mask')}, caption=selected['interpretation'])
             self.draw_plot(spec)
         elif mode == 1:
-            rects = self.rectangles()
-            stats = [roi_statistics(cube, rect, policy=policy) for rect in rects]
-            means = [float(np.nanmean(r['mean'])) if cube.metadata.get('channel_labels') and np.any(np.isfinite(r['mean']))
-                     else float(r['mean'][band]) for r in stats]
-            definition = {'rectangles':rects, 'names':[edit.text() for edit in self.roi_names],
-                          'policy':policy, 'band':None if self.sequence else band,
+            context = self.analysis_context()
+            indices = [i for i,flag in enumerate(context['included']) if flag]
+            rects = [context['regions'][i] for i in indices]
+            band = max(0, self.trace_channel.currentIndex())
+            with self.timings.measure('roi_trend_statistics'):
+                stats = [roi_statistics(cube, rect, policy=policy, bands=[band], robust=False,
+                                        exclusions=context['exclusions']) for rect in rects]
+            means = [float(r['mean'][band]) for r in stats]
+            definition = {'regions':rects, 'exclusions':context['exclusions'], 'names':[context['names'][i] for i in indices],
+                          'policy':policy, 'band':band,
                           'source_file':cube.metadata.get('source_file'),
                           'session_id':cube.metadata.get('session_id'),
                           'stream_epoch':cube.metadata.get('stream_epoch'),
@@ -872,12 +1443,15 @@ class Workbench(W.QMainWindow):
             meta = dict(cube.metadata, display_mode=self.display_mode)
             self.temporal_plot.add(meta, means, definition, sequence=self.sequence,
                                    index=self.band.value() if self.sequence else None)
-            spec = self.temporal_plot.plot(definition['names'], self.roi_colors, source)
+            spec = self.temporal_plot.plot(definition['names'], [context['colors'][i] for i in indices], source)
+            spec.title += f' · channel {self.trace_channel.currentText()}'
             if not len(self.temporal_plot):
                 spec.caption = 'A static frame has no temporal samples. Open a recorded sequence for time analysis.'
             self.draw_plot(spec)
         elif mode in (3,4) and self.product is not None and 'scores' in self.product:
+            self._completed_source = self.product_source
             self.draw_plot(pca_diagnostics(self.product, self.product_source)[mode-3])
+            self._completed_source = None
 
     @staticmethod
     def _style_scientific_chart(chart):
@@ -894,20 +1468,33 @@ class Workbench(W.QMainWindow):
                         brush=pg.mkBrush(255,255,255,225),pen=None)
 
     def draw_plot(self, spec):
+        previous = self.plot_spec
         was_comparison = bool(self.plot_spec and self.plot_spec.metadata.get('roi_comparison'))
         self.plot_spec = spec
-        origin = spec.source.get('acquisition_source') or spec.source.get('data_source') or 'UNKNOWN'
-        frame = spec.source.get('sequence')
-        source = (f"frame {frame} / stream {spec.source.get('stream_epoch')}" if frame is not None
-                  else Path(spec.source.get('source_file') or 'in-memory example').name)
-        self.analysis_label.setText(f'Pinned analysis: {source} · {origin} origin · {spec.caption}')
+        self.completed_plot_mode = self.plot_mode.currentIndex()
+        self.plot_source = getattr(self, '_completed_source', None) or self.cube
+        self.plot_annotation = spec.metadata.get('analysis_context', {}).get('annotation', self.annotation)
+        from hyperlab.ui.presentation import observation_label
+        self.analysis_label.setText(f'Completed: {spec.title} · {observation_label(spec.source, compact=True)}')
+        self.analysis_label.setToolTip(json_text({'source': spec.source, 'recipe': spec.metadata, 'caption': spec.caption}))
+        same_histogram = (previous is not None and previous.title == spec.title == 'Sampled histogram'
+            and previous.xlabel == spec.xlabel and len(previous.series) == len(spec.series) == 1
+            and previous.series[0]['name'] == spec.series[0]['name'] and self.curves
+            and len(spec.series[0]['x']) > 1)
+        if same_histogram:
+            item = spec.series[0]
+            self.curves[0].setData(item['x'], item['y'], connect='finite')
+            self.chart.setToolTip(spec.caption)
+            if not np.array_equal(previous.series[0]['x'],item['x']):
+                self.chart.setXRange(float(np.min(item['x'])),float(np.max(item['x'])),padding=.03)
+            return
         self.chart.clear()
         legend = self.chart.plotItem.legend
         legend.clear()
         legend.setColumnCount(1 if len(spec.series)<=4 else 2)
         self.curves = []
         self.error_bars = []
-        self.chart.setTitle(spec.title if any(np.any(np.isfinite(item['y'])) for item in spec.series) else spec.title+' · No valid samples',
+        self.chart.setTitle(self.chart_title(spec) if any(np.any(np.isfinite(item['y'])) for item in spec.series) else spec.title+' · No valid samples',
                             color='#17212b',size='12pt')
         self.chart.setToolTip(spec.caption)
         # 0.14 can rescale ticks when disabling SI prefixes; empty ranges also
@@ -920,13 +1507,14 @@ class Workbench(W.QMainWindow):
         for item in spec.series:
             pen = pg.mkPen(item['color'], width=2.5,
                            style=QtCore.Qt.PenStyle.SolidLine if item.get('style','-') == '-' else QtCore.Qt.PenStyle.DashLine)
-            curve = self.chart.plot(item['x'], item['y'], pen=pen, name=item['name'], connect='finite',
+            categorical_points = bool(spec.categories and spec.metadata.get('categorical_style') == 'points')
+            curve = self.chart.plot(item['x'], item['y'], pen=None if categorical_points else pen, name=item['name'], connect='finite',
                                     symbol='o' if spec.categories or len(item['x'])<5 else None,
                                     symbolSize=8,symbolBrush=item['color'],symbolPen='w',antialias=True)
             curve.setZValue(2)
             self.curves.append(curve)
             if item.get('sd') is not None:
-                if len(item['x']) == 1:
+                if len(item['x']) == 1 or categorical_points:
                     error = pg.ErrorBarItem(x=np.asarray(item['x']),y=np.asarray(item['y']),
                         height=2*np.asarray(item['sd']),beam=.12,pen=pg.mkPen(item['color'],width=2))
                     self.chart.addItem(error); self.error_bars.append(error)
@@ -936,6 +1524,20 @@ class Workbench(W.QMainWindow):
                     self.chart.addItem(low); self.chart.addItem(high)
                     color = pg.mkColor(item['color']); color.setAlpha(44)
                     ribbon = pg.FillBetweenItem(low,high,brush=color)
+                    ribbon.setZValue(-1); self.chart.addItem(ribbon)
+            if item.get('lower') is not None:
+                y = np.asarray(item['y'])
+                if len(item['x']) == 1 or categorical_points:
+                    error = pg.ErrorBarItem(x=np.asarray(item['x']), y=y,
+                        bottom=y-item['lower'], top=item['upper']-y, beam=.12,
+                        pen=pg.mkPen(item['color'], width=2))
+                    self.chart.addItem(error); self.error_bars.append(error)
+                else:
+                    low = pg.PlotCurveItem(item['x'], item['lower'], pen=None, connect='finite')
+                    high = pg.PlotCurveItem(item['x'], item['upper'], pen=None, connect='finite')
+                    self.chart.addItem(low); self.chart.addItem(high)
+                    color = pg.mkColor(item['color']); color.setAlpha(44)
+                    ribbon = pg.FillBetweenItem(low, high, brush=color)
                     ribbon.setZValue(-1); self.chart.addItem(ribbon)
         # Preserve the two default curve handles for existing integrations.
         while len(self.curves) < 2:
@@ -954,11 +1556,14 @@ class Workbench(W.QMainWindow):
         distributions = [item for item in spec.series if 'distribution' in item]
         self.shape_chart.setVisible(bool(normalized or distributions))
         if normalized or distributions:
-            units = spec.ylabel.removeprefix('Mean (').removesuffix(')')
+            for axis in ('left','bottom'):
+                self.shape_chart.showAxis(axis)
+            units = spec.metadata.get('units', spec.ylabel.removeprefix('Mean (').removesuffix(')'))
             self.shape_chart.setTitle('ROI intensity distribution' if distributions else 'L2 normalized shape',
                                       color='#17212b',size='12pt')
             self.shape_chart.setLabel('bottom',f'Pixel intensity ({units})' if distributions else spec.xlabel,**label_style)
-            self.shape_chart.setLabel('left',f'Density (1/{units})' if distributions else 'Normalized mean',**label_style)
+            self.shape_chart.setLabel('left',f'Density (1/{units})' if distributions else
+                                      f"Normalized {spec.metadata.get('summary', 'mean')}",**label_style)
             self.shape_chart.getAxis('left').enableAutoSIPrefix(False)
             self.shape_chart.getAxis('bottom').setTicks([list(enumerate(spec.categories))] if spec.categories and not distributions else None)
             for item in distributions or normalized:
@@ -972,6 +1577,32 @@ class Workbench(W.QMainWindow):
         if spec.metadata.get('roi_comparison') and not was_comparison:
             self.chart_row.setSizes([1,1])
             self.vertical.setSizes([400,280])
+        self.install_interval_selector()
+
+    def install_interval_selector(self):
+        if not hasattr(self,'chart'):
+            return
+        if getattr(self,'interval_region',None) is not None:
+            self.chart.removeItem(self.interval_region); self.interval_region=None
+        if (self.cube is None or self.cube.wavelengths is None or self.plot_source is not self.cube
+                or self.plot_spec is None or not self.plot_spec.metadata.get('roi_comparison')
+                or self.analysis_method.currentData() not in ('interval_map','interval_mean_map')):
+            return
+        wave=self.cube.wavelengths
+        first,last=self.feature_first.value(),self.feature_last.value()
+        self.interval_region=pg.LinearRegionItem(sorted([float(wave[first]),float(wave[last])]),
+                                                brush=pg.mkBrush(58,144,124,30))
+        self.chart.addItem(self.interval_region)
+        def selected():
+            lower,upper=self.interval_region.getRegion()
+            indices=np.flatnonzero((wave >= lower) & (wave <= upper))
+            if indices.size < 2:
+                self.notify('Select at least two measured wavelengths for an interval map.'); return
+            self.feature_first.setValue(int(indices.min())); self.feature_last.setValue(int(indices.max()))
+            self.roi_timer.stop()
+            if not self.task_busy:
+                self.analyze(self.analysis_method.currentData())
+        self.interval_region.sigRegionChangeFinished.connect(selected)
 
     def update_capabilities(self):
         from hyperlab.analysis import capabilities
@@ -980,15 +1611,24 @@ class Workbench(W.QMainWindow):
         for op, button in self.analysis_buttons.items():
             button.setEnabled(cap['operations'].get(op, False))
             button.setToolTip(cap.get('reasons', {}).get(op, ''))
-        self.capability_label.setText(f"{cap['axis_label']} · {cap['effective_dimensions']} enabled features\n" +
-                                     '\n'.join(dict.fromkeys(cap.get('reasons', {}).values())))
+        self.method_changed()
 
     def analysis_context(self):
+        records = self.regions()
         return {'version':self.analysis_version, 'source':source_identity(self.cube),
                 'rectangles':self.rectangles(), 'names':[name.text() for name in self.roi_names],
+                'regions':records, 'included':[item['included'] and item['role'] != 'exclude' for item in records],
+                'exclusions':[item for item in records if item['included'] and item['role'] == 'exclude'],
+                'reference_roi_id':self.reference_roi_id,
                 'colors':list(self.roi_colors), 'visible':[item.isChecked() for item in self.roi_visible],
                 'policy':self.policy.currentData(), 'normalized':self.shape_normalize.isChecked(),
-                'spatial_sd':self.spatial_sd.isChecked()}
+                'spatial_sd':self.spatial_sd.isChecked(), 'summary':self.roi_summary.currentData(),
+                'categorical_style':self.categorical_style.currentData(),
+                'support':self.roi_support.currentData(), 'annotation':self.annotation,
+                'method':self.analysis_method.currentData(), 'trace_channel':self.trace_channel.currentIndex(),
+                'feature_interval':[self.feature_first.value(), self.feature_last.value()],
+                'window':self.local_window.value(), 'degree':self.local_degree.value(),
+                'max_gap_nm':self.max_gap_nm.value() or None}
 
     def analyze_rois(self):
         if self.cube is None or self.closing:
@@ -997,107 +1637,285 @@ class Workbench(W.QMainWindow):
             self.roi_timer.start(180)
             return
         from hyperlab.analysis import roi_comparison
+        from hyperlab.experiment_metadata import compute_pinned
         cube, context = self.cube, self.analysis_context()
-        def completed(results):
+        included = [i for i, flag in enumerate(context['included']) if flag]
+        if not included:
+            self.notify('Select Use for at least one target or reference ROI.'); return
+        context['analyzed_roi_indices'] = included
+        def completed(payload):
+            results, context['source_fingerprint'] = payload
             if context['version'] != self.analysis_version:
                 self.notify('ROI definition changed; obsolete result discarded.')
                 self.roi_timer.start(180)
                 return
+            self.roi_source = cube
             self.show_rois(results, context)
-        self.background(lambda: roi_comparison(cube,context['rectangles'],policy=context['policy']),
+        self.background(lambda: compute_pinned(cube, lambda: roi_comparison(cube,[context['regions'][i] for i in included],
+                        policy=context['policy'],support=context['support'],exclusions=context['exclusions'])),
                         completed, 'Computing pinned ROI statistics…')
 
     def show_rois(self, results, context=None):
         context = context or self.analysis_context()
         self.roi_results = results
+        self.roi_result_context = context
+        self.roi_source = self.roi_source or self.cube
+        self.science_result = None
         self.plot_mode.blockSignals(True)
         self.plot_mode.setCurrentIndex(2)
         self.plot_mode.blockSignals(False)
-        enabled = [i for i,v in enumerate(context['visible']) if v]
+        included = list(context.get('analyzed_roi_indices', range(len(results))))
+        enabled = [i for i, original in enumerate(included) if context['visible'][original]]
         if not enabled:
             self.draw_plot(PlotSpec('lines','No visible ROI','Index','Mean'))
+            self.notify('ROI results ready; all included ROIs are hidden. Numeric results remain available in Results and Export.')
             return
-        spec = roi_plot([results[i] for i in enabled], [context['names'][i] for i in enabled],
-                        [context['colors'][i] for i in enabled], source=context['source'],
-                        normalized=context['normalized'], spatial_sd=context['spatial_sd'])
+        spec = roi_plot(results, [context['names'][i] for i in included],
+                        [context['colors'][i] for i in included], source=context['source'],
+                        normalized=context['normalized'], spatial_sd=context['spatial_sd'], summary=context['summary'],
+                        categorical_style=context.get('categorical_style','connected'))
+        spec.series = [spec.series[i] for i in enabled]
+        if self.roi_source.shape[2] == 1:
+            spec.categories = [context['names'][included[i]] for i in enabled]
+            for position,item in enumerate(spec.series):
+                item['x'] = np.array([position])
         spec.metadata['analysis_version'] = context['version']
+        spec.metadata['analysis_context'] = context
+        spec.metadata['source_fingerprint'] = context.get('source_fingerprint')
+        self._completed_source = self.roi_source
         self.draw_plot(spec)
+        self._completed_source = None
         self.notify('Shape comparison unavailable for a zero norm or missing common features; raw amplitude is retained.'
                     if any('normalized' in item and not np.any(np.isfinite(item['normalized'])) for item in spec.series)
-                    else 'Pinned ROI means and spatial SD; source identity and quality counts are retained in Figure export.')
+                    else 'ROI results ready. Summary, spatial spread and sample counts are available in Results and Export.')
 
     def export_rois(self):
-        if self.cube is None:
+        if not self.roi_results or self.roi_result_context is None:
+            self.notify('Run ROI analysis before exporting its completed results.')
             return
-        from hyperlab.analysis import roi_statistics, export_roi_csv
-        cube, rects, policy = self.cube, self.rectangles(), self.policy.currentData()
-        names = [edit.text() for edit in self.roi_names]
-        shape_branch = self.shape_normalize.isChecked()
+        from copy import deepcopy
+        from hyperlab.analysis import export_roi_csv
+        from hyperlab.plots import plain
+        from hyperlab.experiment_metadata import source_fingerprint, write_analysis_manifest
+        cube, results = self.roi_source, deepcopy(self.roi_results)
+        context, feature_result = deepcopy(self.roi_result_context), deepcopy(self.science_result)
+        selected = context.get('analyzed_roi_indices', range(len(results)))
+        names = [context['names'][i] for i in selected]
         directory = self.output_dir / ('roi_' + stamp())
         def run():
+            fingerprint = source_fingerprint(cube)
+            if context.get('source_fingerprint') and fingerprint != context['source_fingerprint']:
+                raise ValueError('Source changed since this ROI result was computed; run analysis again before exporting.')
             directory.mkdir()
-            results = [roi_statistics(cube, rect, policy=policy) for rect in rects]
             branch = None
-            if shape_branch:
-                common = np.all(np.isfinite([stats['mean'] for stats in results]), axis=0)
-                branch = {'operation': 'L2 normalization on common finite ROI features',
-                          'feature_indices': np.flatnonzero(common).tolist(),
-                          'excluded_indices': np.flatnonzero(~common).tolist(),
-                          'excluded_reason': 'At least one ROI lacks a valid mean; original indices are retained',
-                          'normalized_means': [], 'norms': [], 'valid': []}
-                for stats in results:
-                    norm = float(np.linalg.norm(stats['mean'][common]))
-                    valid = bool(np.any(common) and np.isfinite(norm) and norm > 0)
-                    values = np.full(stats['mean'].shape, np.nan)
-                    if valid:
-                        values[common] = stats['mean'][common] / norm
-                    branch['normalized_means'].append([float(value) if np.isfinite(value) else None for value in values])
-                    branch['norms'].append(norm if np.isfinite(norm) else None)
-                    branch['valid'].append(valid)
+            if context['normalized'] and cube.shape[2] > 1:
+                visible = [i for i, original in enumerate(selected) if context['visible'][original]]
+                if visible:
+                    shape = roi_plot(results, names,
+                        COLORS, source=context['source'], normalized=True, summary=context['summary'])
+                    branch = {'operation':shape.metadata['normalization'], 'summary':context['summary'],
+                        'feature_indices':shape.metadata['common_feature_indices'], 'roi_indices':visible,
+                        'normalized_summaries':plain([shape.series[i]['normalized'] for i in visible])}
+                    if context['summary'] == 'mean':
+                        branch['normalized_means'] = branch['normalized_summaries']
             for index, stats in enumerate(results):
-                stats.setdefault('metadata', {}).update(roi_name=names[index], source=cube.metadata)
-                if branch is not None:
-                    stats['metadata']['shape_comparison'] = {'operation': branch['operation'],
-                        'feature_indices': branch['feature_indices'], 'excluded_indices': branch['excluded_indices'],
-                        'norm': branch['norms'][index], 'valid': branch['valid'][index]}
+                stats.setdefault('metadata', {}).update(roi_name=names[index], analysis_context=context)
+                if branch is not None and index in branch['roi_indices']:
+                    stats['metadata']['shape_comparison'] = branch
                 export_roi_csv(stats, directory / f'roi_{index + 1}.csv')
-            (directory / 'comparison.json').write_text(json_text({'source': cube.metadata, 'rectangles': rects,
-                'names': names, 'policy': policy, 'shape_branch': branch}), encoding='utf-8')
+            payload = {'source':cube.metadata, 'analysis_context':context, 'feature_result':feature_result,
+                       'shape_branch':branch}
+            (directory / 'comparison.json').write_text(json.dumps(plain(payload), indent=2, allow_nan=False), encoding='utf-8')
+            if feature_result:
+                import csv
+                with (directory / 'features.csv').open('x', newline='', encoding='utf-8') as stream:
+                    writer = csv.writer(stream)
+                    if 'pairs' in feature_result:
+                        keys = ['target','reference','bias','rmse','correlation','angle','feature_count','unavailable']
+                        writer.writerow(keys)
+                        for pair in feature_result['pairs']:
+                            writer.writerow([json.dumps(plain(pair[key])) if key == 'unavailable' else pair[key] for key in keys])
+                    else:
+                        writer.writerow(['roi','feature','value'])
+                        for curve in feature_result['curves']:
+                            for key,value in curve['features'].items():
+                                writer.writerow([names[curve['roi_index']], key, value])
+            write_analysis_manifest(directory, fingerprint, payload, annotation=context['annotation'])
             return directory
-        self.background(run, lambda path: self.notify(f'ROI CSV saved: {path}'), 'Exporting ROI values and provenance…')
+        self.background(run, lambda path: self.notify(f'Completed ROI tables and manifest saved: {path}'),
+                        'Exporting completed ROI results and source hashes…')
 
     def analyze(self, operation):
         if self.cube is None:
             return
         from hyperlab.analysis import capabilities, pca, spectral_angle, difference, ratio, roi_statistics
         cap = capabilities(self.cube)
-        if not cap['operations'].get(operation):
-            self.notify(cap['reasons'].get(operation, 'This data does not support the operation'))
+        gate = {'reference_rmse':'roi', 'normalized_difference':'ratio',
+                'interval_map':'spectral_features','interval_mean_map':'spectral_features'}.get(operation, operation)
+        if not cap['operations'].get(gate):
+            self.notify(cap['reasons'].get(gate, 'This data does not support the operation'))
             return
-        cube, rect, policy = self.cube, self.rectangles()[0], self.policy.currentData()
-        reference_name = self.roi_names[0].text()
+        cube, policy = self.cube, self.policy.currentData()
         context = self.analysis_context()
+        reference = next((record for record in context['regions'] if record['roi_id'] == context['reference_roi_id']
+                          and record['included'] and record['role'] != 'exclude'), None)
+        if operation in ('spectral_angle', 'reference_rmse') and reference is None:
+            self.notify('Select an included reference ROI. The previous reference is missing or excluded.'); return
         a, b = self.pair_a.value(), self.pair_b.value()
+        minimum_denominator = self.minimum_denominator.value()
+        context.update(pair_indices=[a, b], minimum_denominator=minimum_denominator)
+        low_signal = self.low_signal_threshold.value() if self.low_signal_enabled.isChecked() else None
+        low_signal_source = self.low_signal_source.text().strip() if low_signal is not None else None
+        context.update(low_signal_threshold=low_signal, low_signal_source=low_signal_source)
+        if operation in ('spectral_angle', 'reference_rmse'):
+            context['support'] = 'common'
         def run():
+            if operation in ('interval_map','interval_mean_map'):
+                from hyperlab.analysis.distributions import spectral_interval_map
+                first,last=context['feature_interval']
+                return spectral_interval_map(cube,bands=list(range(first,last+1)), policy=policy,
+                    statistic='integral' if operation == 'interval_map' else 'mean', max_gap_nm=context['max_gap_nm'])
             if operation == 'pca':
                 return pca(cube, min(3, cap['effective_dimensions']), policy=policy)
-            if operation == 'spectral_angle':
-                result = spectral_angle(cube, roi_statistics(cube, rect, policy=policy)['mean'], policy=policy)
-                result['metadata']['reference_roi'] = {'name': reference_name, 'rect': list(rect),
-                    'coordinates': 'raw pixels; half-open x0,y0,x1,y1 rectangle'}
+            if operation in ('spectral_angle', 'reference_rmse'):
+                from hyperlab.analysis.maps import reference_rmse
+                stats = roi_statistics(cube, reference, policy=policy, support='common', exclusions=context['exclusions'])
+                vector = stats[context['summary']]
+                result = (spectral_angle if operation == 'spectral_angle' else reference_rmse)(cube, vector, policy=policy)
+                result['metadata']['reference_roi'] = {**reference, 'rect':list(stats['rect']),
+                    'coordinates': 'raw pixel centres; declared ROI geometry',
+                    'used_counts':stats['count'].tolist(), 'quality_counts':{k:v.tolist() for k,v in stats['counts'].items()}}
+                result['metadata'].update(summary=context['summary'], reference_support='common')
                 return result
-            return (difference if operation == 'difference' else ratio)(cube, a, b, policy=policy)
+            if operation == 'difference':
+                return difference(cube, a, b, policy=policy)
+            from hyperlab.analysis.maps import normalized_difference
+            if operation == 'normalized_difference':
+                return normalized_difference(cube, a, b, policy=policy, minimum_denominator=minimum_denominator,
+                    low_signal_threshold=low_signal, low_signal_source=low_signal_source)
+            return ratio(cube, a, b, policy=policy, minimum_denominator=minimum_denominator)
         def completed(result):
+            result, context['source_fingerprint'] = result
             result['metadata']['analysis_context'] = context
+            result['metadata']['source_fingerprint'] = context['source_fingerprint']
             if context['version'] != self.analysis_version:
                 self.notify('Analysis definition changed; obsolete result discarded. Compute again with the new ROI.')
                 return
             self.show_product(result, cube)
-        self.background(run, completed, f'Computing pinned {operation}…')
+        from hyperlab.experiment_metadata import compute_pinned
+        self.roi_timer.stop()
+        self.background(lambda:compute_pinned(cube, run), completed, f'Computing pinned {operation}…')
+
+    def analyze_roi_features(self, operation):
+        if self.cube is None:
+            return
+        from hyperlab.analysis import roi_comparison
+        from hyperlab.analysis.roi_features import roi_pairwise, spectral_roi_features
+        from hyperlab.plots import roi_feature_plot, roi_pair_plot
+        cube, context = self.cube, self.analysis_context()
+        visible = [i for i, flag in enumerate(context['included']) if flag]
+        if not visible:
+            self.notify('Select Use for at least one target or reference ROI.')
+            return
+        rects = [context['regions'][i] for i in visible]
+        names = [context['names'][i] for i in visible]
+        colors = [context['colors'][i] for i in visible]
+        first, last = context['feature_interval']
+        bands = list(range(first, last+1)) if operation != 'pairs' else None
+        support = 'common' if operation != 'pairs' else context['support']
+        context.update(support=support, feature_indices=bands, analyzed_roi_indices=visible)
+        self.roi_timer.stop()
+        def run():
+            results = roi_comparison(cube, rects, policy=context['policy'], bands=bands, support=support, exclusions=context['exclusions'])
+            if operation == 'pairs':
+                result = roi_pairwise(cube, results, names, summary=context['summary'])
+                spec = roi_pair_plot(cube, results, result, colors)
+            else:
+                result = spectral_roi_features(cube, results, operation, summary=context['summary'], bands=bands,
+                    window=context['window'], degree=context['degree'], max_gap_nm=context['max_gap_nm'])
+                spec = roi_feature_plot(result, names, colors, source=context['source'])
+            spec.metadata['analysis_context'] = context
+            return result, spec, results
+        def completed(payload):
+            payload, context['source_fingerprint'] = payload
+            if context['version'] != self.analysis_version:
+                self.notify('Analysis definition changed; obsolete result discarded.')
+                return
+            self.science_result, spec, self.roi_results = payload
+            spec.metadata['source_fingerprint'] = context['source_fingerprint']
+            self.roi_source, self.roi_result_context = cube, context
+            self.plot_mode.blockSignals(True); self.plot_mode.setCurrentIndex(5); self.plot_mode.blockSignals(False)
+            self._completed_source = cube
+            self.draw_plot(spec)
+            self._completed_source = None
+            self.notify('Analysis complete. Results includes numeric features, support counts and unavailable-metric reasons.')
+        from hyperlab.experiment_metadata import compute_pinned
+        self.background(lambda:compute_pinned(cube, run), completed, f'Computing {operation} on pinned ROI summaries…')
+
+    def science_results_dialog(self):
+        if not self.roi_results:
+            self.notify('Run an ROI analysis before opening Results.')
+            return
+        dialog = W.QDialog(self); dialog.setWindowTitle('ROI results · descriptive statistics')
+        dialog.resize(960, 570); layout = W.QVBoxLayout(dialog); tabs = W.QTabWidget(); layout.addWidget(tabs)
+        context = self.roi_result_context or self.analysis_context()
+        selected = context.get('analyzed_roi_indices', range(len(self.roi_results)))
+        names = [context['names'][i] for i in selected]
+        columns = ['ROI', 'Feature', 'Mean', 'SD', 'Median', 'Q25', 'Q75', 'IQR', 'MAD', 'Min', 'Max',
+                   'Used', 'Policy valid', 'Total', 'Saturated', 'Used fraction']
+        rows = []
+        for name, result in zip(names, self.roi_results):
+            for i in range(len(result['mean'])):
+                labels = result.get('channel_labels')
+                label = labels[i] if labels else (f"{result['wavelengths'][i]:g} {result['wavelength_units']}"
+                    if result.get('wavelengths') is not None else str(i))
+                rows.append([name, label, *[result.get(key, np.full(len(result['mean']), np.nan))[i]
+                    for key in ('mean','std','median','q25','q75','iqr','mad','min','max')], result['count'][i],
+                    *[result['counts'][key][i] for key in ('valid','total','saturated')], result.get('used_fraction', [np.nan]*len(result['mean']))[i]])
+        def table(label, headers, values):
+            widget = W.QTableWidget(len(values), len(headers)); widget.setHorizontalHeaderLabels(headers)
+            widget.setEditTriggers(W.QAbstractItemView.EditTrigger.NoEditTriggers)
+            for row, values in enumerate(values):
+                for col, value in enumerate(values):
+                    text = 'Unavailable' if value is None or isinstance(value, (float,np.floating)) and not np.isfinite(value) else (
+                        f'{value:.7g}' if isinstance(value, (float,np.floating)) else str(value))
+                    widget.setItem(row, col, W.QTableWidgetItem(text))
+            widget.resizeColumnsToContents(); tabs.addTab(widget, label)
+        table('ROI summary', columns, rows)
+        if self.science_result and 'pairs' in self.science_result:
+            table('Pair metrics', ['Target','Reference','Bias','RMSE','Correlation','Angle (rad)','Features','Unavailable reasons'],
+                [[p['target'],p['reference'],p['bias'],p['rmse'],p['correlation'],p['angle'],p['feature_count'],
+                  '; '.join(f'{k}: {v}' for k,v in p['unavailable'].items())] for p in self.science_result['pairs']])
+        if self.science_result and 'curves' in self.science_result:
+            table('Spectral features', ['ROI','Feature','Value'],
+                [[names[curve['roi_index']], key, value] for curve in self.science_result['curves']
+                 for key,value in curve['features'].items()])
+        text = W.QPlainTextEdit(json_text({'context':context, 'result':self.science_result,
+            'denominators':'Used counts apply to all displayed summary statistics; spatial spread is not a confidence interval.'}))
+        text.setReadOnly(True); tabs.addTab(text, 'Recipe and provenance')
+        layout.addWidget(self.button('Close', dialog.accept))
+        self._science_results_dialog = dialog
+        dialog.show()
+
+    def annotation_dialog(self):
+        if self.cube is None:
+            self.notify('Open source data before adding specimen context.')
+            return
+        from hyperlab.ui.annotation_dialog import AnnotationDialog
+        self._annotation_dialog = AnnotationDialog(self)
+        self._annotation_dialog.show()
+
+    def reference_correction_dialog(self):
+        from hyperlab.ui.reference_dialog import ReferenceCorrectionDialog
+        self._reference_dialog = ReferenceCorrectionDialog(self, sample=self.cube, workspace=self.workspace)
+        self._reference_dialog.show()
 
     def show_product(self, result, source_cube=None):
         self.product = result
         self.product_source = source_cube or self.cube
+        signal = result.get('metadata', {}).get('low_signal_assessment')
+        if signal:
+            self.low_signal_note.setText('Completed map signal policy: ' + str(signal['status']))
         count = result['scores'].shape[2] if 'scores' in result else 1
         self.pc_component.blockSignals(True)
         selected = min(self.pc_component.currentIndex(), count-1)
@@ -1108,12 +1926,15 @@ class Workbench(W.QMainWindow):
         self.pc_component.blockSignals(False)
         source = source_identity(self.product_source)
         source['units'] = self.product_source.metadata.get('units')
+        from hyperlab.io.labels import display_labels
+        source['feature_labels'] = display_labels(self.product_source.metadata, self.product_source.shape[2])
         spec = map_plot(result, source, component=max(0, selected), degrees=self.angle_degrees.isChecked())
-        key = (spec.title, spec.colour_label)
-        if self.lock_map_limits.isChecked() and key in self._map_limits:
-            spec.limits = self._map_limits[key]
-        self._map_limits[key] = spec.limits
+        self.apply_map_limits(spec)
         self.map_spec = spec
+        self.map_distributions = None
+        self.map_brushes = []
+        self.brush_overlay.clear()
+        self.brush_mask_overlay.clear()
         self.derived_image.setImage(spec.image, autoLevels=False, levels=spec.limits)
         self.derived_invalid.setImage((~spec.valid_mask).astype(np.uint8),autoLevels=False,levels=(0,1))
         cmap = pg.colormap.get(spec.colormap, source='matplotlib')
@@ -1121,8 +1942,12 @@ class Workbench(W.QMainWindow):
         self.colorbar.setLevels(spec.limits)
         label_style = {'color':'#26313d','font-size':'11pt','siPrefixEnableRanges':()}
         self.colorbar.axis.setLabel(spec.colour_label,**label_style)
-        self.derived_plot.setTitle(spec.title,color='#17212b',size='12pt')
-        self.derived_graphics.setToolTip(spec.caption)
+        from html import escape
+        identity = spec.source.get('sequence')
+        map_source = f'frame {identity}' if identity is not None else Path(spec.source.get('source_file') or 'current data').name
+        self.derived_plot.setTitle(escape(f'{spec.title} · {map_source}'),color='#17212b',size='12pt')
+        from hyperlab.ui.presentation import observation_label
+        self.derived_graphics.setToolTip(f'{observation_label(spec.source)}\n{spec.caption}\n{json_text(spec.metadata)}')
         self.derived_plot.setLabel('bottom', spec.xlabel,**label_style)
         self.derived_plot.setLabel('left', spec.ylabel,**label_style)
         self.derived_graphics.show()
@@ -1133,22 +1958,322 @@ class Workbench(W.QMainWindow):
         self.notify(f'Pinned result from {label}; units and invalid mask retained. Raw data is unchanged.')
         if 'scores' in result:
             self.plot_mode.setCurrentIndex(3)
+            self._completed_source = self.product_source
             self.draw_plot(pca_diagnostics(result, self.product_source)[0])
+            self._completed_source = None
+        self.prepare_map_panels()
+
+    def prepare_map_panels(self):
+        if self.task_busy or self.map_spec is None:
+            return
+        from hyperlab.analysis import roi_comparison
+        from hyperlab.analysis.distributions import map_roi_distributions
+        from hyperlab.experiment_metadata import compute_pinned
+        cube, spec = self.product_source, self.map_spec
+        context = spec.metadata.get('analysis_context') or self.analysis_context()
+        indices = [i for i, record in enumerate(context['regions']) if record['included'] and record['role'] != 'exclude']
+        regions = [context['regions'][i] for i in indices]
+        if not regions:
+            self.notify('Select Use for an ROI to inspect the map distribution.'); return
+        product = {'data':spec.image, 'valid_mask':spec.valid_mask,
+                   'metadata':dict(spec.metadata, units=spec.metadata.get('units',cube.metadata['units']), displayed_component=spec.title),
+                   'reason_masks':self.product.get('reason_masks',{})}
+        # Complete map values are independent of colour limits and viewport sampling.
+        def run():
+            stats = roi_comparison(cube, regions, policy=context['policy'], support=context['support'], exclusions=context['exclusions'])
+            distributions = map_roi_distributions(product, regions, exclusions=context['exclusions'])
+            return stats, distributions
+        def completed(payload):
+            if self.map_spec is not spec:
+                return
+            (stats, distributions), fingerprint = payload
+            context.update(source_fingerprint=fingerprint, analyzed_roi_indices=indices)
+            self.roi_source = cube
+            self.show_rois(stats, context)
+            self.map_distributions, self.map_distribution_product = distributions, product
+            self.map_distribution_context = context
+            self.refresh_inspect_selector()
+            self.map_tools.show(); self.update_right_task()
+        self.background(lambda:compute_pinned(cube,run),completed,'Computing exact map ROI distributions and linked amplitude…')
+
+    def draw_right_plot(self, spec, *, brush=False):
+        self.right_spec = spec
+        chart = self.shape_chart; chart.clear(); chart.plotItem.legend.clear(); chart.show()
+        for axis in ('left','bottom'):
+            chart.showAxis(axis)
+        chart.setTitle(self.chart_title(spec),color='#17212b',size='12pt'); chart.setToolTip(spec.caption)
+        if spec.metadata.get('operation') == 'strip_profile':
+            empty = [int(np.count_nonzero(np.asarray(item['used_counts']) == 0)) for item in spec.series]
+            self.brush_note.setText('No selected map range. Profile uses per-feature mean / spatial SD; '
+                + ', '.join(f"{item['name']}: {count}/{len(item['x'])} empty bins" for item,count in zip(spec.series,empty))
+                + '. Hover for counts and reasons; gaps retain their original distance.')
+        chart.setLabel('bottom',spec.xlabel,**{'color':'#26313d','siPrefixEnableRanges':()})
+        chart.setLabel('left',spec.ylabel,**{'color':'#26313d','siPrefixEnableRanges':()})
+        chart.getAxis('bottom').setTicks([list(enumerate(spec.categories))] if spec.categories else None)
+        for item in spec.series:
+            x,y = np.asarray(item['x']),np.asarray(item['y'])
+            if item.get('drawstyle') == 'steps-post' and x.size:
+                x,y = np.repeat(x,2),np.r_[0,np.repeat(y,2)[:-1]]
+            elif item.get('drawstyle') == 'steps-mid' and item.get('histogram'):
+                x = np.repeat(item['histogram']['bin_edges'],2)[1:-1]
+                y = np.repeat(item['histogram']['counts'],2)
+            if item.get('sd') is not None:
+                sd = np.asarray(item['sd'])
+                lower = chart.plot(x,y-sd,pen=None,connect='finite')
+                upper = chart.plot(x,y+sd,pen=None,connect='finite')
+                shade = pg.mkColor(item['color']); shade.setAlpha(43)
+                chart.addItem(pg.FillBetweenItem(lower,upper,brush=shade))
+            points_only = spec.categories and spec.metadata.get('categorical_style') == 'points'
+            chart.plot(x,y,pen=None if points_only else pg.mkPen(item['color'],width=2.5,
+                style=QtCore.Qt.PenStyle.DashLine if item.get('style') == '--' else QtCore.Qt.PenStyle.SolidLine),
+                name=item['name'],connect='finite',symbol='o' if spec.categories else None,symbolSize=7,
+                symbolBrush=item['color'],symbolPen='w')
+        if brush and spec.series:
+            values = np.concatenate([np.asarray(item.get('ecdf',{}).get('values',item['x'])) for item in spec.series])
+            values = values[np.isfinite(values)]
+            if values.size:
+                if getattr(self, '_right_brush_product', None) is self.map_distribution_product:
+                    low,high = self.brush_low.value(),self.brush_high.value()
+                else:
+                    low,high = float(values.min()),float(values.max())
+                self._right_brush_product = self.map_distribution_product
+                self.brush_low.setValue(low); self.brush_high.setValue(high)
+                self.brush_region = pg.LinearRegionItem((low,high),brush=pg.mkBrush(190,73,124,28))
+                chart.addItem(self.brush_region)
+                def changed():
+                    low,high=self.brush_region.getRegion()
+                    self.brush_low.setValue(low); self.brush_high.setValue(high); self.apply_map_brush()
+                self.brush_region.sigRegionChangeFinished.connect(changed)
+        chart.enableAutoRange(); self.chart_row.setSizes([1,1]); self.vertical.setSizes([440,300])
+        if spec.metadata.get('operation') == 'strip_profile':
+            chart.setXRange(*[spec.metadata['bin_edges_px'][i] for i in (0,-1)], padding=0)
+        self.notify(f'Right plot ready: {spec.title}')
+
+    @staticmethod
+    def chart_title(spec):
+        from html import escape
+        title = escape(spec.title)
+        if spec.metadata.get('roi_comparison') or spec.metadata.get('operation') == 'strip_profile':
+            spread = spec.metadata.get('spatial_sd', spec.metadata.get('operation') == 'strip_profile')
+            summary = ('Median / Q25–Q75' if spread else 'Median') if spec.metadata.get('summary') == 'median' else ('Mean / spatial SD' if spread else 'Mean')
+            support = 'common pixels' if spec.metadata.get('support') == 'common' else 'per-feature valid pixels'
+            title += f'<br><span style="font-size:10pt">{summary} · {support}</span>'
+        return title
+
+    def profile_hover(self, position):
+        if (self.right_spec is None or self.right_spec.metadata.get('operation') != 'strip_profile' or
+                not self.shape_chart.plotItem.sceneBoundingRect().contains(position)):
+            return
+        from hyperlab.plots import profile_bin_text
+        distance = self.shape_chart.plotItem.vb.mapSceneToView(position).x()
+        self.shape_chart.setToolTip(profile_bin_text(self.right_spec, distance))
+
+    def refresh_inspect_selector(self):
+        if self.map_distributions is None:
+            return
+        selected = self.inspect_roi.currentData()
+        profile = self.right_task.currentData() == 'profile'
+        records = self.map_distribution_context['regions']
+        self.inspect_roi.blockSignals(True); self.inspect_roi.clear()
+        for record in records:
+            if record['role'] != 'exclude' and (record['included'] or (profile and record['geometry']['type'] == 'strip')):
+                name = record['name'] + (' (inspect only)' if not record['included'] else '')
+                self.inspect_roi.addItem(name, record['roi_id'])
+        self.inspect_roi.setCurrentIndex(max(0,self.inspect_roi.findData(selected)))
+        self.inspect_roi.blockSignals(False)
+
+    def update_right_task(self):
+        self._right_request += 1
+        self.refresh_inspect_selector()
+        task = self.right_task.currentData()
+        distribution_task = task in ('ecdf','histogram')
+        self.brush_controls.setVisible(distribution_task)
+        self.brush_controls.setEnabled(distribution_task)
+        if not distribution_task:
+            self._brush_pending = False
+            self.map_brushes = []
+            self.brush_overlay.clear(); self.brush_mask_overlay.clear()
+            self.derived_graphics.viewport().update()
+            self.brush_note.setText('No selected map range.')
+        elif not self.map_brushes:
+            self.brush_note.setText('No selected map range.')
+        if self.map_brushes and self.map_brushes[0]['metadata']['roi']['roi_id'] != self.inspect_roi.currentData():
+            self.map_brushes = []
+            self.brush_overlay.clear(); self.brush_mask_overlay.clear()
+            self.derived_graphics.viewport().update()
+            self.brush_note.setText('No selection for the current ROI')
+        if distribution_task:
+            QtCore.QTimer.singleShot(0,self.map_tools,self.map_tools.layout().invalidate)
+        if self.map_distributions is None:
+            return
+        if self.task_busy:
+            self._right_task_pending = True
+            self.right_spec = None
+            self.shape_chart.clear(); self.shape_chart.setTitle('Computing selected ROI…')
+            return
+        from hyperlab.plots import map_distribution_plot, strip_profile_plot, roi_transform_plot
+        from hyperlab.analysis.regions import strip_profile
+        from hyperlab.experiment_metadata import compute_pinned
+        context = self.map_distribution_context
+        if task in ('ecdf','histogram'):
+            spec = map_distribution_plot(self.map_distributions, source=source_identity(self.product_source),
+                                         mode=task, brushes=self.map_brushes)
+            spec.metadata['analysis_context'] = context
+            spec.metadata['source_fingerprint'] = context.get('source_fingerprint')
+            self.draw_right_plot(spec,brush=True); return
+        record = next((item for item in context['regions'] if item['roi_id'] == self.inspect_roi.currentData()),None)
+        if record is None:
+            return
+        if task == 'profile':
+            if record['geometry']['type'] != 'strip':
+                self.right_spec = None
+                message = 'Select a line / strip ROI for a profile.'
+                chart = self.shape_chart; chart.clear(); chart.plotItem.legend.clear()
+                chart.setTitle('Select a line / strip ROI'); chart.setToolTip(message)
+                for axis in ('left','bottom'):
+                    chart.setLabel(axis,''); chart.hideAxis(axis)
+                self.brush_note.setText('No selected map range. ' + message)
+                self.notify(message); return
+            cube, product, request = self.product_source, self.map_distribution_product, self._right_request
+            def completed(payload):
+                if (self.product_source is not cube or self.map_distribution_product is not product or
+                        self._right_request != request or self.inspect_roi.currentData() != record['roi_id']):
+                    return
+                result, fingerprint = payload
+                if fingerprint != context.get('source_fingerprint'):
+                    raise ValueError('Source changed since the map was computed; recompute the map before its profile.')
+                spec = strip_profile_plot(result, source=source_identity(cube), source_fingerprint=fingerprint,
+                                          analysis_context=context)
+                self.draw_right_plot(spec)
+                self.notify(f"Profile complete: {record['name']} · raw pixel positions and full-resolution counts.")
+            self.background(lambda:compute_pinned(cube, lambda:strip_profile(cube,record,policy=context['policy'],exclusions=context['exclusions'])),
+                            completed,'Computing exact cross-strip profile…'); return
+        if not self.plot_spec or not self.plot_spec.metadata.get('roi_comparison'):
+            return
+        reference_id = context['reference_roi_id']
+        indices = context.get('analyzed_roi_indices',range(len(self.roi_results)))
+        ref = next((self.roi_results[i][context['summary']] for i,original in enumerate(indices)
+                    if context['regions'][original]['roi_id'] == reference_id),None)
+        if task == 'residual' and ref is None:
+            self.brush_note.setText('Select an included reference ROI and recompute this map.'); return
+        common = np.all(np.isfinite([item[context['summary']] for item in self.roi_results]),axis=0)
+        spec = roi_transform_plot(self.plot_spec, task, reference=ref, common=common, reference_roi_id=reference_id)
+        self.draw_right_plot(spec)
+
+    def apply_map_brush(self):
+        if self.map_distributions is None or self.right_task.currentData() not in ('ecdf','histogram'):
+            return
+        if self.task_busy:
+            self._brush_pending = True
+            self.brush_note.setText('Computing the latest selected ROI and range…')
+            return
+        from hyperlab.analysis.distributions import brush_map
+        context=self.map_distribution_context
+        record=next((item for item in context['regions'] if item['roi_id'] == self.inspect_roi.currentData()),None)
+        if record is None:
+            return
+        product=self.map_distribution_product; bounds=[self.brush_low.value(),self.brush_high.value()]
+        task, request = self.right_task.currentData(), self._right_request
+        def completed(result):
+            if self.map_distributions is None or self.map_distribution_product is not product:
+                return
+            if self.right_task.currentData() != task:
+                return
+            if (self.inspect_roi.currentData() != record['roi_id'] or
+                    [self.brush_low.value(),self.brush_high.value()] != bounds):
+                self._brush_pending = True
+                return
+            if self._right_request != request:
+                return
+            self.map_brushes=[result]
+            self.brush_low.setValue(result['metadata']['value_range'][0])
+            self.brush_high.setValue(result['metadata']['value_range'][1])
+            if hasattr(self,'brush_region'):
+                self.brush_region.blockSignals(True)
+                self.brush_region.setRegion(result['metadata']['value_range'])
+                self.brush_region.blockSignals(False)
+            coordinates=result['coordinates_yx']
+            if len(coordinates) <= 20000:
+                self.brush_mask_overlay.clear()
+                self.brush_overlay.setData(x=coordinates[:,1]+.5,y=coordinates[:,0]+.5)
+                result['metadata']['display_selection']={'method':'exact raw-coordinate points'}
+            else:
+                self.brush_overlay.clear()
+                mask=result['mask']; h,w=mask.shape
+                sy,sx=max(1,int(np.ceil(h/600))),max(1,int(np.ceil(w/900)))
+                overview=np.logical_or.reduceat(np.logical_or.reduceat(mask,np.arange(0,h,sy),axis=0),
+                                                np.arange(0,w,sx),axis=1)
+                self.brush_mask_overlay.setImage(overview.astype(np.uint8),autoLevels=False,levels=(0,1))
+                self.brush_mask_overlay.setRect(QtCore.QRectF(0,0,w,h))
+                result['metadata']['display_selection']={'method':'any-selected overview cells', 'stride_yx':[sy,sx],
+                    'scope':'Display only; exact full mask and every raw coordinate retained in export'}
+            counts=result['metadata']['counts']
+            self.brush_note.setText(f"Selected contrast pixels: {counts['selected']} / {counts['used']} valid / {counts['geometry']} in ROI. No defect truth.")
+            if self.right_spec:
+                self.right_spec.brushes=[result]
+            self.notify(f"Map range selection complete: {counts['selected']} / {counts['used']} valid pixels in {record['name']}.")
+        self.background(lambda:brush_map(product,record,bounds,exclusions=context['exclusions']),completed,
+                        'Selecting the inclusive map range at exact raw pixel coordinates…')
+
+    def apply_map_limits(self, spec):
+        from hyperlab.plots import map_display_limits, map_limit_key
+        robust = self.robust_map_limits.isChecked()
+        key = map_limit_key(spec, robust)
+        locked = self._map_limits.get(key) if self.lock_map_limits.isChecked() else None
+        map_display_limits(spec, robust=robust, locked_limits=locked)
+        self._map_limits[key] = spec.limits
+        limits = spec.metadata['display_limits']
+        self.map_limits_note.setText(f"Colour limits: {limits['clipped_count']} / {limits['valid_count']} valid pixels clipped")
+        self.map_limits_note.setToolTip(json_text(limits))
+
+    def refresh_map_limits(self):
+        if self.map_spec is None or self.task_busy:
+            return
+        from copy import deepcopy
+        from dataclasses import replace
+        spec = replace(self.map_spec, metadata=deepcopy(self.map_spec.metadata))
+        self.apply_map_limits(spec)
+        self.map_spec = spec
+        self.derived_image.setLevels(spec.limits)
+        self.colorbar.setLevels(spec.limits)
+        self.derived_graphics.setToolTip(spec.caption + '\n' + json_text(spec.metadata))
+        self.notify('Colour limits updated; completed values, statistics and selections are retained.')
 
     def refresh_product(self):
         if self.product is not None:
             self.show_product(self.product, self.product_source)
 
-    def figure_export(self):
+    def close_source_dialogs(self):
+        for dialog in self.findChildren(W.QDialog):
+            if dialog.property('source_bound') or dialog in [getattr(self, name, None) for name in
+                    ('_reference_dialog', '_annotation_dialog', '_roi_bounds_dialog')]:
+                dialog.setProperty('source_invalidated', True)
+                dialog.reject()
+        self._right_task_pending = self._brush_pending = False
+        self._right_request += 1
+
+    def completed_figures(self):
         choices = {'Current chart': self.plot_spec}
+        sources = {'Current chart': (self.plot_source, self.plot_annotation)}
+        if self.right_spec is not None:
+            choices['Right task plot + selections'] = self.right_spec
+            sources['Right task plot + selections'] = (self.product_source,
+                self.right_spec.metadata.get('analysis_context',{}).get('annotation'))
         if self.map_spec:
             choices['Derived map'] = self.map_spec
+            sources['Derived map'] = (self.product_source,
+                self.map_spec.metadata.get('analysis_context', {}).get('annotation'))
         choices = {name:spec for name,spec in choices.items() if spec is not None}
+        return choices, sources
+
+    def figure_export(self):
+        choices, sources = self.completed_figures()
         if not choices:
             self.notify('Display a chart or compute a map before Figure export.')
             return
         dialog = W.QDialog(self)
         dialog.setWindowTitle('Figure export · SVG / PDF / PNG and source data')
+        dialog.setProperty('source_bound', True)
         form = W.QFormLayout(dialog)
         selected = W.QComboBox(); selected.addItems(list(choices))
         form.addRow('Figure', selected)
@@ -1162,16 +2287,80 @@ class Workbench(W.QMainWindow):
         form.addRow(W.QLabel('Editable vector text; map pixels rasterized. CSV / NPY / PlotSpec accompany the figures.'))
         buttons = W.QDialogButtonBox(W.QDialogButtonBox.StandardButton.Save | W.QDialogButtonBox.StandardButton.Cancel)
         form.addRow(buttons)
-        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject)
-        if dialog.exec() != W.QDialog.DialogCode.Accepted:
-            return
-        from dataclasses import replace
-        spec = replace(choices[selected.currentText()], title=title.text())
-        directory = self.output_dir / ('figure_' + stamp())
-        width_mm, height_mm, output_dpi = width.value(), height.value(), dpi.value()
-        self.background(lambda: export_figure_bundle(spec, directory, width_mm=width_mm,
-                        height_mm=height_mm, dpi=output_dpi),
-                        lambda path: self.notify(f'Figure and source-data bundle saved: {path}'), 'Rendering publication figure…')
+        def save():
+            if dialog.property('source_invalidated'):
+                self.notify('The source was replaced. Open Figure export for the current result.'); return
+            if self.task_busy:
+                self.notify('Wait for the current background operation before exporting.'); return
+            from dataclasses import replace
+            spec = replace(choices[selected.currentText()], title=title.text())
+            directory = self.output_dir / ('figure_' + stamp())
+            width_mm, height_mm, output_dpi = width.value(), height.value(), dpi.value()
+            source_cube, annotation = sources[selected.currentText()]
+            dialog.accept()
+            self.background(lambda: export_figure_bundle(spec, directory, width_mm=width_mm,
+                            height_mm=height_mm, dpi=output_dpi, source_cube=source_cube, annotation=annotation),
+                            lambda path: self.notify(f'Figure and source-data bundle saved: {path}'), 'Rendering publication figure…')
+        buttons.accepted.connect(save); buttons.rejected.connect(dialog.reject)
+        self._figure_dialog = dialog
+        dialog.show()
+
+    def share_figure(self):
+        if self.task_busy or self.closing:
+            self.notify('Wait for the current operation before preparing a share copy.'); return
+        choices, sources = self.completed_figures()
+        if not choices:
+            self.notify('Complete a chart or map before preparing a share copy.'); return
+        dialog = W.QDialog(self); dialog.setWindowTitle('Preview share copy')
+        dialog.setProperty('source_bound', True)
+        layout = W.QVBoxLayout(dialog)
+        layout.setSizeConstraint(W.QLayout.SizeConstraint.SetFixedSize)
+        selected = W.QComboBox(); selected.addItems(list(choices)); layout.addWidget(selected)
+        notice = W.QLabel('Review this separate copy before saving. Names and source identifiers use local aliases or are removed; '
+            'numeric values, units and support remain. Scientific data are not anonymous. '
+            'Original internal exports are unchanged. Files are saved locally; nothing is uploaded.')
+        notice.setWordWrap(True); layout.addWidget(notice)
+        preview = W.QLabel('Preparing preview…'); preview.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        preview.setMinimumSize(540,320); layout.addWidget(preview,1)
+        buttons = W.QDialogButtonBox(W.QDialogButtonBox.StandardButton.Save | W.QDialogButtonBox.StandardButton.Cancel)
+        layout.addWidget(buttons)
+        def render_preview():
+            selected.setEnabled(False); buttons.button(W.QDialogButtonBox.StandardButton.Save).setEnabled(False)
+            original = choices[selected.currentText()]
+            def render():
+                from io import BytesIO
+                from hyperlab.sharing import sanitized_plot
+                from hyperlab.plots import render_figure
+                safe = sanitized_plot(original)
+                figure = render_figure(safe, width_mm=180, height_mm=115, dpi=96)
+                try:
+                    buffer = BytesIO(); figure.savefig(buffer, format='png', dpi=96)
+                    return buffer.getvalue()
+                finally:
+                    figure.clear()
+            def ready(data):
+                if dialog.property('source_invalidated') or not dialog.isVisible():
+                    return
+                pixmap = QtGui.QPixmap(); pixmap.loadFromData(data, 'PNG')
+                preview.setPixmap(pixmap); selected.setEnabled(True)
+                buttons.button(W.QDialogButtonBox.StandardButton.Save).setEnabled(True)
+                self.notify('Share preview ready. Review the visible data before saving the separate copy.')
+            self.background(render,ready,'Preparing metadata-reduced share preview…')
+        def save():
+            if dialog.property('source_invalidated') or self.task_busy:
+                self.notify('Wait for the preview, or reopen Share copy for the current source.'); return
+            from hyperlab.sharing import export_share_bundle
+            original = choices[selected.currentText()]
+            pinned_source = sources[selected.currentText()][0]
+            directory = self.output_dir / ('share_' + stamp())
+            dialog.accept()
+            self.background(lambda:export_share_bundle(original,directory,source_cube=pinned_source,
+                width_mm=180,height_mm=115,dpi=300),
+                lambda path:self.notify(f'Separate share copy saved locally: {path}'), 'Saving reviewed share copy…')
+        selected.currentTextChanged.connect(render_preview)
+        buttons.accepted.connect(save); buttons.rejected.connect(dialog.reject)
+        self._share_dialog = dialog
+        dialog.show(); render_preview()
 
     def set_view_link(self, enabled):
         # Two aspect constraints with different viewport sizes feed range changes
@@ -1220,9 +2409,11 @@ class Workbench(W.QMainWindow):
         if self.task_busy:
             self.notify('Wait for the current file operation to finish.')
             return
-        if self.session and self.session.state in ('streaming', 'recording', 'stopping'):
-            self.notify('Stop acquisition before opening replay data.')
+        if self.session and self.session.state == 'stopping':
+            self.notify('Wait for acquisition to finish stopping before opening data.')
             return
+        # Opening a file is an explicit viewing choice; the camera keeps its owner.
+        self.follow_camera = False
         path = Path(path)
         def read():
             if path.is_dir() or path.name in ('sequence.npy', 'sequence.npy.json'):
@@ -1237,6 +2428,7 @@ class Workbench(W.QMainWindow):
             except ValueError as error:
                 raise ValueError(f'{error}; use CLI inspect --axis-order for an NPY file without axis metadata.') from error
         def loaded(value):
+            self.close_source_dialogs()
             if self.sequence:
                 self.sequence.close()
                 self.sequence = None
@@ -1252,18 +2444,16 @@ class Workbench(W.QMainWindow):
                 self.band.setRange(0, value.frame_count - 1)
                 self.band.setValue(0)
                 self.band.blockSignals(False)
-                self.band_changed(0)
-            self.notify(f'Reopened {path}')
+                self.band_changed(0, reset_axis=True)
+            self.notify(f'Reopened {path}' + (f' · {self.roi_source_notice}' if self.roi_source_notice else ''))
         self.background(read, loaded, 'Reopening local data…')
 
-    def band_changed(self, index):
+    def band_changed(self, index, *, reset_axis=False):
         if self.sequence:
             frame = self.sequence.frame(index)
             meta = dict(frame.metadata)
-            if frame.data.ndim == 3:
-                meta['channel_labels'] = list(str(meta.get('pixel_format', 'RGB8'))[:3])
             self.set_cube(Cube(frame.data if frame.data.ndim == 3 else frame.data[..., None],
-                               dict(meta, data_level='raw_frame')), reset_axis=False)
+                               dict(meta, data_level='raw_frame')), reset_axis=reset_axis)
         else:
             self.render_current()
 
@@ -1274,6 +2464,7 @@ class Workbench(W.QMainWindow):
         if self.session and self.session.state in ('streaming', 'recording', 'stopping'):
             self.notify('Stop acquisition before loading synthetic data.')
             return
+        self.close_source_dialogs()
         if self.sequence:
             self.sequence.close()
         self.sequence = None
@@ -1343,7 +2534,8 @@ class Workbench(W.QMainWindow):
                      f"Acquisition settings: {report['matching_settings']['status']}"]
             for index, item in enumerate(report['files']):
                 stats = item['summary']['per_channel']
-                labels = stats.get('channel_labels') or [str(i) for i in range(len(stats['mean']))]
+                from hyperlab.io.labels import display_labels
+                labels = display_labels(item['source_provenance'], len(stats['mean']))
                 means = ', '.join(f'{label}: {value:.6g}' if value is not None else f'{label}: unavailable'
                                   for label, value in zip(labels, stats['mean']))
                 lines.append(f"\n{chr(65 + index)} · {Path(item['path']).name}\nMean ({item['summary']['units']}): {means}\nSpatial SD: {stats['std']}\nValid samples: {stats['count']}")
@@ -1471,22 +2663,51 @@ class Workbench(W.QMainWindow):
             return
         from hyperlab.plots import recorded_roi_plot
         context,sequence = self.analysis_context(),self.sequence
+        indices = [i for i,flag in enumerate(context['included']) if flag]
+        if not indices:
+            self.notify('Select Use for at least one target or reference ROI.'); return
+        cube = self.cube
         def completed(spec):
+            spec, context['source_fingerprint'] = spec
             if context['version'] != self.analysis_version or sequence is not self.sequence:
                 self.notify('Recorded ROI definition changed; obsolete curve discarded.')
                 return
             spec.metadata['analysis_context'] = context
+            spec.metadata['source_fingerprint'] = context['source_fingerprint']
+            self.plot_mode.blockSignals(True); self.plot_mode.setCurrentIndex(5); self.plot_mode.blockSignals(False)
+            self._completed_source = cube
             self.draw_plot(spec)
-        self.background(lambda:recorded_roi_plot(sequence,context['rectangles'],context['names'],context['colors'],
-                        policy=context['policy']),completed,'Computing all recorded ROI samples…')
+            self._completed_source = None
+            self.notify(f'Recorded ROI trace complete · {sequence.frame_count} persisted frames; source identities and sample counts retained.')
+        from hyperlab.experiment_metadata import compute_pinned
+        self.roi_timer.stop()
+        self.background(lambda:compute_pinned(cube, lambda:recorded_roi_plot(sequence,[context['regions'][i] for i in indices],
+                        [context['names'][i] for i in indices],[context['colors'][i] for i in indices],
+                        policy=context['policy'], band=context['trace_channel'],exclusions=context['exclusions'])),
+                        completed,'Computing all recorded ROI samples…')
 
     def quality_details(self):
-        payload = {'display': self.quality_label.toolTip(),
-                   'rois': self.plot_spec.record() if self.plot_spec else None}
-        dialog = W.QDialog(self); dialog.setWindowTitle('Validity and pinned ROI statistics')
+        if self.cube is None or self.task_busy:
+            self.notify('Open data and finish the current operation before inspecting quality.')
+            return
+        from hyperlab.acquisition.readiness import measurement_readiness
+        from hyperlab.experiment_metadata import compute_pinned
+        cube, policy = self.cube, self.policy.currentData()
+        dialog = W.QDialog(self); dialog.setWindowTitle('Full-resolution quality · pinned observation')
         dialog.resize(700,520); layout = W.QVBoxLayout(dialog)
-        text = W.QPlainTextEdit(json_text(payload)); text.setReadOnly(True); layout.addWidget(text)
-        layout.addWidget(self.button('Close',dialog.accept)); dialog.exec()
+        text = W.QPlainTextEdit('Computing exact counts and quantiles from the pinned raw frame…')
+        text.setReadOnly(True); layout.addWidget(text)
+        layout.addWidget(self.button('Close',dialog.accept))
+        self._quality_dialog = dialog
+        dialog.show()
+        def complete(payload):
+            report, fingerprint = payload
+            self.last_readiness = dict(report, source_fingerprint=fingerprint)
+            text.setPlainText(json_text(self.last_readiness))
+            self.notify(f"Quality inspection complete · pinned frame receipt {report['frame_received']['status']}; "
+                f"scene {report['scene_usable_for_selected_task']['status']}; reference {report['reference_qualified']['status']}.")
+        self.background(lambda: compute_pinned(cube, lambda: measurement_readiness(cube, policy=policy)),
+                        complete, 'Inspecting full-resolution quality of the pinned observation…')
 
     def sequence_statistics(self):
         if not self.sequence:
@@ -1518,6 +2739,7 @@ class Workbench(W.QMainWindow):
             save_state(self)
         except (OSError,ValueError) as error:
             self.notify(f'Could not save workspace settings: {error}')
+        self.close_source_dialogs()
         if self.sequence:
             self.sequence.close()
         if self.cube is not None:
@@ -1531,6 +2753,8 @@ class Workbench(W.QMainWindow):
             raise ValueError('Load an image and select an existing ROI first.')
         if len(bounds) != 4 or any(not isinstance(value, (int, np.integer)) for value in bounds):
             raise ValueError('ROI bounds must be four integer raw-pixel coordinates.')
+        if self.roi_records[index]['geometry']['type'] != 'rectangle':
+            raise ValueError('Bounds editing requires a rectangle; use Edit for vertices, strip width or mask role.')
         x0, y0, x1, y1 = (int(value) for value in bounds)
         h, w = self.cube.shape[:2]
         if not (0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h):
@@ -1542,127 +2766,285 @@ class Workbench(W.QMainWindow):
         return x0, y0, x1, y1
 
     def edit_roi_bounds(self):
-        if self.cube is None or not self.rois:
-            self.notify('Load an image before editing ROI bounds.')
+        from hyperlab.ui.roi_dialog import edit_regions
+        edit_regions(self)
+
+    def rebuild_roi_graphics(self):
+        for item in [*self.rois, *self.roi_labels, *self.roi_fills]:
+            self.plot.removeItem(item)
+        self.rois, self.roi_labels, self.roi_fills = [], [], []
+        for index in range(len(self.roi_names)):
+            self._create_roi(index)
+
+    def reorder_roi(self, index, other):
+        self.regions()
+        for items in (self.roi_names, self.roi_colors, self.roi_rows, self.roi_visible,
+                      self.roi_included, self.roi_records):
+            items.insert(other, items.pop(index))
+        for row in self.roi_rows:
+            self.roi_form.removeWidget(row)
+            self.roi_form.addWidget(row)
+        self.rebuild_roi_graphics()
+        self.roi_changed()
+
+    def import_roi_mask(self):
+        if self.cube is None:
             return
-        dialog = W.QDialog(self)
-        dialog.setWindowTitle('Edit ROI bounds · raw pixels')
-        dialog.setObjectName('roi_bounds_dialog')
-        form = W.QFormLayout(dialog)
-        target = W.QComboBox()
-        target.setObjectName('roi_bounds_target')
-        target.addItems([f'{chr(65 + index)} · {name.text()}' for index, name in enumerate(self.roi_names)])
-        form.addRow('ROI', target)
-        h, w = self.cube.shape[:2]
-        controls = []
-        for name, minimum, maximum in (('x0', 0, w - 1), ('y0', 0, h - 1), ('x1', 1, w), ('y1', 1, h)):
-            control = W.QSpinBox()
-            control.setObjectName('roi_bound_' + name)
-            control.setRange(minimum, maximum)
-            controls.append(control)
-            form.addRow(name, control)
-        note = W.QLabel('Half-open raw pixels: x0 ≤ x < x1 and y0 ≤ y < y1.')
-        note.setWordWrap(True)
-        form.addRow(note)
-        buttons = W.QDialogButtonBox(W.QDialogButtonBox.StandardButton.Ok | W.QDialogButtonBox.StandardButton.Cancel)
-        form.addRow(buttons)
-
-        def validate():
-            x0, y0, x1, y1 = (control.value() for control in controls)
-            valid = x0 < x1 and y0 < y1
-            buttons.button(W.QDialogButtonBox.StandardButton.Ok).setEnabled(valid)
-            note.setText('Half-open raw pixels: x0 ≤ x < x1 and y0 ≤ y < y1.' if valid
-                         else 'Choose nonempty bounds: x0 < x1 and y0 < y1.')
-
-        def load_bounds(index):
-            for control, value in zip(controls, self.rectangles()[index]):
-                control.setValue(value)
-            validate()
-
-        def accept():
-            try:
-                self.apply_roi_bounds(target.currentIndex(), tuple(control.value() for control in controls))
-            except ValueError as error:
-                note.setText(str(error))
+        path, _ = W.QFileDialog.getOpenFileName(self, 'Import binary mask in raw coordinates', '', 'Binary mask (*.npy *.png *.tif *.tiff)')
+        if not path:
+            return
+        from hyperlab.analysis.regions import mask_geometry, make_roi
+        cube = self.cube
+        def completed(geometry):
+            if self.cube is cube:
+                index = len(self.rois)
+                color = COLORS[index % len(COLORS)]
+                record = make_roi(cube.shape[:2], geometry, name='Mask ROI', color=color)
+                self.add_roi(record['name'], color=color, record=record)
+                if len(self.rois) > index:
+                    self.notify('Mask ROI imported; binary asset and raw image coordinates verified.')
             else:
-                dialog.accept()
+                self.notify('Source changed; the verified mask was not added. Import it for the current image.')
+        self.background(lambda: mask_geometry(path, cube.shape[:2]), completed, 'Verifying binary mask bytes and raw shape…')
 
-        for control in controls:
-            control.valueChanged.connect(validate)
-        target.currentIndexChanged.connect(load_bounds)
-        buttons.accepted.connect(accept)
-        buttons.rejected.connect(dialog.reject)
-        load_bounds(0)
-        dialog.exec()
+    def study_dialog(self):
+        from hyperlab.ui.study_dialog import StudyDialog
+        self._study_dialog = StudyDialog(self)
+        self._study_dialog.show()
 
     def _analysis_panel(self):
         form = self.panel()
-        form.addWidget(W.QLabel('ROI coordinates always use raw pixels'))
         self.roi_names = []
         self.roi_form = W.QVBoxLayout()
         form.addLayout(self.roi_form)
         self._roi_row('ROI A', COLORS[0])
         self._roi_row('ROI B', COLORS[1])
-        form.addWidget(self.button('Add ROI', lambda: self.add_roi(), 'add_roi'))
-        form.addWidget(self.button('Reset ROI geometry', lambda: self.reset_rois(force=True)))
-        form.addWidget(self.button('Edit ROI bounds…', self.edit_roi_bounds, 'roi_edit_bounds'))
-        self.policy = W.QComboBox()
-        self.policy.addItem('Diagnostic · include saturation', 'diagnostic')
-        self.policy.addItem('Quantitative · exclude known saturation', 'quantitative')
-        form.addWidget(self.policy)
-        self.policy.currentIndexChanged.connect(self.roi_changed)
-        self.policy.currentIndexChanged.connect(lambda: self.render_current())
-        self.shape_normalize = W.QCheckBox('L2 normalized shape')
-        self.shape_normalize.setToolTip('Compare curve shape over common valid features; exports retain raw amplitudes.')
-        form.addWidget(self.shape_normalize)
-        self.spatial_sd = W.QCheckBox('Show ±1 spatial SD (not CI)')
-        self.spatial_sd.setChecked(True)
-        form.addWidget(self.spatial_sd)
-        self.shape_normalize.toggled.connect(self.roi_changed)
-        self.spatial_sd.toggled.connect(self.roi_changed)
-        form.addWidget(self.button('Compare ROIs', self.analyze_rois, 'roi_compare'))
-        form.addWidget(self.button('Export ROI CSV + provenance', self.export_rois, 'roi_export'))
-        self.analysis_buttons = {}
-        for label, op in [('PCA · mean centered', 'pca'), ('Angle from ROI A', 'spectral_angle')]:
-            button = self.button(label, lambda checked=False, operation=op: self.analyze(operation), op)
-            self.analysis_buttons[op] = button
-            form.addWidget(button)
-        pair = W.QHBoxLayout()
-        self.pair_a, self.pair_b = W.QSpinBox(), W.QSpinBox()
-        pair.addWidget(self.pair_a)
-        pair.addWidget(self.pair_b)
-        form.addLayout(pair)
-        for label, op in [('Index A − B', 'difference'), ('Index A / B', 'ratio')]:
-            button = self.button(label, lambda checked=False, operation=op: self.analyze(operation), op)
-            self.analysis_buttons[op] = button
-            form.addWidget(button)
-        self.pc_component = W.QComboBox()
-        self.pc_component.addItem('PC1 score')
-        self.pc_component.setEnabled(False)
-        self.pc_component.currentIndexChanged.connect(self.refresh_product)
-        form.addWidget(self.pc_component)
         row = W.QHBoxLayout()
-        row.addWidget(self.button('PCA variance', lambda: self.plot_mode.setCurrentIndex(3)))
-        row.addWidget(self.button('PCA loadings', lambda: self.plot_mode.setCurrentIndex(4)))
+        add = W.QToolButton(); add.setText('Add ROI'); add.setObjectName('add_roi')
+        add.setPopupMode(W.QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        add.clicked.connect(lambda: self.add_roi())
+        menu = W.QMenu(add)
+        for label,kind in [('Rectangle','rectangle'),('Polygon','polygon'),('Line / strip','strip')]:
+            menu.addAction(label, lambda checked=False, geometry=kind: self.add_roi(kind=geometry))
+        menu.addAction('Import binary mask…', self.import_roi_mask); add.setMenu(menu)
+        row.addWidget(add)
+        row.addWidget(self.button('Edit…', self.edit_roi_bounds, 'roi_edit_bounds'))
         form.addLayout(row)
-        self.angle_degrees = W.QCheckBox('Angle in degrees (default: rad)')
-        self.angle_degrees.toggled.connect(self.refresh_product)
-        form.addWidget(self.angle_degrees)
-        self.lock_map_limits = W.QCheckBox('Share map limits across comparisons')
-        self.lock_map_limits.setChecked(True)
-        form.addWidget(self.lock_map_limits)
-        self.link_views = W.QCheckBox('Link raw / derived views')
-        self.link_views.setChecked(True)
+        self.policy = W.QComboBox()
+        self.policy.addItem('Include saturation', 'diagnostic')
+        self.policy.addItem('Exclude known saturation', 'quantitative')
+        self.policy.setToolTip('Pixel inclusion policy; excluding saturation does not establish radiometric calibration.')
+        self.roi_summary = W.QComboBox()
+        self.roi_summary.addItem('Mean / spatial SD', 'mean')
+        self.roi_summary.addItem('Median / Q25–Q75', 'median')
+        self.roi_support = W.QComboBox()
+        self.roi_support.addItem('Per-feature valid pixels', 'per_band')
+        self.roi_support.addItem('Common pixels across features', 'common')
+        for control in (self.policy, self.roi_summary, self.roi_support):
+            form.addWidget(control)
+            control.currentIndexChanged.connect(self.roi_changed)
+        self.policy.currentIndexChanged.connect(lambda: self.render_current())
+        self.analysis_method = W.QComboBox()
+        self.analysis_buttons = {}
+        methods = [('ROI summary', 'roi'), ('ROI pair comparison', 'pairs'),
+                   ('Reference ROI RMSE map', 'reference_rmse'), ('Normalized difference map', 'normalized_difference'),
+                   ('Difference map', 'difference'), ('Ratio map', 'ratio'),
+                   ('Local polynomial smoothing', 'smooth'), ('First derivative', 'derivative1'),
+                   ('Second derivative', 'derivative2'), ('Interval integral / mean', 'integral'),
+                   ('Wavelength interval integral map','interval_map'), ('Wavelength interval mean map','interval_mean_map'),
+                   ('Endpoint continuum / band depth', 'continuum'), ('PCA', 'pca'),
+                   ('Spectral / state-vector angle', 'spectral_angle'), ('Recorded ROI trace', 'recorded')]
+        for label, operation in methods:
+            self.analysis_method.addItem(label, operation)
+            action = QtGui.QAction(label, self)
+            action.triggered.connect(lambda checked=False, op=operation: self.analyze(op))
+            self.analysis_buttons[operation] = action
+        self.analysis_method.currentIndexChanged.connect(self.method_changed)
+        form.addWidget(self.analysis_method)
+        self.reference_roi = W.QComboBox(); self.reference_roi.setObjectName('reference_roi')
+        self.reference_roi.setToolTip('Reference is selected by stable ROI ID. Rename and reorder retain the selection.')
+        self.reference_roi.currentIndexChanged.connect(self.choose_reference_roi)
+        form.addWidget(self.reference_roi)
+        self.pair_controls = W.QWidget()
+        pair = W.QFormLayout(self.pair_controls); pair.setContentsMargins(0, 0, 0, 0)
+        self.pair_a, self.pair_b = StoredFeatureSpinBox(), StoredFeatureSpinBox()
+        pair.addRow('Feature A', self.pair_a); pair.addRow('Feature B', self.pair_b)
+        validity_toggle = W.QToolButton(); validity_toggle.setText('Advanced validity ▸'); validity_toggle.setCheckable(True)
+        pair.addRow(validity_toggle)
+        self.validity_options = W.QWidget()
+        validity = W.QFormLayout(self.validity_options); validity.setContentsMargins(0,0,0,0)
+        validity_toggle.toggled.connect(self.validity_options.setVisible)
+        self.minimum_denominator = W.QDoubleSpinBox()
+        self.minimum_denominator.setDecimals(8); self.minimum_denominator.setRange(1e-8, 1e12)
+        self.minimum_denominator.setValue(1e-6)
+        validity.addRow('Min. |denominator|', self.minimum_denominator)
+        self.minimum_denominator.setToolTip('Numerical denominator validity only; this is not a measured noise threshold.')
+        self.low_signal_controls = W.QWidget()
+        signal = W.QFormLayout(self.low_signal_controls); signal.setContentsMargins(0, 0, 0, 0)
+        self.low_signal_enabled = W.QCheckBox('Analyst signal threshold')
+        self.low_signal_enabled.setToolTip('Optional diagnostic exclusion using |A| + |B| in source units; no SNR estimate.')
+        self.low_signal_threshold = W.QDoubleSpinBox()
+        self.low_signal_threshold.setDecimals(6); self.low_signal_threshold.setRange(1e-6, 1e12)
+        self.low_signal_threshold.setValue(1)
+        self.low_signal_source = W.QLineEdit(); self.low_signal_source.setPlaceholderText('Reason / evidence source required')
+        for item in (self.low_signal_threshold, self.low_signal_source):
+            item.setEnabled(False)
+            self.low_signal_enabled.toggled.connect(item.setEnabled)
+        signal.addRow(self.low_signal_enabled); signal.addRow('Min. |A| + |B|', self.low_signal_threshold)
+        signal.addRow(self.low_signal_source)
+        self.low_signal_note = W.QLabel('Low-signal qualification: UNKNOWN')
+        self.low_signal_enabled.toggled.connect(self.roi_changed)
+        self.low_signal_threshold.valueChanged.connect(self.roi_changed)
+        self.low_signal_source.textChanged.connect(self.roi_changed)
+        validity.addRow(self.low_signal_controls)
+        pair.addRow(self.validity_options); self.validity_options.hide()
+        pair.addRow(self.low_signal_note)
+        form.addWidget(self.pair_controls)
+        self.spectral_controls = W.QWidget()
+        spectral = W.QFormLayout(self.spectral_controls); spectral.setContentsMargins(0, 0, 0, 0)
+        self.feature_first, self.feature_last = StoredFeatureSpinBox(), StoredFeatureSpinBox()
+        spectral.addRow('First stored feature', self.feature_first)
+        spectral.addRow('Last stored feature', self.feature_last)
+        self.local_window, self.local_degree = W.QSpinBox(), W.QSpinBox()
+        self.local_window.setRange(3, 101); self.local_window.setSingleStep(2); self.local_window.setValue(5)
+        self.local_degree.setRange(1, 6); self.local_degree.setValue(2)
+        spectral.addRow('Window (odd)', self.local_window); spectral.addRow('Polynomial degree', self.local_degree)
+        self.max_gap_nm = W.QDoubleSpinBox(); self.max_gap_nm.setDecimals(3); self.max_gap_nm.setRange(0, 1e9)
+        self.max_gap_nm.setSpecialValueText('Unspecified')
+        self.max_gap_nm.setToolTip('Optional explicit maximum adjacent wavelength gap. Unspecified imposes no invented physical cutoff.')
+        self.max_gap_nm.valueChanged.connect(self.roi_changed)
+        spectral.addRow('Max. adjacent gap (nm)', self.max_gap_nm)
+        form.addWidget(self.spectral_controls)
+        self.trace_channel = W.QComboBox(); self.trace_channel.addItem('0')
+        self.trace_channel.setToolTip('Stored channel for time traces; channels are never averaged together.')
+        self.trace_channel.currentIndexChanged.connect(self.roi_changed)
+        for control in (self.pair_a, self.pair_b, self.minimum_denominator, self.feature_first,
+                        self.feature_last, self.local_window, self.local_degree):
+            control.valueChanged.connect(self.roi_changed)
+        form.addWidget(self.trace_channel)
+        self.run_button = self.button('Run analysis', self.run_analysis, 'roi_compare')
+        self.run_button.setStyleSheet('QPushButton {background:#147b83; color:white; padding:8px; font-weight:600;} '
+            'QPushButton:disabled {background:#dfe7eb; color:#71808b;}')
+        self.analysis_actions = W.QWidget()
+        action_row = W.QHBoxLayout(self.analysis_actions); action_row.setContentsMargins(0,0,0,0)
+        action_row.addWidget(self.run_button)
+        self.map_tools = W.QWidget(); map_form = W.QFormLayout(self.map_tools); map_form.setContentsMargins(0,0,0,0)
+        self.right_task = W.QComboBox()
+        for label,key in [('Map ECDF / brush','ecdf'),('Map histogram / brush','histogram'),
+                          ('Line / strip profile','profile'),('Reference residual','residual'),('L2 shape','shape')]:
+            self.right_task.addItem(label,key)
+        self.right_task.currentIndexChanged.connect(self.update_right_task)
+        map_form.addRow('Right plot',self.right_task)
+        self.inspect_roi = W.QComboBox(); self.inspect_roi.currentIndexChanged.connect(self.update_right_task)
+        map_form.addRow('Inspect ROI',self.inspect_roi)
+        self.brush_low, self.brush_high = W.QDoubleSpinBox(), W.QDoubleSpinBox()
+        for spin in (self.brush_low,self.brush_high):
+            spin.setDecimals(8); spin.setRange(-1e100,1e100)
+        brush_row = W.QHBoxLayout(); brush_row.addWidget(self.brush_low); brush_row.addWidget(self.brush_high)
+        self.brush_controls = W.QWidget()
+        brush_form = W.QFormLayout(self.brush_controls); brush_form.setContentsMargins(0,0,0,0)
+        brush_form.addRow('Inclusive range',brush_row)
+        brush_form.addRow(self.button('Select map range',self.apply_map_brush,'map_brush'))
+        map_form.addRow(self.brush_controls)
+        self.brush_note = W.QLabel('No selected contrast range'); self.brush_note.setWordWrap(True)
+        map_form.addRow(self.brush_note)
+        form.addWidget(self.map_tools); self.map_tools.hide()
+        self.results_button = self.button('Results…', self.science_results_dialog, 'science_results')
+        action_row.addWidget(self.results_button)
+        export = W.QToolButton(); export.setText('Export…')
+        export.setPopupMode(W.QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = W.QMenu(export)
+        self.figure_action = menu.addAction('Publication figure + data', self.figure_export)
+        self.share_action = menu.addAction('Share copy · preview first…', self.share_figure)
+        self.roi_export_action = menu.addAction('ROI tables + recipe', self.export_rois)
+        self.derived_export_action = menu.addAction('Derived array + mask', self.export_derived)
+        self.display_export_action = menu.addAction('Display image', self.export_display)
+        export.setMenu(menu); export.setObjectName('analysis_export'); action_row.addWidget(export)
+        action_row.addStretch()
+        form.addWidget(self.button('Specimen / thermal context…', self.annotation_dialog, 'annotation'))
+        form.addWidget(self.button('Study…', self.study_dialog, 'study'))
+        details = W.QToolButton(); details.setText('Plot and view options ▸'); details.setCheckable(True)
+        form.addWidget(details)
+        options = W.QWidget(); options_form = W.QVBoxLayout(options); options_form.setContentsMargins(0, 0, 0, 0)
+        details.toggled.connect(options.setVisible)
+        options_form.addWidget(self.plot_mode)
+        self.shape_normalize = W.QCheckBox('L2 normalized shape')
+        self.shape_normalize.setToolTip('Amplitude is retained. Normalization uses common finite features.')
+        self.spatial_sd = W.QCheckBox('Show spatial spread (SD / IQR)'); self.spatial_sd.setChecked(True)
+        self.categorical_style = W.QComboBox(); self.categorical_style.addItem('Channel points with connecting lines','connected')
+        self.categorical_style.addItem('Channel points with whiskers','points')
+        self.categorical_style.currentIndexChanged.connect(self.roi_changed); options_form.addWidget(self.categorical_style)
+        for control in (self.shape_normalize, self.spatial_sd):
+            options_form.addWidget(control); control.toggled.connect(self.roi_changed)
+        self.pc_component = W.QComboBox(); self.pc_component.addItem('PC1 score'); self.pc_component.setEnabled(False)
+        self.pc_component.currentIndexChanged.connect(self.refresh_product); options_form.addWidget(self.pc_component)
+        self.angle_degrees = W.QCheckBox('Angle in degrees'); self.angle_degrees.toggled.connect(self.refresh_product)
+        self.lock_map_limits = W.QCheckBox('Share map limits'); self.lock_map_limits.setChecked(True)
+        self.lock_map_limits.toggled.connect(self.refresh_map_limits)
+        self.robust_map_limits = W.QCheckBox('Robust map colour limits · 1–99%')
+        self.robust_map_limits.setToolTip('Display only. Tails remain in values, distributions, brushes and exports.')
+        self.robust_map_limits.toggled.connect(self.refresh_map_limits)
+        self.map_limits_note = W.QLabel('Colour limits: no map'); self.map_limits_note.setWordWrap(True)
+        self.link_views = W.QCheckBox('Link image views'); self.link_views.setChecked(True)
         self.link_views.toggled.connect(self.set_view_link)
-        form.addWidget(self.link_views)
-        form.addWidget(self.button('Export derived values + mask…', self.export_derived))
-        form.addWidget(self.button('Image export…', self.export_display))
-        form.addWidget(self.button('Figure export…', self.figure_export, 'figure_export'))
-        self.capability_label = W.QLabel('Load data to see available analysis')
-        self.capability_label.setWordWrap(True)
-        form.addWidget(self.capability_label)
-        form.addWidget(self.button('Load synthetic example', self.synthetic, 'synthetic'))
+        for control in (self.angle_degrees, self.lock_map_limits, self.robust_map_limits, self.map_limits_note, self.link_views):
+            options_form.addWidget(control)
+        options_form.addWidget(self.button('Reset ROI geometry', lambda: self.reset_rois(force=True)))
+        options_form.addWidget(self.button('Load synthetic example', self.synthetic, 'synthetic'))
+        form.addWidget(options); options.hide()
+        self.capability_label = W.QLabel('Open data to analyze')
+        self.capability_label.setWordWrap(True); form.addWidget(self.capability_label)
         form.addStretch()
+
+    def method_changed(self):
+        if not hasattr(self, 'run_button'):
+            return
+        from hyperlab.analysis import capabilities
+        operation = self.analysis_method.currentData()
+        self.reference_roi.setVisible(operation in ('reference_rmse', 'spectral_angle'))
+        spectral = operation in ('smooth', 'derivative1', 'derivative2', 'integral', 'continuum','interval_map','interval_mean_map')
+        self.pair_controls.setVisible(operation in ('difference', 'ratio', 'normalized_difference'))
+        self.low_signal_controls.setVisible(operation == 'normalized_difference')
+        self.low_signal_note.setVisible(operation == 'normalized_difference')
+        self.spectral_controls.setVisible(spectral)
+        self.local_window.setEnabled(operation in ('smooth', 'derivative1', 'derivative2'))
+        self.local_degree.setEnabled(self.local_window.isEnabled())
+        self.trace_channel.setVisible(operation == 'recorded' or self.plot_mode.currentIndex() == 1)
+        if self.cube is None:
+            self.run_button.setEnabled(False)
+            self.run_button.setToolTip('Open data or acquire a frame first.')
+            return
+        cap = capabilities(self.cube)
+        self.low_signal_threshold.setSuffix(' ' + self.cube.metadata['units'])
+        gate = {'pairs':'roi', 'reference_rmse':'roi', 'normalized_difference':'ratio',
+                'smooth':'spectral_features', 'derivative1':'spectral_features',
+                'derivative2':'spectral_features', 'integral':'spectral_features',
+                'interval_map':'spectral_features','interval_mean_map':'spectral_features'}.get(operation, operation)
+        allowed = bool(self.sequence) if operation == 'recorded' else cap['operations'].get(gate, False)
+        self.run_button.setEnabled(allowed and not self.task_busy)
+        if spectral:
+            note = 'Common pixel support; measured wavelengths only.'
+        elif operation in ('reference_rmse', 'spectral_angle'):
+            note = 'Selected reference ROI; all enabled features must be valid.'
+        else:
+            note = 'ROI bounds use raw pixels.'
+        if not allowed:
+            note = 'Open a recorded sequence.' if operation == 'recorded' else cap['reasons'].get(gate, 'Unavailable for these data.')
+        self.run_button.setToolTip('Wait for the current calculation.' if self.task_busy else note)
+        self.capability_label.setText(f"{cap['axis_kind']} · {cap['effective_dimensions']} features · {self.cube.metadata['units']}\n{note}")
+        if not self.session or self.session.state not in ('streaming','recording'):
+            self.install_interval_selector()
+
+    def run_analysis(self):
+        operation = self.analysis_method.currentData()
+        if operation == 'roi':
+            self.analyze_rois()
+        elif operation == 'recorded':
+            self.plot_recorded_rois()
+        elif operation in ('pairs', 'smooth', 'derivative1', 'derivative2', 'integral', 'continuum'):
+            self.analyze_roi_features(operation)
+        else:
+            self.analyze(operation)
 
     def _calibration_panel(self):
         form = self.panel()
@@ -1693,7 +3075,8 @@ class Workbench(W.QMainWindow):
         label.setWordWrap(True)
         form.addWidget(label)
         form.addWidget(W.QLabel('3 · Reflectance reference correction'))
-        note = W.QLabel('External spectral data can be corrected through the analysis API. Wavelength provenance, linear intensity and matched references are required; an ordinary white target cannot recover the FP response.')
+        form.addWidget(self.button('Reflectance correction…', self.reference_correction_dialog, 'reflectance_correction'))
+        note = W.QLabel('Requires documented wavelengths, linear intensity and applicable sample / white / dark references.')
         note.setWordWrap(True)
         form.addWidget(note)
         form.addStretch()

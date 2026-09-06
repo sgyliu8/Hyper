@@ -37,36 +37,26 @@ def test_invalid_bounds_never_change_roi(window, bounds):
 
 
 def test_edit_dialog_selects_b_and_bounds_four_integer_spinners(window, monkeypatch):
-    def inspect_and_accept(dialog):
-        target = dialog.findChild(W.QComboBox, 'roi_bounds_target')
-        assert target.count() == 2
-        target.setCurrentIndex(1)
-        controls = {name: dialog.findChild(W.QSpinBox, 'roi_bound_' + name) for name in ('x0', 'y0', 'x1', 'y1')}
-        assert controls['x0'].maximum() == 15 and controls['y0'].maximum() == 11
-        assert controls['x1'].maximum() == 16 and controls['y1'].maximum() == 12
-        for name, value in zip(controls, (0, 0, 4, 5)):
-            controls[name].setValue(value)
-        buttons = dialog.findChild(W.QDialogButtonBox)
-        assert buttons.button(W.QDialogButtonBox.StandardButton.Ok).isEnabled()
-        buttons.button(W.QDialogButtonBox.StandardButton.Ok).click()
-        return W.QDialog.DialogCode.Accepted
-
-    monkeypatch.setattr(W.QDialog, 'exec', inspect_and_accept)
     window.edit_roi_bounds()
+    dialog = window._roi_bounds_dialog
+    target = dialog.findChild(W.QComboBox, 'roi_bounds_target')
+    assert target.count() == 2
+    target.setCurrentIndex(1)
+    controls = {name: dialog.findChild(W.QSpinBox, 'roi_bound_' + name) for name in ('x0', 'y0', 'x1', 'y1')}
+    assert controls['x0'].maximum() == 15 and controls['y0'].maximum() == 11
+    assert controls['x1'].maximum() == 16 and controls['y1'].maximum() == 12
+    for name, value in zip(controls, (0, 0, 4, 5)):
+        controls[name].setValue(value)
+    dialog.findChild(W.QDialogButtonBox).button(W.QDialogButtonBox.StandardButton.Apply).click()
     assert window.rectangles()[1] == (0, 0, 4, 5)
 
 
-def test_empty_dialog_bounds_disable_apply_and_cancel_preserves_rois(window, monkeypatch):
+def test_modeless_dialog_close_without_apply_preserves_rois(window, monkeypatch):
     before = window.rectangles()
 
-    def inspect_and_cancel(dialog):
-        dialog.findChild(W.QSpinBox, 'roi_bound_x0').setValue(8)
-        dialog.findChild(W.QSpinBox, 'roi_bound_x1').setValue(8)
-        buttons = dialog.findChild(W.QDialogButtonBox)
-        assert not buttons.button(W.QDialogButtonBox.StandardButton.Ok).isEnabled()
-        buttons.button(W.QDialogButtonBox.StandardButton.Cancel).click()
-        return W.QDialog.DialogCode.Rejected
-
-    monkeypatch.setattr(W.QDialog, 'exec', inspect_and_cancel)
     window.edit_roi_bounds()
+    dialog = window._roi_bounds_dialog
+    dialog.findChild(W.QSpinBox, 'roi_bound_x0').setValue(8)
+    dialog.findChild(W.QSpinBox, 'roi_bound_x1').setValue(8)
+    dialog.findChild(W.QDialogButtonBox).button(W.QDialogButtonBox.StandardButton.Close).click()
     assert window.rectangles() == before

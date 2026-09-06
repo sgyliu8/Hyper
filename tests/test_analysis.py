@@ -73,20 +73,27 @@ def test_sam_brightness_invariance_zero_protection_and_units():
         spectral_angle(cube, [0, 0, 0])
 
 
-def calibrated(data):
+def calibrated(data, role):
+    context = {"instrument_id": "synthetic instrument", "response_calibration_id": "synthetic response",
+        "temperature_condition_id": "synthetic thermal condition", "role": role,
+        "evidence_kind": "declared", "evidence_source": "analytic test fixture"}
+    if role == "dark":
+        context.update(light_blocked=True, dark_method="synthetic blocked-light input")
+    else:
+        context.update(illumination_id="synthetic light", geometry_id="synthetic geometry")
     return Cube(np.asarray(data, dtype=np.uint16).reshape(1, 2, 2), {
         "data_level": "spectral_cube", "wavelengths": [500, 600], "wavelength_units": "nm",
         "wavelength_source": "test fixture only", "linear_intensity": True, "units": "DN",
         "settings": {"recipe": "fixture"}, "exposure": 10, "gain": 1,
         "processing_steps": [], "completed": True, "partial": False, "effective_bits": 12,
-        "data_source": "SYNTHETIC", "synthetic": True})
+        "data_source": "SYNTHETIC", "synthetic": True, "measurement_context": context})
 
 
 def test_reflectance_float_dark_saturation_low_denominator_no_clip():
-    sample = calibrated([5, 4095, 200, 30])
-    white = calibrated([100, 100, 10, 20])
-    dark_s = calibrated([10, 10, 10, 10])
-    dark_w = calibrated([10, 10, 10, 10])
+    sample = calibrated([5, 4095, 200, 30], "sample")
+    white = calibrated([100, 100, 10, 20], "white")
+    dark_s = calibrated([10, 10, 10, 10], "dark")
+    dark_w = calibrated([10, 10, 10, 10], "dark")
     result = reflectance(sample, white, dark_s, dark_w, chunk_pixels=1)
     assert result.data[0, 0, 0] == pytest.approx(-5 / 90)  # No uint16 underflow.
     assert not result.valid_mask[0, 0, 1]  # Saturated sample.
@@ -99,14 +106,15 @@ def test_reflectance_float_dark_saturation_low_denominator_no_clip():
                                         ("processing_steps", ["unverified"]), ("wavelength_units", "um"),
                                         ("units", "radiance")])
 def test_reflectance_setting_mismatch_rejected(key, value):
-    cubes = [calibrated([20, 30, 40, 50]) for _ in range(4)]
+    cubes = [calibrated([20, 30, 40, 50], role) for role in ("sample", "white", "dark", "dark")]
     cubes[1].metadata[key] = value
     with pytest.raises(ValueError, match="mismatch"):
         reflectance(*cubes)
 
 
 def test_reflectance_wave_unknown_partial_and_reference_provenance():
-    sample, white, ds, dw = [calibrated(data) for data in ([30]*4, [100]*4, [10]*4, [10]*4)]
+    sample, white, ds, dw = [calibrated(data, role) for data, role in
+        zip(([30]*4, [100]*4, [10]*4, [10]*4), ("sample", "white", "dark", "dark"))]
     white.metadata["wavelengths"] = [501, 600]
     with pytest.raises(ValueError, match="Wavelength"):
         reflectance(sample, white, ds, dw)

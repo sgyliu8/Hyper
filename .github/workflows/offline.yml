@@ -37,6 +37,8 @@ jobs:
           python -m venv "$env:RUNNER_TEMP\hyperlab-venv"
           $python = "$env:RUNNER_TEMP\hyperlab-venv\Scripts\python.exe"
           $wheel = (Get-ChildItem dist\*.whl).FullName
+          python packaging/public_files.py --wheel $wheel
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           & $python -m pip install $wheel
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $env:HYPERLAB_CONFIG_DIR = "$env:RUNNER_TEMP\hyperlab-config"

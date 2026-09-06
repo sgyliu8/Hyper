@@ -8,7 +8,7 @@ import sys
 
 
 def emit(value):
-    print(json.dumps(value, indent=2, ensure_ascii=False,
+    print(json.dumps(value, indent=2, ensure_ascii=True,
                      default=lambda item: item.tolist() if hasattr(item, 'tolist') else str(item)))
 
 
@@ -44,12 +44,22 @@ def main(argv=None):
     inspect.add_argument("--axis-order", help="Explicit NPY/NPZ mapping, e.g. HWK or KHW")
     analyze = commands.add_parser("analyze", help="Offline numeric analysis with shared semantic/quality gates")
     analyze.add_argument("path", type=Path)
-    analyze.add_argument("operation", choices=("capabilities", "roi", "quality", "cfa", "pca", "angle", "difference", "ratio"))
+    analyze.add_argument("operation", choices=("capabilities", "roi", "quality", "cfa", "pca", "angle", "difference", "ratio",
+        "pairs", "smooth", "derivative1", "derivative2", "integral", "continuum", "normalized-difference", "reference-rmse"))
     analyze.add_argument("--axis-order")
     analyze.add_argument("--roi", type=int, nargs=4, metavar=('X0','Y0','X1','Y1'))
+    analyze.add_argument("--reference-roi", type=int, nargs=4, metavar=('X0','Y0','X1','Y1'),
+                         help="Reference rectangle for pairs, angle or reference-rmse; --roi is the pair target")
     analyze.add_argument("--bands", type=int, nargs='+')
     analyze.add_argument("--policy", choices=("diagnostic", "quantitative"), default="diagnostic")
-    analyze.add_argument("--output", type=Path)
+    analyze.add_argument("--summary", choices=("mean", "median"), default="mean")
+    analyze.add_argument("--support", choices=("per_band", "common"), default="per_band",
+                         help="Spatial ROI support; spectral features and reference-rmse require common")
+    analyze.add_argument("--window", type=int, default=5, help="Odd complete local-polynomial window")
+    analyze.add_argument("--degree", type=int, default=2, help="Local-polynomial degree")
+    analyze.add_argument("--minimum-denominator", type=float, default=1e-6,
+                         help="Positive absolute denominator threshold for ratio or normalized difference")
+    analyze.add_argument("--output", type=Path, help="New CSV for roi, JSON for pairs/spectral features, or NPY/HDR for maps")
     app = commands.add_parser("app")
     app.add_argument("path", nargs="?", type=Path)
     app.add_argument("--legacy", action="store_true", help="Explicit temporary Tk fallback")
@@ -120,32 +130,72 @@ def main(argv=None):
         elif args.command == "analyze":
             from hyperlab.io import load_cube
             from hyperlab.analysis import (capabilities, roi_statistics, quality_summary, cfa_statistics,
-                pca, spectral_angle, difference, ratio, export_roi_csv, export_product)
+                pca, spectral_angle, difference, ratio, export_roi_csv, export_product, roi_pairwise,
+                spectral_roi_features, normalized_difference, reference_rmse)
+            from hyperlab.plots import plain
             with load_cube(args.path, axis_order=args.axis_order) as cube:
                 rect = tuple(args.roi) if args.roi else (0, 0, cube.shape[1], cube.shape[0])
                 if args.operation == "capabilities":
                     emit(capabilities(cube))
                 elif args.operation in ("roi", "quality", "cfa"):
-                    function = {"roi":roi_statistics, "quality":quality_summary, "cfa":cfa_statistics}[args.operation]
-                    result = function(cube, rect, policy=args.policy)
+                    if args.operation == "roi":
+                        result = roi_statistics(cube, rect, policy=args.policy, bands=args.bands, support=args.support)
+                    else:
+                        result = (quality_summary if args.operation == "quality" else cfa_statistics)(cube, rect, policy=args.policy)
                     if args.operation == "roi" and args.output:
                         export_roi_csv(result, args.output)
-                    emit(result)
+                    emit(plain(result))
+                elif args.operation in ("pairs", "smooth", "derivative1", "derivative2", "integral", "continuum"):
+                    if args.output and args.output.suffix.lower() != '.json':
+                        raise ValueError("ROI pair and spectral feature output must be a new .json file")
+                    if args.operation == "pairs":
+                        if args.roi is None or args.reference_roi is None:
+                            raise ValueError("Pair comparison requires --roi target and --reference-roi reference")
+                        rectangles = (tuple(args.reference_roi), rect)
+                    else:
+                        if args.support != 'common':
+                            raise ValueError("Spectral ROI features require explicit --support common on the selected --bands")
+                        rectangles = (rect,)
+                    summaries = [roi_statistics(cube, rectangle, policy=args.policy, bands=args.bands,
+                                                support=args.support) for rectangle in rectangles]
+                    if args.operation == 'pairs':
+                        result = roi_pairwise(cube, summaries, ['Reference ROI', 'Target ROI'], summary=args.summary)
+                    else:
+                        result = spectral_roi_features(cube, summaries, args.operation, summary=args.summary,
+                                                       bands=args.bands, window=args.window, degree=args.degree)
+                    payload = plain(result)
+                    if args.output:
+                        args.output.parent.mkdir(parents=True, exist_ok=True)
+                        with args.output.open('x', encoding='utf-8') as stream:
+                            json.dump(payload, stream, indent=2, ensure_ascii=False, allow_nan=False, default=str)
+                    emit(payload)
                 else:
                     if args.output is None:
                         raise ValueError("Numeric map analysis requires --output (.npy or .hdr)")
                     if args.operation == "pca":
                         result = pca(cube, min(3, len(args.bands or capabilities(cube)['feature_indices'])),
                                      bands=args.bands, policy=args.policy)
-                    elif args.operation == "angle":
-                        reference = roi_statistics(cube, rect, policy=args.policy)['mean']
-                        result = spectral_angle(cube, reference, bands=args.bands, policy=args.policy)
+                    elif args.operation in ("angle", "reference-rmse"):
+                        if args.operation == 'reference-rmse' and args.support != 'common':
+                            raise ValueError("Reference RMSE requires explicit --support common on the selected --bands")
+                        reference_rect = tuple(args.reference_roi) if args.reference_roi else rect
+                        reference = roi_statistics(cube, reference_rect, policy=args.policy,
+                                                   bands=args.bands, support=args.support)
+                        function = spectral_angle if args.operation == 'angle' else reference_rmse
+                        result = function(cube, reference[args.summary], bands=args.bands, policy=args.policy)
+                        result['metadata'].update(reference_rect=list(reference_rect), reference_summary=args.summary,
+                                                  reference_support=args.support, reference_counts=reference['count'].tolist())
                     else:
                         if args.bands is None or len(args.bands) != 2:
-                            raise ValueError("Difference/ratio require exactly two --bands indices")
-                        result = (difference if args.operation == "difference" else ratio)(cube, *args.bands, policy=args.policy)
+                            raise ValueError("Difference, ratio and normalized difference require exactly two --bands indices")
+                        if args.operation == 'difference':
+                            result = difference(cube, *args.bands, policy=args.policy)
+                        else:
+                            function = ratio if args.operation == 'ratio' else normalized_difference
+                            result = function(cube, *args.bands, policy=args.policy,
+                                              minimum_denominator=args.minimum_denominator)
                     export_product(result, args.output, source_cube=cube)
-                    emit({'output':str(args.output), 'metadata':result['metadata']})
+                    emit(plain({'output':str(args.output), 'metadata':result['metadata']}))
         elif args.command == "app":
             if args.legacy:
                 from hyperlab.ui.app import launch

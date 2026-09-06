@@ -9,6 +9,11 @@ from hyperlab.acquisition.sequence import load_sequence
 from hyperlab.adapters import gentl
 
 
+@pytest.fixture(autouse=True)
+def isolated_owner_history(monkeypatch):
+    monkeypatch.setattr('hyperlab.acquisition.camera._UNRELEASED_TARGETS', set())
+
+
 class FakeNode:
     def __init__(self, name, value, entries=None, limits=(0, 20_000_000), fail_restore=False):
         self.name, self._value = name, value
@@ -275,6 +280,24 @@ def test_buffer_identity_read_error_preserves_primary_and_requeues(tmp_path, mon
     assert camera.buffer.returns==1
 
 
+def test_gentl_transfer_is_exact_size_owned_and_frame_freezes_the_owner(tmp_path, monkeypatch):
+    from hyperlab.acquisition.frame import Frame
+    backend, camera, _ = make_backend(tmp_path, monkeypatch)
+    backend.open()
+    backend.configure({})
+    backend.start()
+    try:
+        raw, metadata, _ = backend.fetch(.2)
+        assert raw.flags.owndata and raw.base is None and raw.nbytes == 24
+        assert camera.buffer.returned and raw[0, 0] == 0
+        captured = Frame(raw, dict(metadata, session_id='synthetic', sequence=0))
+        assert captured.data is raw and not raw.flags.writeable
+        with pytest.raises(ValueError):
+            raw[:] = 99
+    finally:
+        backend.close()
+
+
 def test_genicam_typed_category_name_uses_inode_property(tmp_path, monkeypatch):
     backend, camera, harvester = make_backend(tmp_path, monkeypatch)
     backend.open()
@@ -485,7 +508,7 @@ def test_persistent_state_restart_latest_exact_snapshot_record(tmp_path):
         assert session.session_id == identity
         assert session.latest_frame().metadata["sequence"] > displayed.metadata["sequence"]
         assert session.status()["latest_queue_length"] == 1
-        assert session.status()["preview_dropped"] > 0
+        assert session.status()["mailbox_replacement_events"] > 0
     finally:
         assert session.close(wait=True)
     assert session.status()["camera_released"]
@@ -558,7 +581,8 @@ def test_device_frame_gap_makes_recording_partial(tmp_path):
                 self.index += 2
             return super().fetch(timeout)
     fake = GapFake()
-    session = CameraSession("fixture", "fixture", backend_factory=lambda *args: fake)
+    # Fit the bounded pre-gap fixture prefix; overflow is tested independently.
+    session = CameraSession("fixture", "fixture", backend_factory=lambda *args: fake, writer_capacity=32)
     try:
         session.connect().result(5)
         session.start_preview().result(5)

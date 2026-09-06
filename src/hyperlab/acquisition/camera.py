@@ -9,14 +9,24 @@ from uuid import uuid4
 from .frame import Frame, save_frame
 from .sequence import SequenceRecorder, atomic_json
 from .session import utc_now
+from hyperlab.profiling import StageTimings
+
+
+_UNRELEASED_TARGETS = set()
+_OWNERSHIP_LOCK = threading.Lock()
+
+
+class RecordingBusyError(ValueError):
+    """A refused request has not called the camera backend."""
 
 
 class CameraSession:
     def __init__(self, cti, serial, *, settings=None, mode="measurement", backend_factory=None,
-                 writer_capacity=8, recorder_factory=SequenceRecorder, fetch_timeout=0.25, phase_log=None):
+                 writer_capacity=16, recorder_factory=SequenceRecorder, fetch_timeout=0.25, phase_log=None):
         if not 0 < fetch_timeout <= 1:
             raise ValueError("Fetch timeout must be in (0,1] seconds")
         self.cti, self.serial = str(cti), str(serial)
+        self._target_key = (str(Path(cti).resolve()).casefold(), self.serial)
         self.settings = dict(settings or {})
         self.mode = mode
         self._backend_factory = backend_factory
@@ -29,10 +39,12 @@ class CameraSession:
         self._state = "disconnected"
         self._error = None
         self._backend = None
+        self._backend_timings = None
         self._latest = None
         self._display_identity = None
         self._stop_requested = threading.Event()
         self._close_requested = threading.Event()
+        self._pending_close = False
         self._closed = threading.Event()
         self._camera_released = True
         self._recording = None
@@ -43,7 +55,8 @@ class CameraSession:
         self._sequence = 0
         self._captured = 0
         self._displayed = 0
-        self._preview_dropped = 0
+        self._mailbox_replacement_events = 0
+        self.timings = StageTimings()
         self._device_gaps = 0
         self._previous_device_id = None
         self._fetch_timeouts = 0
@@ -92,6 +105,8 @@ class CameraSession:
     def _submit(self, operation, **values):
         if self._close_requested.is_set() or self.closed:
             raise RuntimeError("Camera session is closing or closed")
+        if self._pending_close and operation not in ('record_retry', 'record_abandon', 'stop', 'disconnect'):
+            raise RuntimeError('Close is waiting for burst persistence; retry or explicitly abandon retained frames')
         future = Future()
         self._commands.put_nowait((operation, values, future))
         return future
@@ -110,11 +125,22 @@ class CameraSession:
     def set_settings(self, settings, mode="measurement"):
         return self._submit("settings", settings=dict(settings), mode=mode)
 
-    def start_recording(self, directory, max_frames, duration_s=None):
-        return self._submit("record", directory=directory, max_frames=max_frames, duration_s=duration_s)
+    def start_recording(self, directory, max_frames, duration_s=None, *, recording_mode='continuous'):
+        return self._submit("record", directory=directory, max_frames=max_frames, duration_s=duration_s,
+                            recording_mode=recording_mode)
 
     def stop_recording(self):
         return self._submit("record_stop")
+
+    def retry_recording(self, directory):
+        return self._submit('record_retry', directory=directory)
+
+    def abandon_recording(self):
+        return self._submit('record_abandon')
+
+    def _burst_pending(self):
+        return (self._recording is not None and
+                self._recording.recording_mode == 'ram_burst' and not self._recording.done.is_set())
 
     def disconnect(self):
         self._stop_request_time = time.monotonic()
@@ -124,7 +150,10 @@ class CameraSession:
     def close(self, wait=False, timeout=10):
         self._stop_request_time = time.monotonic()
         self._stop_requested.set()
-        self._close_requested.set()
+        if self._burst_pending():
+            self._pending_close = True
+        else:
+            self._close_requested.set()
         if wait:
             self._worker.join(timeout)
         return self.closed
@@ -198,16 +227,31 @@ class CameraSession:
             current = self._latest
             age = ((time.monotonic_ns() - current.metadata["host_monotonic_ns"]) / 1e9) if current else None
             recording = self._recording.status() if self._recording else self._last_recording
+            pending_close = ('recovery_required' if recording and recording.get('phase') == 'recovery_required'
+                             else 'waiting_for_persistence') if self._pending_close else None
             return {"state": self._state, "error": self._error, "session_id": self.session_id,
                     "stream_epoch": self.stream_epoch, "stream_started_ns": self._stream_started_ns,
                     "has_current_frame": current is not None and current.metadata.get('stream_epoch') == self.stream_epoch,
                     "phases": list(self._phases),
                     "closed": self.closed, "worker_alive": self._worker.is_alive(),
+                    'pending_close': pending_close,
+                    'close_blocked_reason': ('Retained RAM frames require retry or explicit abandonment'
+                                             if pending_close == 'recovery_required' else
+                                             'Waiting for burst persistence' if pending_close else None),
                     "camera_released": self._camera_released,
                     "capture_fps": self._fps(self._capture_times) if self._state in ("streaming", "recording") else 0,
                     "display_fps": self._fps(self._display_times) if self._state in ("streaming", "recording") else 0,
                     "captured_frames": self._captured, "displayed_frames": self._displayed,
-                    "preview_dropped": self._preview_dropped, "device_frame_gaps": self._device_gaps,
+                    "mailbox_replacement_events": self._mailbox_replacement_events,
+                    "mailbox_replacement_definition": "Incoming frame replaced a cached latest identity before display acknowledgement; "
+                        "the replaced frame may still be rendered, so this overlaps displayed_frames and is not device loss",
+                    "counter_scope": "CameraSession object lifetime; cumulative across stream epochs and reconnects",
+                    "displayed_frames_definition": "Unique frame identities acknowledged after application image update; not measured screen paint",
+                    "latest_queue_definition": "Cached latest-frame occupancy; not a pending or unseen-frame count",
+                    "stage_timings": self.timings.snapshot(),
+                    "backend_stage_timings": self._backend_timings.snapshot() if self._backend_timings else None,
+                    "backend_timing_scope": "Current or most recently owned backend instance",
+                    "device_frame_gaps": self._device_gaps,
                     "fetch_timeouts": self._fetch_timeouts, "latest_queue_length": int(current is not None),
                     "latest_queue_capacity": 1, "frame_age_s": age,
                     "frame_age_definition": "host monotonic now minus host buffer receive; excludes uncalibrated device clock",
@@ -223,12 +267,19 @@ class CameraSession:
             if self.state == "error":
                 raise RuntimeError("Disconnect the failed session before reconnecting")
             return
+        with _OWNERSHIP_LOCK:
+            if not self._camera_released or self._target_key in _UNRELEASED_TARGETS:
+                self._camera_released = False
+                self._error = self._error or 'Previous camera release is unconfirmed; this target is quarantined in this process'
+                self._set_state('error')
+                raise RecordingBusyError(self._error)
         self._set_state("connecting")
         factory = self._backend_factory
         if factory is None:
             from hyperlab.adapters.gentl import GenTLBackend
             factory = GenTLBackend
         self._backend = factory(self.cti, self.serial)
+        self._backend_timings = getattr(self._backend, 'timings', None)
         self._camera_released = False
         self._connection_metadata = dict(self._phase('open', self._backend.open, 30) or {})
         self._capabilities = dict(self._backend.capabilities)
@@ -297,6 +348,8 @@ class CameraSession:
     def _stop(self):
         self._stop_requested.clear()
         if self._backend is None:
+            if self._recording and self._recording.needs_camera_stop:
+                self._recording.release_persistence(error=self._error)
             return
         if self._recording and not self._recording.done.is_set():
             self._recording.stop()
@@ -310,6 +363,8 @@ class CameraSession:
             if any(not item["succeeded"] for item in events):
                 raise RuntimeError("Camera stop or setting restoration failed; inspect cleanup evidence")
         self._set_state("ready")
+        if self._recording and self._recording.needs_camera_stop:
+            self._recording.release_persistence()
 
     def _disconnect(self):
         primary = None
@@ -323,11 +378,11 @@ class CameraSession:
                     events = self._phase('destroy', self._backend.close, 10)
                     self._cleanup.extend(events)
                     released = [item for item in events if item["step"] == "destroy"]
-                    self._camera_released = bool(released and released[-1]["succeeded"])
+                    self._release_result(bool(released and released[-1]["succeeded"]))
                     if any(not item["succeeded"] for item in events) and primary is None:
                         primary = RuntimeError("Camera release failed; inspect cleanup evidence")
                 except Exception as exc:
-                    self._camera_released = False
+                    self._release_result(False)
                     self._cleanup.append({'step':'destroy', 'attempted':True, 'succeeded':False,
                                           'exception_type':type(exc).__name__, 'error':str(exc)})
                     primary = primary or exc
@@ -335,10 +390,20 @@ class CameraSession:
                     self._backend = None
         if primary is not None:
             raise primary
+        if not self._camera_released:
+            raise RuntimeError('Camera release remains unconfirmed; inspect cleanup evidence')
         self._set_state("disconnected")
         self._save_phases()
 
+    def _release_result(self, released):
+        with _OWNERSHIP_LOCK:
+            if not released:
+                _UNRELEASED_TARGETS.add(self._target_key)
+            self._camera_released = bool(released and self._target_key not in _UNRELEASED_TARGETS)
+
     def _command(self, operation, values):
+        if operation in ('connect', 'start', 'settings', 'record') and self._burst_pending():
+            raise RecordingBusyError('Burst persistence or retained-frame recovery must finish before new acquisition')
         if operation == "connect":
             self._connect()
         elif operation == "start":
@@ -355,20 +420,39 @@ class CameraSession:
             self.settings = values["settings"]
             self.mode = values["mode"]
         elif operation == "record":
+            if values.get('recording_mode', 'continuous') not in ('continuous', 'ram_burst'):
+                raise ValueError('Choose continuous or ram_burst recording mode')
             if self.state != "streaming" or self._latest is None or self._latest.metadata.get('stream_epoch') != self.stream_epoch:
                 raise ValueError("Receive a valid frame from the current stream epoch before recording")
             if self._recording and not self._recording.done.is_set():
                 raise ValueError("Previous recording is still draining to disk")
             self._recording = self._recorder_factory(values["directory"], self._latest, values["max_frames"],
-                                                    duration_s=values["duration_s"], capacity=self.writer_capacity)
+                                                    duration_s=values["duration_s"], capacity=self.writer_capacity,
+                                                    **({'recording_mode': 'ram_burst'}
+                                                       if values.get('recording_mode') == 'ram_burst' else {}))
             self._recording_reported = False
             self._set_state("recording")
             self._emit("recording", **self._recording.status())
         elif operation == "record_stop":
             if self._recording:
                 self._recording.stop()
-            if self.state == "recording":
+            if self._burst_pending():
+                try:
+                    self._stop()
+                except Exception as exc:
+                    self._failure(exc)
+                    raise
+            elif self.state == "recording":
                 self._set_state("streaming")
+        elif operation == 'record_retry':
+            if self._recording is None:
+                raise ValueError('No retained recording to retry')
+            self._recording.retry(values['directory'])
+            self._recording_reported = False
+        elif operation == 'record_abandon':
+            if self._recording is None:
+                raise ValueError('No retained recording to abandon')
+            return self._recording.abandon()
         elif operation == "diagnostics":
             if self._backend is None or self.state != "ready":
                 raise ValueError("Connect and stop acquisition before exporting node descriptions")
@@ -386,22 +470,26 @@ class CameraSession:
     def _failure(self, exc):
         # The first acquisition failure remains primary even if every cleanup
         # operation also fails. Cleanup receipts remain individually inspectable.
-        self._error = self._error or str(exc)
+        self._error = self._error or str(exc) or type(exc).__name__
         if self._recording and not self._recording.done.is_set():
             if self._backend is not None:
                 self._recording.failed_frame = getattr(self._backend, "failed_frame_metadata", None) or self._recording.failed_frame
                 self._recording.failed_payload = getattr(self._backend, "failed_payload", None)
             self._recording.stop(error=self._error)
         if self._backend is not None:
+            events = []
             try:
-                self._cleanup.extend(self._phase('error_cleanup', self._backend.close, 10))
+                events = self._phase('error_cleanup', self._backend.close, 10)
+                self._cleanup.extend(events)
             except Exception as cleanup_error:
                 self._cleanup.append({'step':'error_cleanup', 'attempted':True, 'succeeded':False,
                                       'error':str(cleanup_error)})
-            destroy = [item for item in self._backend.cleanup if item["step"] == "destroy"]
-            self._camera_released = bool(destroy and destroy[-1]["succeeded"])
+            destroy = [item for item in events if item["step"] == "destroy"]
+            self._release_result(bool(destroy and destroy[-1]["succeeded"]))
             self._backend = None
         self._set_state("error")
+        if self._recording and self._recording.needs_camera_stop:
+            self._recording.release_persistence(error=self._error)
         self._emit("error", error=self._error, cleanup=list(self._cleanup))
         self._save_phases()
 
@@ -410,15 +498,25 @@ class CameraSession:
         if recording is None:
             return
         if recording.stop_event.is_set() and self.state == "recording":
-            self._set_state("streaming")
+            if recording.recording_mode == 'ram_burst':
+                try:
+                    self._stop()
+                except Exception as exc:
+                    self._failure(exc)
+            else:
+                self._set_state("streaming")
         if recording.done.is_set() and not self._recording_reported:
             self._last_recording = recording.status()
             self._recording_reported = True
             self._emit("recording", **self._last_recording)
+        if self._pending_close and recording.done.is_set():
+            self._pending_close = False
+            self._close_requested.set()
 
     def _fetch(self):
         try:
-            raw, metadata, _ = self._backend.fetch(self.fetch_timeout)
+            with self.timings.measure('backend_fetch'):
+                raw, metadata, _ = self._backend.fetch(self.fetch_timeout)
         except Exception as exc:
             # GenTL timeout is expected for long exposure, but prolonged silence
             # eventually becomes an explicit stream error rather than eternal LIVE.
@@ -430,10 +528,11 @@ class CameraSession:
                 return
             raise
         self._last_received = time.monotonic()
-        metadata.update(session_id=self.session_id, sequence=self._sequence,
-                        stream_epoch=self.stream_epoch, stream_started_ns=self._stream_started_ns)
-        self._sequence += 1
-        frame = Frame(raw, metadata)
+        with self.timings.measure('metadata_frame_build'):
+            metadata.update(session_id=self.session_id, sequence=self._sequence,
+                            stream_epoch=self.stream_epoch, stream_started_ns=self._stream_started_ns)
+            self._sequence += 1
+            frame = Frame(raw, metadata)
         device_id = metadata.get("frame_id")
         if isinstance(device_id, int) and isinstance(self._previous_device_id, int) and device_id > self._previous_device_id + 1:
             missing = device_id - self._previous_device_id - 1
@@ -442,14 +541,15 @@ class CameraSession:
                 self._recording.failed_frame = dict(metadata)
                 self._recording.stop(error=f"Device frame ID gap: {missing} missing frame(s); recording stopped")
         self._previous_device_id = device_id
-        with self._lock:
+        with self.timings.measure('mailbox_publish'), self._lock:
             if self._latest is not None and self._latest.identity != self._display_identity:
-                self._preview_dropped += 1
+                self._mailbox_replacement_events += 1
             self._latest = frame
             self._captured += 1
             self._capture_times.append(self._last_received)
         if self._recording and not self._recording.stop_event.is_set():
-            self._recording.submit(frame)
+            with self.timings.measure('writer_admission'):
+                self._recording.submit(frame)
 
     def _run(self):
         try:
@@ -463,7 +563,7 @@ class CameraSession:
                         future.set_result(self._command(operation, values))
                     except Exception as exc:
                         future.set_exception(exc)
-                        if operation in ("connect", "start", "stop", "disconnect"):
+                        if operation in ("connect", "start", "stop", "disconnect") and not isinstance(exc, RecordingBusyError):
                             self._failure(exc)
                         else:
                             self._emit("error", error=str(exc), operation=operation)
