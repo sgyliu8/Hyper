@@ -8,6 +8,7 @@ import numpy as np
 
 from hyperlab.io import Cube
 from .capabilities import capabilities, feature_selection, require_capability
+from .regions import resolve_roi
 
 
 def calculation_dtype(data):
@@ -106,14 +107,20 @@ def composite(cube, bands=(0, 1, 2)):
                          "wavelength_units": cube.metadata["wavelength_units"]}}
 
 
-def roi_statistics(cube, rect, *, policy="diagnostic", bands=None, support="per_band", robust=True):
-    """Half-open ROI; original policy quality and actually used samples stay distinct."""
-    if len(rect) != 4 or any(not isinstance(x, (int, np.integer)) for x in rect):
-        raise ValueError("ROI must contain four integer coordinates")
-    x0, y0, x1, y1 = rect
-    h, w, k = cube.shape
-    if not (0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h):
-        raise ValueError("ROI is empty or outside image")
+def _roi_band(cube, region, band, policy):
+    x0, y0, x1, y1 = region['bbox']
+    selection = (slice(y0, y1), slice(x0, x1), slice(band, band + 1))
+    data = cube.data[selection]
+    good, quality, saturation = _quality(cube, data, selection, policy)
+    membership = region['membership'][..., None]
+    return data, good & membership, {key: mask & membership for key, mask in quality.items()}, saturation
+
+
+def roi_statistics(cube, rect, *, policy="diagnostic", bands=None, support="per_band", robust=True, exclusions=()):
+    """Raw-coordinate ROI; source quality, geometry exclusion and used support differ."""
+    region = resolve_roi(cube.shape[:2], rect, exclusions=exclusions)
+    x0, y0, x1, y1 = region['bbox']
+    k = cube.shape[2]
     if support not in {"per_band", "common"}:
         raise ValueError("ROI support must be per_band or common")
     requested = list(range(k)) if bands is None else list(bands)
@@ -125,7 +132,7 @@ def roi_statistics(cube, rect, *, policy="diagnostic", bands=None, support="per_
     selected = set(features)
     common = None
     if support == "common":
-        common = np.full((y1-y0, x1-x0, 1), bool(features))
+        common = region['selected'][..., None] & bool(features)
         for band in features:
             selection = (slice(y0, y1), slice(x0, x1), slice(band, band + 1))
             common &= _valid(cube, cube.data[selection], selection, policy)
@@ -133,23 +140,24 @@ def roi_statistics(cube, rect, *, policy="diagnostic", bands=None, support="per_
     summaries = {key: np.full(k, np.nan) for key in ("median", "q25", "q75", "iqr", "mad", "min", "max")}
     support_excluded = np.zeros(k, dtype=np.int64)
     selection_excluded = np.zeros(k, dtype=np.int64)
+    geometry_excluded = np.zeros(k, dtype=np.int64)
     quality_counts = {key: np.zeros(k, dtype=np.int64) for key in
                       ("total", "valid", "saturated", "ignored", "invalid")}
     # One band at a time keeps ROI working memory independent of K.
     for band in range(k):
-        selection = (slice(y0, y1), slice(x0, x1), slice(band, band + 1))
-        data = cube.data[selection]
-        good, quality, saturation = _quality(cube, data, selection, policy)
+        data, good, quality, saturation = _roi_band(cube, region, band, policy)
         for key, mask in quality.items():
             quality_counts[key][band] = np.count_nonzero(mask)
+        geometry_excluded[band] = np.count_nonzero(good & region['excluded'][..., None])
+        good &= region['selected'][..., None]
         if band not in selected:
-            selection_excluded[band] = quality_counts["valid"][band]
+            selection_excluded[band] = quality_counts["valid"][band] - geometry_excluded[band]
             continue
         if common is not None:
             good = good & common
         values = _floating(data[good], dtype=np.float64)
         counts[band] = len(values)
-        support_excluded[band] = quality_counts["valid"][band] - counts[band]
+        support_excluded[band] = quality_counts["valid"][band] - geometry_excluded[band] - counts[band]
         if len(values):
             means[band] = values.mean()
             stds[band] = values.std(ddof=0)
@@ -162,36 +170,43 @@ def roi_statistics(cube, rect, *, policy="diagnostic", bands=None, support="per_
     return {"mean": means, "std": stds, **summaries, "count": counts, "counts": quality_counts,
             "support": support, "feature_indices": features,
             "support_excluded_count": support_excluded, "selection_excluded_count": selection_excluded,
-            "valid_fraction": quality_counts["valid"] / quality_counts["total"],
-            "used_fraction": counts / quality_counts["total"],
+            "geometry_excluded_count": geometry_excluded,
+            "valid_fraction": np.divide(quality_counts["valid"], quality_counts["total"],
+                out=np.full(k, np.nan), where=quality_counts["total"] > 0),
+            "used_fraction": np.divide(counts, quality_counts["total"],
+                out=np.full(k, np.nan), where=quality_counts["total"] > 0),
             "common_count": None if common is None else int(np.count_nonzero(common)),
-            "policy": policy, "saturation_value": saturation, "rect": tuple(rect),
+            "policy": policy, "saturation_value": saturation, "rect": region['bbox'],
             "wavelengths": cube.wavelengths, "axis_label": _axis(cube),
             "channel_labels": cube.metadata.get("channel_labels"),
             "wavelength_units": cube.metadata["wavelength_units"], "units": cube.metadata["units"],
             "metadata": {"std_ddof": 0, "std_interpretation": "spatial SD; not temporal noise",
                 "support": support, "feature_indices": features, "requested_features": [int(i) for i in requested],
                 "robust_computed": bool(robust), "quantile_method": "linear", "mad_scale": "unscaled",
-                "used_count_semantics": "count + support_excluded_count + selection_excluded_count = counts.valid",
+                "used_count_semantics": "count + support_excluded_count + selection_excluded_count + geometry_excluded_count = counts.valid",
+                "roi_definition": deepcopy(region['descriptor']),
+                "exclusion_definitions": deepcopy(region['exclusion_definitions']),
+                "geometry_counts": {key: region[key] for key in ('geometry_count', 'excluded_count', 'selected_count')},
+                "geometry_semantics": "counts.total is ROI membership, not bounding-box area; quality precedes analyst exclusion. "
+                    "geometry_excluded_count is policy-valid samples excluded; raw geometry exclusions may overlap quality reasons.",
+                "membership_rule": region['membership_rule'],
                 "valid_fraction_semantics": "policy-valid count / total; used_fraction is the analysis support fraction",
                 "policy": policy, "saturation_status": "unknown" if saturation is None else "known sample threshold",
                 "count_semantics": "original policy quality: invalid/ignored/saturated are disjoint; diagnostic valid includes saturated",
                 "source_provenance": deepcopy(cube.metadata)}}
 
 
-def roi_comparison(cube, rectangles, *, policy="diagnostic", bands=None, support="per_band", robust=True):
+def roi_comparison(cube, rectangles, *, policy="diagnostic", bands=None, support="per_band", robust=True, exclusions=()):
     """ROI statistics, plus shared-bin DN distributions for a single plane."""
-    rectangles = list(rectangles)
+    rectangles = [resolve_roi(cube.shape[:2], rect, exclusions=exclusions) for rect in rectangles]
     results = [roi_statistics(cube, rect, policy=policy, bands=bands, support=support, robust=robust)
                for rect in rectangles]
     if cube.shape[2] != 1:
         return results
 
     def selected(rect):
-        x0,y0,x1,y1 = rect
-        selection = (slice(y0,y1),slice(x0,x1),slice(0,1))
-        raw = cube.data[selection]
-        good = _valid(cube,raw,selection,policy)
+        raw, good, _, _ = _roi_band(cube, rect, 0, policy)
+        good &= rect['selected'][..., None]
         return _floating(raw[good],np.float64)
 
     bounds = []
@@ -225,7 +240,7 @@ def export_roi_csv(stats, path, wavelengths=None):
         writer.writerow(["index", "wavelength", "wavelength_units", "mean", "std_ddof0", "valid_count", "signal_units",
                          "axis_label", "channel_label", "policy", "total_count", "saturated_count", "ignored_count", "invalid_count",
                          "median", "q25", "q75", "iqr", "mad_unscaled", "min", "max", "policy_valid_count",
-                         "support_excluded_count", "selection_excluded_count", "policy_valid_fraction", "used_fraction", "support"])
+                         "support_excluded_count", "selection_excluded_count", "policy_valid_fraction", "used_fraction", "support", "geometry_excluded_count"])
         for i, (mean, std, count) in enumerate(zip(stats["mean"], stats["std"], stats["count"])):
             labels = stats.get("channel_labels")
             quality = stats.get("counts", {})
@@ -237,11 +252,13 @@ def export_roi_csv(stats, path, wavelengths=None):
                 int(quality["valid"][i]) if "valid" in quality else "",
                 *[stats[key][i] if key in stats else "" for key in ("support_excluded_count", "selection_excluded_count",
                                                                 "valid_fraction", "used_fraction")],
-                stats.get("support", "per_band")])
+                stats.get("support", "per_band"),
+                stats["geometry_excluded_count"][i] if "geometry_excluded_count" in stats else 0])
     from hyperlab.io.cube import _dumps
     sidecar.write_text(_dumps({"schema_version": 2, "rect": stats["rect"],
         "count_columns": {"valid_count": "actual samples used by mean, SD and robust statistics",
-                          "policy_valid_count": "policy quality before selected-feature/common-support restrictions"},
+                          "policy_valid_count": "policy quality within geometry before exclusions/selected-feature/common-support restrictions",
+                          "geometry_excluded_count": "policy-valid samples removed by the union of analyst exclusions"},
         "axis_label": stats.get("axis_label"), "metadata": stats.get("metadata", {})}), encoding="utf-8")
     return path
 

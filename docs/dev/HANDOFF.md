@@ -20,10 +20,21 @@ measured loss. The original receipt stays unchanged. New counters use
 `mailbox_replacement_events` with explicit scope. The target has printed material
 and glare; it carries no thermal-paint/defect ground truth.
 
+Slice 2 now implements stable rectangle/polygon/mask/strip geometry, exclusions,
+separate Show/Use, stable reference selection, exact map ECDF/histogram brushes,
+interval maps, linked task plots and local Study observation/thermal points.
+The full offline suite passes **592 tests** (47.58 s); the final two Study display
+fixes additionally pass 23 focused tests. The expanded installation smoke passes.
+The first updated native test improved display to about 6.5 fps but did not meet
+the target; its 3,855 captured / 773 displayed / zero device-gap/timeout receipt
+is retained, with normal camera release. Subsequent buffer/Qt optimizations still
+require native acceptance. See the [workflow](../user/TECHNICAL_WORKFLOW.md) and
+[Study/SOP guide](../guides/studies.md).
+
 Three fresh AI reviewers completed rounds 1 and 2 with actual counterexamples and
-cross-challenges. Round 3 must inspect completed code and verification. Slice 2
-(mask ROIs, linked distributions/brush and Study) and final Slice 3 delivery remain
-to be executed. Full local receipts and failed test attempts are preserved in
+cross-challenges. Round 3 must inspect the Slice 2 checkpoint and final fixes.
+Final Slice 3 native/package/CI delivery remains pending.
+Full local receipts and failed test attempts are preserved in
 `local/diagnostics/technical-first-20260906`. The previous binary remains the
 installed delivery until the new package is verified. Licensing/release are pending.
 

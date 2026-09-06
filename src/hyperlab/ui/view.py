@@ -51,7 +51,7 @@ def display_selection(cube, band=0, *, policy='diagnostic', cfa=False,
     Fast preview may pass diagnostics=False with an explicit stride. Its counts
     then describe strided raw samples, never full-frame measurement quality.
     """
-    from hyperlab.analysis.core import _quality
+    from hyperlab.analysis.core import _quality, calculation_dtype
     started = perf_counter_ns()
     stride = (display_stride, display_stride) if isinstance(display_stride, (int, np.integer)) else tuple(display_stride)
     if len(stride) != 2 or any(isinstance(value, (bool, np.bool_)) or
@@ -64,7 +64,9 @@ def display_selection(cube, band=0, *, policy='diagnostic', cfa=False,
     sy, sx = (1, 1) if cfa and not color else requested_stride
     channels = slice(None) if color else slice(band, band + 1)
     selection = (slice(None, None, sy), slice(None, None, sx), channels)
-    raw = cube.data[selection]
+    # A strided RGB view otherwise repeats slow non-contiguous reads through
+    # quality, histogram, mean and Qt conversion. This copies display samples only.
+    raw = np.ascontiguousarray(cube.data[selection])
     good, masks, threshold = _quality(cube, raw, selection, policy)
     if timings:
         timings.record('display_validity', perf_counter_ns() - started)
@@ -75,7 +77,13 @@ def display_selection(cube, band=0, *, policy='diagnostic', cfa=False,
     if color:
         # A colour pixel needs all delivered colour components. Histograms use
         # the identical eligibility, not the surviving components of a bad pixel.
-        valid = np.broadcast_to(np.all(good, axis=2)[..., None], raw.shape)
+        if np.all(good):
+            valid = good
+        else:
+            pixels = good[..., 0].copy()
+            for channel in range(1, good.shape[2]):
+                pixels &= good[..., channel]
+            valid = np.broadcast_to(pixels[..., None], raw.shape)
         if cube.metadata.get('channel_labels') == ['B', 'G', 'R']:
             image, valid = image[..., ::-1], valid[..., ::-1]
     elif cfa:
@@ -87,23 +95,37 @@ def display_selection(cube, band=0, *, policy='diagnostic', cfa=False,
         valid = np.broadcast_to(cells[..., None], image.shape)
         note = 'CFA-cell colour display derivative; requires four valid raw photosites'
     if not np.all(valid):
-        image = np.where(valid, image, np.nan)
+        # float32 represents delivered 8/12/16-bit integers exactly. Larger
+        # integers and float64 keep float64; raw scientific values never change.
+        image = image.astype(calculation_dtype(image), copy=True)
+        image[~valid] = np.nan
+    image = np.ascontiguousarray(image)
     levels_started = perf_counter_ns()
     step = (max(1, image.shape[0] // 180), max(1, image.shape[1] // 240))
     sampled = image[::step[0], ::step[1]]
     sampled_valid = valid[::step[0], ::step[1]] & np.isfinite(sampled)
     values = sampled[sampled_valid].astype(np.float64)
-    levels = display_levels(image, valid)
+    if values.size:
+        low, high = np.percentile(values, [1, 99])
+        levels = float(low), float(high if high > low else low + 1)
+    else:
+        levels = 0.0, 1.0
     if timings:
         timings.record('display_levels', perf_counter_ns() - levels_started)
     diagnostic_started = perf_counter_ns()
     stats_raw, stats_good, stats_masks = raw, good, masks
     if diagnostics and (sy != 1 or sx != 1):
         full_selection = (slice(None), slice(None), channels)
-        stats_raw = cube.data[full_selection]
+        stats_raw = np.asarray(cube.data[full_selection])
         stats_good, stats_masks, _ = _quality(cube, stats_raw, full_selection, policy)
     raw_counts = {key: int(np.count_nonzero(mask)) for key, mask in stats_masks.items()}
-    raw_mean = float(np.mean(stats_raw[stats_good], dtype=np.float64)) if np.any(stats_good) else None
+    raw_mean = None
+    if raw_counts['valid']:
+        values_for_mean = stats_raw if raw_counts['valid'] == stats_raw.size else stats_raw[stats_good]
+        raw_mean = float(np.mean(values_for_mean, dtype=np.float64))
+    saturated = masks['saturated'][..., 0].copy()
+    for channel in range(1, masks['saturated'].shape[2]):
+        saturated |= masks['saturated'][..., channel]
     full_statistics = diagnostics or (sy == 1 and sx == 1)
     h, w = cube.shape[:2]
     if timings:
@@ -125,5 +147,5 @@ def display_selection(cube, band=0, *, policy='diagnostic', cfa=False,
             'display_sample_rule': 'Raw sample at y=row*stride_y, x=column*stride_x; sampled overview rescaled to raw extent; inspect raw pixels separately'
                 if sy != 1 or sx != 1 else 'Full raw grid; CFA view derives 2x2 cells when selected',
             'image_shape': list(image.shape),
-            'saturated_mask': np.any(masks['saturated'], axis=2),
+            'saturated_mask': saturated,
             'saturation_value': threshold}

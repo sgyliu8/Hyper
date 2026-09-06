@@ -1,6 +1,6 @@
 # Changes
 
-## Unreleased — technical-first increment
+## 0.5.0 — technical-first research preview
 
 - Separate camera state, viewed observation and completed analysis identity;
   saved real captures retain their origin and hide historical live latency.
@@ -10,6 +10,14 @@
   stage profiling. Sampled preview never reduces raw analysis/export data.
 - Add explicit diagnostic low-signal policy, on-demand pinned quality/readiness,
   and actual wavelength-window support with optional declared gap constraints.
+- Add stable ROI IDs/revisions, separate visibility/inclusion, polygons/holes,
+  binary mask assets, exclusions and exact raw-pixel strip profiles.
+- Link exact map ECDF/histograms to inclusive spatial selections and mask/point
+  exports. Preserve nonlinear aggregation order, sparse tails and denominators.
+- Add measured-wavelength interval maps, contextual right plots, channel whiskers
+  and display-only colour limits with clipped counts.
+- Add local Study observation/analysis links, verified portable assets and
+  descriptive repeat/thermal plots; unknown conditions remain explicit.
 
 ## 0.3.1 — live ROI correction, 2026-09-05
 

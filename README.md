@@ -7,16 +7,24 @@ imaging module used in the investigated HinaLea system.
 
 ![Offline validation](https://github.com/sgyliu8/Hyper/actions/workflows/offline.yml/badge.svg?branch=feature%2Fmaterials-science-v040)
 
-**0.4.0 research preview:** install the explicit branch below. The repository's
+**0.5.0 research preview:** install the explicit branch below. The repository's
 default branch is still `recovery/hinalea-local`. Original-code licensing and
 public release remain pending; this is not a completed open-source license grant.
 
-- Multiple named rectangle ROIs, raw amplitude and optional L2 shape comparison,
+- Stable named rectangle/polygon/mask/strip ROIs, exclusions, raw amplitude and optional L2 shape comparison,
   spatial SD, single-plane intensity distributions, validity masks and recorded-time trends.
 - Difference, ratio and angle maps; PCA scores, explained variance and loadings.
 - Shared plot data for interactive Qt charts and SVG/PDF/PNG figure bundles.
 - NPY/NPZ/ENVI data, explicit source/axis metadata, private reference exchange,
   saved workspace, view and ROI configuration.
+
+The [technical workflow](docs/user/TECHNICAL_WORKFLOW.md) adds exact map ECDFs and
+coordinate brushes, measured-wavelength interval maps, line profiles, separate
+camera/view/result identities and profiled overview display. The lightweight
+[Study view](docs/guides/studies.md) keeps original observations, ROI revisions,
+thermal context, repeat points and complete source-asset verification together.
+See the [current implementation and review](docs/dev/TECHNICAL_FIRST_REVIEW.md)
+for validation status and the remaining device-specific spectroscopy dependency.
 
 The [materials and thermal-paint workbench](docs/user/MATERIALS_AND_THERMAL_PAINT.md)
 adds median/IQR/MAD, explicit common-pixel support, ROI pair metrics, true-coordinate

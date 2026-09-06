@@ -47,15 +47,22 @@ class PlotSpec:
     limits: tuple | None = None
     caption: str = ''
     categories: list | None = None
+    brushes: list = field(default_factory=list)
 
     def record(self):
-        return plain({key: value for key, value in vars(self).items()
-                      if key not in ('image', 'valid_mask')})
+        record = {key: value for key, value in vars(self).items()
+                  if key not in ('image', 'valid_mask', 'brushes')}
+        if self.brushes:
+            record['brushes'] = [brush['metadata'] for brush in self.brushes]
+        return plain(record)
 
 
-def roi_plot(results, names, colors, *, source, normalized=False, spatial_sd=True, summary='mean'):
+def roi_plot(results, names, colors, *, source, normalized=False, spatial_sd=True, summary='mean',
+             categorical_style='connected'):
     if summary not in ('mean', 'median'):
         raise ValueError('ROI summary must be mean or median')
+    if categorical_style not in ('connected', 'points'):
+        raise ValueError('Categorical style must be connected or points')
     first = results[0]
     labels = first.get('channel_labels')
     wave = first.get('wavelengths')
@@ -72,6 +79,7 @@ def roi_plot(results, names, colors, *, source, normalized=False, spatial_sd=Tru
                     metadata={'policy': first['policy'], 'spatial_sd': spatial_sd, 'std_ddof': 0,
                               'roi_comparison':True, 'single_sensor_plane':single_plane,
                               'summary':summary, 'support':first.get('support', 'per_band'),
+                              'categorical_style':categorical_style if labels else 'connected',
                               'units':first.get('units', 'unknown'),
                               'normalization': 'L2 on common finite features' if normalized else None,
                               'common_feature_indices': np.flatnonzero(common).tolist(),
@@ -93,6 +101,10 @@ def roi_plot(results, names, colors, *, source, normalized=False, spatial_sd=Tru
                  'sd': sd if spatial_sd and summary == 'mean' else None,
                  'counts': result['counts'], 'used_counts':result['count'],
                  'rect': result['rect'], 'feature_indices': list(range(len(x)))}
+        curve.update({key: plain(result.get('metadata', {}).get(key)) for key in
+            ('roi_definition', 'exclusion_definitions', 'geometry_counts', 'geometry_semantics', 'membership_rule')})
+        curve.update({key: np.array(result[key], copy=True) for key in
+            ('geometry_excluded_count', 'support_excluded_count', 'selection_excluded_count') if key in result})
         if spatial_sd and summary == 'median':
             curve.update(lower=np.array(result['q25'], copy=True), upper=np.array(result['q75'], copy=True))
         if normalized:
@@ -101,6 +113,38 @@ def roi_plot(results, names, colors, *, source, normalized=False, spatial_sd=Tru
         if single_plane and 'distribution' in result:
             curve['distribution'] = result['distribution']
         spec.series.append(curve)
+    return spec
+
+
+def map_distribution_plot(result, names=None, colors=COLORS, *, source, mode='ecdf', brushes=()):
+    """Exact map distributions; spatial brush arrays stay outside JSON plot records."""
+    if mode not in ('ecdf', 'histogram'):
+        raise ValueError('Map distribution mode must be ecdf or histogram')
+    regions = result['regions']
+    names = list(names) if names is not None else [item['roi'].get('name') or f'ROI {i+1}' for i, item in enumerate(regions)]
+    if len(names) != len(regions):
+        raise ValueError('Map distribution names must match ROI results')
+    units = result['metadata']['units']
+    title = 'Map value ECDF' if mode == 'ecdf' else 'Map value histogram'
+    spec = PlotSpec('lines', title, f'Map value ({units})',
+        'Cumulative fraction of valid ROI pixels' if mode == 'ecdf' else 'Pixel count', source=source,
+        metadata={**plain(result['metadata']), 'distribution_mode':mode,
+                  'roi_results':plain([{key:item[key] for key in ('roi', 'counts', 'statistics', 'reason_counts')}
+                                       for item in regions])}, brushes=list(brushes),
+        caption='All eligible map pixels; exact spatial distribution. Map transform precedes ROI summary. '
+                'Selected contrast pixels are not defect truth or independent experimental replicates.')
+    signal_status = result['metadata'].get('map_recipe', {}).get('low_signal_assessment', {}).get('status')
+    if signal_status:
+        spec.caption += f' Low-signal assessment: {signal_status}.'
+    for i, (name, item) in enumerate(zip(names, regions)):
+        ecdf, histogram = item['ecdf'], item['histogram']
+        spec.series.append({'name':name, 'color':item['roi'].get('color') or colors[i % len(colors)],
+            'style':'-' if i % 2 == 0 else '--',
+            'x':ecdf['values'] if mode == 'ecdf' else (histogram['bin_edges'][:-1]+histogram['bin_edges'][1:])*.5,
+            'y':ecdf['fraction'] if mode == 'ecdf' else histogram['counts'],
+            'drawstyle':'steps-post' if mode == 'ecdf' else 'steps-mid',
+            'roi':item['roi'], 'sample_count':item['counts']['used'],
+            'ecdf':ecdf, 'histogram':histogram})
     return spec
 
 
@@ -318,17 +362,26 @@ def render_figure(spec, *, width_mm=180, height_mm=115, dpi=300):
             ax.legend(handles=[Patch(facecolor='#dce1e5', label='Invalid / masked')], loc='lower right', fontsize=7)
         for item in spec.series:
             x, y = np.asarray(item['x']), np.asarray(item['y'])
-            ax.plot(x, y, item.get('style', '-'), color=item['color'], label=item['name'],
-                    marker='o' if spec.categories or len(x) < 5 else None, markersize=3, linewidth=1.3)
+            categorical_points = bool(spec.categories) and spec.metadata.get('categorical_style') == 'points'
+            if spec.metadata.get('distribution_mode') == 'histogram':
+                ax.stairs(item['histogram']['counts'], item['histogram']['bin_edges'],
+                          color=item['color'], label=item['name'], linestyle=item.get('style', '-'), linewidth=1.3)
+            else:
+                ax.plot(x, y, linestyle='none' if categorical_points else item.get('style', '-'),
+                        drawstyle=item.get('drawstyle', 'default'), color=item['color'], label=item['name'],
+                        marker=item.get('marker', 'o' if spec.categories or len(x) < 5 else None),
+                        markersize=item.get('markersize',3), linewidth=1.3)
+                if spec.metadata.get('distribution_mode') == 'ecdf' and len(x):
+                    ax.vlines(x[0], 0., y[0], colors=item['color'], linewidth=1.3)
             if item.get('sd') is not None:
                 sd = np.asarray(item['sd'])
-                if len(x) == 1:
+                if len(x) == 1 or categorical_points:
                     ax.errorbar(x,y,yerr=sd,fmt='none',ecolor=item['color'],capsize=4,linewidth=1.3)
                 else:
                     ax.fill_between(x, y-sd, y+sd, color=item['color'], alpha=.17)
             if item.get('lower') is not None:
                 lower, upper = np.asarray(item['lower']), np.asarray(item['upper'])
-                if len(x) == 1:
+                if len(x) == 1 or categorical_points:
                     ax.errorbar(x, y, yerr=np.stack((y-lower, upper-y)), fmt='none',
                                 ecolor=item['color'], capsize=4, linewidth=1.3)
                 else:
@@ -338,7 +391,12 @@ def render_figure(spec, *, width_mm=180, height_mm=115, dpi=300):
                 axes[1].plot(distribution['x'],distribution['y'],item.get('style','-'),
                              color=item['color'],label=item['name'],linewidth=1.3)
             if 'normalized' in item:
-                axes[1].plot(x, item['normalized'], item.get('style', '-'), color=item['color'], label=item['name'])
+                axes[1].plot(x, item['normalized'], linestyle='none' if categorical_points else item.get('style', '-'),
+                             marker='o' if categorical_points else None, color=item['color'], label=item['name'])
+        if spec.metadata.get('distribution_mode') == 'ecdf':
+            ax.set_ylim(0, 1.02)
+        for brush in spec.brushes:
+            ax.axvspan(*brush['metadata']['value_range'], color=brush['metadata']['roi'].get('color') or COLORS[0], alpha=.08)
         if spec.series:
             ax.legend(fontsize=7, frameon=False)
         elif spec.image is None:
@@ -365,7 +423,7 @@ def render_figure(spec, *, width_mm=180, height_mm=115, dpi=300):
         return figure
 
 
-def recorded_roi_plot(sequence, rectangles, names, colors, *, policy='diagnostic', band=0, cancelled=None):
+def recorded_roi_plot(sequence, rectangles, names, colors, *, policy='diagnostic', band=0, cancelled=None, exclusions=()):
     from .analysis import roi_statistics
     from .experiments import _setting_values, _unknown, matching_settings
     from .io import Cube
@@ -399,7 +457,7 @@ def recorded_roi_plot(sequence, rectangles, names, colors, *, policy='diagnostic
         settings.append(plain(resolved))
         settings_sources.append(sources)
         for i,rect in enumerate(rectangles):
-            stats = roi_statistics(cube,rect,policy=policy,bands=[band],robust=False)
+            stats = roi_statistics(cube,rect,policy=policy,bands=[band],robust=False,exclusions=exclusions)
             values[i,index] = stats['mean'][band]
             valid_counts[i,index] = stats['count'][band]
     settings_check = matching_settings(records) if len(records) >= 2 else {
@@ -448,20 +506,29 @@ def export_figure_bundle(spec, directory, *, width_mm=180, height_mm=115, dpi=30
         writer = csv.writer(stream)
         writer.writerow(['series', 'feature_index', 'x', 'y', 'spatial_sd_ddof0', 'normalized',
                          'spatial_q25', 'spatial_q75', 'used_count', 'sample_index',
-                         'channel_index', 'channel_label', 'frame_identity', 'settings_consistency'])
+                         'channel_index', 'channel_label', 'frame_identity', 'settings_consistency',
+                         'roi_id', 'roi_revision', 'geometry_count', 'excluded_geometry_count',
+                         'geometry_excluded_count', 'support_excluded_count', 'selection_excluded_count'])
         for item in spec.series:
+            indices, sample_indices = item.get('feature_indices'), item.get('sample_indices')
+            identities = item.get('frame_identities')
+            counts = item.get('used_counts', item.get('valid_counts'))
+            sd, lower, upper = item.get('sd'), item.get('lower'), item.get('upper')
+            definition, geometry = item.get('roi_definition') or item.get('roi') or {}, item.get('geometry_counts') or {}
+            removed = [item.get(key) for key in ('geometry_excluded_count', 'support_excluded_count', 'selection_excluded_count')]
             for i, (x, y) in enumerate(zip(item['x'], item['y'])):
-                sd = item.get('sd')
-                writer.writerow([item['name'], item.get('feature_indices', range(len(item['x'])))[i],
+                writer.writerow([item['name'], indices[i] if indices is not None else '' if spec.metadata.get('distribution_mode') else i,
                                  x, y, sd[i] if sd is not None else '',
                                  item['normalized'][i] if 'normalized' in item else '',
-                                 item['lower'][i] if 'lower' in item else '',
-                                 item['upper'][i] if 'upper' in item else '',
-                                 item.get('used_counts', item.get('valid_counts', ['']*len(item['x'])))[i],
-                                 item.get('sample_indices', ['']*len(item['x']))[i],
+                                 lower[i] if lower is not None else '', upper[i] if upper is not None else '',
+                                 counts[i] if counts is not None else item.get('sample_count', ''),
+                                 sample_indices[i] if sample_indices is not None else '',
                                  spec.metadata.get('channel_index', ''), spec.metadata.get('channel_label', ''),
-                                 item.get('frame_identities', ['']*len(item['x']))[i],
-                                 spec.metadata.get('settings_check', {}).get('status', '')])
+                                 identities[i] if identities is not None else '',
+                                 spec.metadata.get('settings_check', {}).get('status', ''),
+                                 definition.get('roi_id', ''), definition.get('revision', ''),
+                                 geometry.get('geometry_count', ''), geometry.get('excluded_count', ''),
+                                 *[values[i] if values is not None else '' for values in removed]])
     if any('distribution' in item for item in spec.series):
         with (directory/'distributions.csv').open('x',newline='',encoding='utf-8') as stream:
             writer = csv.writer(stream)
@@ -470,6 +537,32 @@ def export_figure_bundle(spec, directory, *, width_mm=180, height_mm=115, dpi=30
                 d = item['distribution']
                 for i,x in enumerate(d['x']):
                     writer.writerow([item['name'],d['bin_edges'][i],d['bin_edges'][i+1],x,d['counts'][i],d['y'][i]])
+    if spec.metadata.get('distribution_mode'):
+        with (directory/'ecdf.csv').open('x', newline='', encoding='utf-8') as stream:
+            writer = csv.writer(stream)
+            writer.writerow(['series', 'roi_id', 'map_value', 'count_at_value', 'cumulative_count', 'cumulative_fraction', 'n_used'])
+            for item in spec.series:
+                ecdf = item['ecdf']
+                for value, count, cumulative, fraction in zip(ecdf['values'], ecdf['counts'], ecdf['cumulative_counts'], ecdf['fraction']):
+                    writer.writerow([item['name'], item['roi'].get('roi_id'), value, count, cumulative, fraction, item['sample_count']])
+        with (directory/'map_histograms.csv').open('x', newline='', encoding='utf-8') as stream:
+            writer = csv.writer(stream)
+            writer.writerow(['series', 'roi_id', 'bin_left', 'bin_right', 'count', 'density', 'n_used'])
+            for item in spec.series:
+                histogram = item['histogram']
+                for i, count in enumerate(histogram['counts']):
+                    writer.writerow([item['name'], item['roi'].get('roi_id'), histogram['bin_edges'][i],
+                        histogram['bin_edges'][i+1], count, histogram['density'][i], item['sample_count']])
+    for index, brush in enumerate(spec.brushes):
+        mask_name, coordinates_name = f'brush_{index+1:02d}_mask.npy', f'brush_{index+1:02d}_coordinates.csv'
+        np.save(directory/mask_name, brush['mask'], allow_pickle=False)
+        metadata = brush['metadata']
+        with (directory/coordinates_name).open('x', newline='', encoding='utf-8') as stream:
+            writer = csv.writer(stream)
+            writer.writerow(['roi_id', 'roi_revision', 'raw_y_index', 'raw_x_index', 'map_value', 'units'])
+            for (y, x), value in zip(brush['coordinates_yx'], brush['values']):
+                writer.writerow([metadata['roi'].get('roi_id'), metadata['roi'].get('revision'), y, x, value, metadata['units']])
+        record['brushes'][index].update(mask_file=mask_name, coordinates_file=coordinates_name)
     (directory/'plot.json').write_text(json.dumps(record, indent=2, allow_nan=False)+'\n', encoding='utf-8')
     figure = render_figure(spec, width_mm=width_mm, height_mm=height_mm, dpi=dpi)
     import matplotlib as mpl

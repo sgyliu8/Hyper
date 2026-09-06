@@ -22,6 +22,8 @@ def save_state(window):
              'analysis_method':window.analysis_method.currentData(),
              'feature_interval':[window.feature_first.value(),window.feature_last.value()],
              'trace_channel':window.trace_channel.currentIndex(),
+             'roi_definitions':window.regions() if cube else previous.get('roi_definitions', []),
+             'reference_roi_id':window.reference_roi_id,
              'annotation_path':str(window.annotation_path) if window.annotation_path else None,
              'rois':[{'name':window.roi_names[i].text(), 'rect':list(rect), 'color':window.roi_colors[i],
                       'visible':window.roi_visible[i].isChecked()} for i,rect in enumerate(window.rectangles())] if cube else previous.get('rois',[]),
@@ -64,19 +66,31 @@ def restore_view(window):
     window._pending_state = None
     if state.get('last_path') and not window.sequence and window.cube.metadata.get('source_file') != state['last_path']:
         return  # Geometry belongs to the saved source, not an unrelated file.
-    if state.get('rois'):
-        for roi in [*window.rois,*window.roi_labels]:
+    if state.get('roi_definitions') or state.get('rois'):
+        for roi in [*window.rois,*window.roi_labels,*window.roi_fills]:
             window.plot.removeItem(roi)
         for row in window.roi_rows:
             row.setParent(None); row.deleteLater()
-        window.rois,window.roi_labels,window.roi_rows = [],[],[]
+        window.rois,window.roi_labels,window.roi_rows,window.roi_fills = [],[],[],[]
         window.roi_names,window.roi_colors,window.roi_visible = [],[],[]
+        window.roi_records,window.roi_included = [],[]
         h,w = window.cube.shape[:2]
-        for item in state['rois'][:8]:
-            x0,y0,x1,y1 = item['rect']
-            if 0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h:
-                window.add_roi(item['name'],item['rect'],item['color'])
-                window.roi_visible[-1].setChecked(item.get('visible',True))
+        if state.get('roi_definitions'):
+            from hyperlab.analysis.regions import resolve_roi
+            for record in state['roi_definitions'][:8]:
+                try:
+                    resolve_roi((h,w),record)
+                except (ValueError,OSError) as error:
+                    window.notify(f'Saved ROI unavailable: {error}'); continue
+                window.add_roi(record['name'],color=record['color'],record=record)
+            window.reference_roi_id = state.get('reference_roi_id')
+            window.refresh_reference_selector()
+        else:
+            for item in state['rois'][:8]:
+                x0,y0,x1,y1 = item['rect']
+                if 0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h:
+                    window.add_roi(item['name'],item['rect'],item['color'])
+                    window.roi_visible[-1].setChecked(item.get('visible',True))
         if not window.rois:
             window.add_roi()
     window.band.setValue(min(window.band.maximum(),state.get('band',0)))

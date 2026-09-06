@@ -109,6 +109,7 @@ def test_strided_display_uses_same_raw_coordinates_masks_and_order(mask_kind, po
     if labels[0] == 'B':
         expected = expected[..., ::-1]
     np.testing.assert_equal(selected['image'], expected)
+    assert selected['image'].flags.c_contiguous
     np.testing.assert_equal(raw, before)
     assert selected['statistics_scope'] == 'strided raw samples'
     assert selected['statistics_sample_count'] == sampled.size
@@ -135,6 +136,31 @@ def test_strided_display_can_keep_full_diagnostics_and_default_path():
     assert selected['raw_mean'] == pytest.approx(np.nanmean(raw))
     assert selected['statistics_scope'] == 'full raw frame'
     assert selected['statistics_sample_count'] == raw.size
+
+
+@pytest.mark.parametrize('dtype,value,display_dtype', [(np.uint8, 251, np.float32),
+    (np.uint16, 65531, np.float32), (np.uint32, 2**31+1, np.float64),
+    (np.float64, 2**40+.125, np.float64)])
+def test_compact_display_preserves_raw_precision_and_current_frame_validity(dtype, value, display_dtype):
+    from hyperlab.ui.view import display_levels
+    raw = np.full((5, 7, 3), value, dtype=dtype)
+    mask = np.ones(raw.shape, dtype=bool)
+    mask[2, 3, 1] = False
+    metadata = {'data_level': 'raw_frame', 'channel_labels': ['B', 'G', 'R'], 'sequence': 10}
+    cube = Cube(raw, metadata, mask)
+    first = display_selection(cube, display_stride=(2, 3), diagnostics=False)
+    assert first['image'].dtype == display_dtype and first['image'].flags.c_contiguous
+    assert first['image'][0, 0, 0] == value
+    assert np.isnan(first['image'][1, 1]).all()
+    assert first['raw_counts']['invalid'] == 1 and first['statistics_source']['sequence'] == 10
+    assert first['levels'] == display_levels(first['image'], first['valid_mask'])
+    second_mask = np.ones(raw.shape, dtype=bool)
+    second_mask[4, 6] = False
+    second = display_selection(Cube(raw, {**metadata, 'sequence': 11}, second_mask),
+                               display_stride=(2, 3), diagnostics=False)
+    assert np.isfinite(second['image'][1, 1]).all() and np.isnan(second['image'][2, 2]).all()
+    assert second['raw_counts']['invalid'] == 3 and second['statistics_source']['sequence'] == 11
+    np.testing.assert_equal(raw, np.full(raw.shape, value, dtype=dtype))
 
 
 def test_cfa_stride_retains_full_cell_phase_and_odd_offset_rejection():

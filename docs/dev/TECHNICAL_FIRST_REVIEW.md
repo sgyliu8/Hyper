@@ -13,8 +13,8 @@ scene usefulness, reference applicability and spectroscopy are separate outcomes
 
 | Slice | Implementation | Required verification | Current status |
 |---|---|---|---|
-| 1 | F1 labels, F2 mailbox events, F3 settings evidence, F4 independent UI states, F5 signal qualification, F6 wavelength support; measured preview optimization/readiness | Reproductions, focused numerical/Qt regressions, real baseline and updated native run | 495 offline tests PASS; updated native run PENDING |
-| 2 | Stable mask-backed ROIs, exclusions/line strips, exact map distributions and spatial brush, linked task plots; observation Study | Geometry/tail/aggregation oracles, relocation and duplicate handling, actual saved observations | PLANNED |
+| 1 | F1 labels, F2 mailbox events, F3 settings evidence, F4 independent UI states, F5 signal qualification, F6 wavelength support; measured preview optimization/readiness | Reproductions, focused numerical/Qt regressions, real baseline and updated native run | 495 offline tests PASS; first updated native run ~6.5 displayed fps, target not yet met |
+| 2 | Stable mask-backed ROIs, exclusions/line strips, exact map distributions and spatial brush, linked task plots; observation Study | Geometry/tail/aggregation oracles, relocation and duplicate handling, actual saved observations | Implemented; focused numerical, geometry and Qt regressions PASS; full/native acceptance pending |
 | 3 | Physical support/export integration, bounded H2/H3 asset advancement, documentation and package verification | Three actual-code reviews; offline suite, wheel/frozen/native/outside-CWD checks; exact source/package/CI identities | PLANNED |
 
 ## Three reviewers, three rounds
@@ -63,6 +63,22 @@ labelled display derivative; exact raw ROI/mask/map/export computation remains
 independent. Full quality uses a pinned observation and an explicit background
 inspection, avoiding a periodic full-frame Qt stall. Host image enqueue time is
 not exposure-to-screen latency.
+
+The first updated native run used the isolated Slice 1 source snapshot at
+`28007809498d87efe689eda72c5e1242e3f53b96`, RGB8 / 20 ms / gain 0. It captured
+3,855 and displayed 773 frames; 3,854 overlapping mailbox replacement events,
+zero device gaps/timeouts, and normal stop/release were retained. Approximate
+display rate improved to 6.5 fps, below the 15 fps objective. That incomplete
+performance result is preserved. Further fixes compact sampled buffers without
+changing numerical values, avoid repeated histogram/layout reconstruction and
+record image paint duration. Offline function speedups are not native FPS.
+
+New integration checks found and fixed histogram slopes in place of steps,
+brush shading that did not follow numeric input, bin-centre brush bounds that
+excluded extrema, and stale polygon coordinate frames during source-shape
+changes. A hidden included ROI still contributes to common-feature normalization;
+visibility no longer silently changes the calculation set. All failed receipts
+remain local alongside their later regressions.
 
 Reviewer A inspected 508 files in known vendor/cache roots without locating the
 missing control/calibration assets. No full-drive search or guessed control call

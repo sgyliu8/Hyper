@@ -90,7 +90,8 @@ def test_sam_captures_reference_roi_before_worker_and_keeps_it_on_export(window,
     cube = Cube(np.arange(48, dtype=float).reshape(4, 4, 3) + 1)
     window.set_cube(cube)
     rect = (0, 0, 2, 2)
-    monkeypatch.setattr(window, 'rectangles', lambda: [rect, (2, 2, 4, 4)])
+    window.apply_roi_bounds(0, rect)
+    window.apply_roi_bounds(1, (2, 2, 4, 4))
     window.roi_names[0].setText('Reference patch')
     pending = {}
     monkeypatch.setattr(window, 'background', lambda run, done, message: pending.update(run=run, done=done))
