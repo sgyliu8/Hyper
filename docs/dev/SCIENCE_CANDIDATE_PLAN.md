@@ -64,11 +64,12 @@ Acquisition chart selector shows PCA loadings while the computed figure shows
 ROI amplitude/L2. Camera actions and empty metrics remain prominent offline. The
 approved plot palette and raw/derived image arrangement should be retained.
 
-## Version 1: proposed round-three resolution
+## Version 1: frozen round-three implementation plan
 
-The three round-two reports are the input to these decisions. Round-three
-reviewers must explicitly accept or challenge each remaining condition before
-this plan is frozen. The version-zero record above remains the proposal history.
+The three round-two reports are the input to these decisions. All three
+round-three reviewers accepted the conditions below; S1-S9 are now implemented
+and verified in the [delivery record](SCIENCE_ROADMAP_REVIEW.md). The version-zero
+record above remains the proposal history. Conditional extensions stay separate.
 
 1. S1 uses the physics review's fixed, role-aware measurement_context fields.
    All four inputs require known matching instrument, response calibration,

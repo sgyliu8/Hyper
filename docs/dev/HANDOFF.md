@@ -10,13 +10,19 @@ The English UI retains the approved scientific palette and simplifies analysis
 to a method selector, contextual parameters, Run, Results and one Export menu.
 See the [complete technical/user guide](../user/MATERIALS_AND_THERMAL_PAINT.md).
 
-The source suite passes 416 tests. The isolated installation smoke exercises
+The source suite passes 418 tests. The isolated installation smoke exercises
 the new scientific modules, annotation/reference dialogs and output manifest.
 Actual saved RGB/Bayer frames, a complete recording and a partial durable prefix
 pass 14 independent checks with originals unchanged. A separate official USGS
 measured coating spectrum passes 53 numerical/provenance and 36 export checks;
 it is one external spectrum, never a HinaLea spatial image or temperature model.
-Build/native-delivery status is recorded in the delivery record as it completes.
+The final wheel and frozen executable pass installation smokes outside the
+checkout. Native delivery captures 1,223 frames with zero device gaps/timeouts,
+saves an actual RGB frame, and normally restores/releases the camera. This fresh
+scene is almost black; its cover/illumination state is unknown. The earlier actual
+visible frame is used in REPLAY for the final ROI/table/map/export acceptance,
+which passes 47 independent checks. Detailed counts, package hashes and remaining
+limits are in the delivery record. Local evidence stays ignored and private.
 
 The first integrated suite retained three failures: two old UI fixtures needed
 the new explicit completed-analysis export contract, and a bounded fake-camera
@@ -27,6 +33,16 @@ review fixes source pinning, source-switch invalidation, asynchronous Run recove
 RGB/BGR labels, failed chart-selection identity and modeless figure settings.
 Closed file mappings are rejected before hashing when a previous export dialog
 outlives a replay-source switch. These changes have dedicated regressions.
+The final native review also reproduced a stale pixel readout after a new frame;
+new frames now clear the previous pixel value and quality tooltip. Both live and
+replay transitions have regressions. The delivery package is built from
+`a5c055fe4bb4f6da61fe6818f195262b39237ab1`.
+Later closeout edits are documentation only. The verified package is in
+`local/distribution/materials-science-0.4.0-delivery`; the local delivery index
+and `local/Start-HyperLab-0.4.cmd` point to it. Earlier 0.4.0 build directories
+are preserved but superseded. The visible native window is left on actual-frame
+ROI curves and normalized difference, with camera ownership released. The Draft
+PR and its exact-head terminal checks record hosted validation separately.
 
 Physical FP control/reconstruction/calibration, a temperature-history inverse
 model and a validated defect classifier remain conditional on the evidence
