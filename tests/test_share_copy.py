@@ -125,6 +125,7 @@ def test_shared_recording_keeps_each_identity_counts_partial_and_recorded_clock(
     assert isinstance(identities, list) and len(set(identities)) == 12
     assert all(identity.startswith('Identity ') for identity in identities)
     assert safe.xlabel == spec.xlabel and safe.ylabel == 'Mean (DN)'
+    assert safe.metadata['recording']['axis_names'] == spec.metadata['recording']['axis_names']
     for key in ('expected_frames','frame_count','copied_frames','data_fsynced_frames',
                 'durable_frames','readable_frames','admitted_frames','written_frames',
                 'unpersisted_frames','explicitly_failed_frames','partial','completed','accounting'):

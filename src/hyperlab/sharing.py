@@ -14,7 +14,7 @@ completed partial continuous ram_burst acquiring persisting recovery abandoned
 diagnostic quantitative common per_band mean median min max std mad q25 q75 iqr strip_profile
 linear source_pixel_summary summary_then_transform pixel_transform_then_summary
 raw_frame raw_sequence raw_scan spectral_cube reflectance_cube derived_frame derived_map
-LIVE REPLAY SYNTHETIC unknown wavelength category index time state sensor_plane color_channel
+LIVE REPLAY SYNTHETIC unknown wavelength category index time x y state sensor_plane color_channel
 rectangle polygon strip mask target reference exclude top_left exact increasing decreasing
 ecdf histogram points contrast roi specimen session observation temperature dwell
 difference ratio normalized_difference reference_rmse PCA pca smooth derivative1 derivative2
