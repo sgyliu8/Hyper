@@ -237,6 +237,8 @@ class WorkbenchStub(W.QWidget):
     def background(self, function, callback, label):
         self.jobs += 1
         callback(function())
+    def notify(self, text):
+        self.last_message = text
 
 
 def test_study_dialog_import_save_open_duplicates_and_unknown_analysis(qtbot, tmp_path):

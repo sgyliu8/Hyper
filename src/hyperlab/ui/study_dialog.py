@@ -309,10 +309,12 @@ class StudyDialog(W.QDialog):
             value, error = outcome
             if error is not None:
                 self._status(f'{type(error).__name__}: {error}', True)
+                self.workbench.notify('Study · ' + self.status.text())
                 return
             completed(value)
             self._remember()
             self.refresh()
+            self.workbench.notify('Study · ' + self.status.text())
         self.workbench.background(run, finish, message)
 
     def rename(self):

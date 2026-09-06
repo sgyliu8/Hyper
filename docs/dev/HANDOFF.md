@@ -1,42 +1,59 @@
-# Current handoff — technical-first increment in progress
+# Current handoff — technical-first 0.5.0 verification
 
-The owner supplied `HyperLab_Next_Codex_Technical_First.md` and requested complete
-implementation plus repair of UI state semantics. The new
-[technical-first review and acceptance record](TECHNICAL_FIRST_REVIEW.md) is the
-current plan. Continue on `feature/materials-science-v040` / Draft PR 2, preserving
-the previous delivery. Normal single-owner imaging is authorized; device resets,
-driver/firmware/permanent changes and unknown FP commands remain outside scope.
+The technical-first increment is implemented on `feature/materials-science-v040`
+for Draft PR 2. The [review and acceptance record](TECHNICAL_FIRST_REVIEW.md)
+contains F1–F6, the three actual AI review rounds, measured performance, failed
+recordings and source/package evidence. The existing numerical/figure architecture
+and approved English scientific UI remain in use.
 
-Slice 1 implements F1–F6, independent camera/view/completed-result labels, explicit
-return from saved data to live preview, sampled display with full-resolution
-inspection, bounded host-stage timing and on-demand pinned quality/readiness.
-The final Slice 1 offline suite passes **495 tests** (33.67 s), including the
-decimal wavelength-gap boundary regression. Native updated-code and package
-verification are still pending. The new baseline real-scene run saved a visible
-RGB8 frame at 20 ms/gain 0: 2,129 captured, 156 displayed, capture median 34.045 fps,
-display median 2.535 fps; zero observed device gaps/timeouts and normal release.
-Its legacy `preview_dropped=2128` is an overlapping mailbox event counter, not
-measured loss. The original receipt stays unchanged. New counters use
-`mailbox_replacement_events` with explicit scope. The target has printed material
-and glare; it carries no thermal-paint/defect ground truth.
+Implemented: independent camera/view/result identities; explicit unnamed-plane
+and chunk-first settings semantics; diagnostic signal evidence and physical
+wavelength support; pinned quality/readiness; measured preview work; stable
+reference/target/exclude polygons, masks and strips; exact map distributions and
+spatial brushing; original-observation Study manifests, verified relocation and
+source-bound figures/tables. Same raw dimensions retain ROI definitions across
+preview epochs and RGB/Bayer changes. Different dimensions create new generic
+ROIs with explicit placement feedback. Completed results clear on Start. Task
+controls and terminal operation messages follow their actual context.
 
-Slice 2 now implements stable rectangle/polygon/mask/strip geometry, exclusions,
-separate Show/Use, stable reference selection, exact map ECDF/histogram brushes,
-interval maps, linked task plots and local Study observation/thermal points.
-The full offline suite passes **592 tests** (47.58 s); the final two Study display
-fixes additionally pass 23 focused tests. The expanded installation smoke passes.
-The first updated native test improved display to about 6.5 fps but did not meet
-the target; its 3,855 captured / 773 displayed / zero device-gap/timeout receipt
-is retained, with normal camera release. Subsequent buffer/Qt optimizations still
-require native acceptance. See the [workflow](../user/TECHNICAL_WORKFLOW.md) and
-[Study/SOP guide](../guides/studies.md).
+Verification at the preceding production checkpoint `e457cc06`: 664 full source
+tests PASS; non-editable wheel and frozen doctor/offline smoke PASS from outside
+checkout with fresh space/Chinese-path configurations. Two actual RGB observations
+pass 81 independent numerical/provenance checks. Native ECDF/one-pixel strip
+exports pass 57 further checks. Final UI fixes pass 70 focused regressions and
+27 Study regressions (overlap exists; do not sum as a new suite denominator).
+The final rebuild, full suite, native smoke and hosted CI are being recorded
+before delivery; preceding package results do not validate subsequent code.
 
-Three fresh AI reviewers completed rounds 1 and 2 with actual counterexamples and
-cross-challenges. Round 3 must inspect the Slice 2 checkpoint and final fixes.
-Final Slice 3 native/package/CI delivery remains pending.
-Full local receipts and failed test attempts are preserved in
-`local/diagnostics/technical-first-20260906`. The previous binary remains the
-installed delivery until the new package is verified. Licensing/release are pending.
+A visible printed scene was acquired using RGB 10/20/40 ms and BayerRG12 40 ms,
+gain zero. This is actual imaging evidence, not a thermal-paint/defect dataset.
+Measured native capture was about 34 fps; preview workload medians were about
+16–17 displayed fps, with below-target windows retained. Host stage timings are
+not calibrated exposure-to-screen latency. The old almost-black frame's cause
+remains unknown. No matched radiometric references or material truth were invented.
+
+High-rate 300-frame recording remains FAIL: successive attempts retained 96,
+112 and 176 durable frames. The final attempt accepted/wrote 176, rejected one
+writer frame and independently recorded 88 device gaps / five timeouts across
+the storage-stressed session. Offline alternatives exposed a remaining Windows
+durable synchronization limit and were not promoted. All partial prefixes and
+negative receipts remain intact; a short smoke cannot qualify the 300-frame target.
+
+H2/H3/H4 are not restored or physically validated. A bounded search of 508 known
+vendor/cache files produced no verified FP API or matching calibration. The next
+highest-value asset is this unit's previous working TruScope installation with
+its controller plugin/API and linked per-unit configuration/calibration folders.
+Normal single-owner imaging is authorized; resets, driver/firmware/permanent
+writes and unknown FP/serial commands remain outside this work. All cameras are
+normally released between package tests. Original-code licensing and public
+binary release remain pending.
+
+Local evidence and real data stay under ignored
+`local/diagnostics/technical-first-20260906`. Follow the
+[technical workflow](../user/TECHNICAL_WORKFLOW.md) and
+[Study/SOP guide](../guides/studies.md). Preserve the prior 0.4.0 package and
+failed cases. Stage reviewed source/tests/redacted English docs only; maintain
+the existing Draft PR without merging or changing the default branch.
 
 ## Historical 0.4.0 materials and thermal-paint delivery
 

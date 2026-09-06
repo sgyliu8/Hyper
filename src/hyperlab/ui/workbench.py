@@ -42,7 +42,7 @@ class TimedImageItem(pg.ImageItem):
 class Workbench(W.QMainWindow):
     def __init__(self, path=None, *, session_factory=None, benchmark_log=None, workspace=None):
         super().__init__()
-        self.setWindowTitle('HyperLab — Live workbench')
+        self.setWindowTitle('HyperLab')
         self.resize(1220, 820)
         self.setMinimumSize(960, 620)
         self.session_factory = session_factory
@@ -97,6 +97,7 @@ class Workbench(W.QMainWindow):
         self.roi_included = []
         self.roi_records = []
         self.roi_fills = []
+        self.roi_source_notice = ''
         self.reference_roi_id = None
         self.right_spec = None
         self.map_distributions = None
@@ -501,6 +502,8 @@ class Workbench(W.QMainWindow):
             self.map_spec = self.plot_spec = None
             self.plot_source = self.roi_source = None
             self.roi_result_context = None
+            self.science_result = None
+            self.plot_annotation = None
             self.roi_results = []
             self.display_mode = 'EMPTY'
             self.image.clear()
@@ -773,6 +776,7 @@ class Workbench(W.QMainWindow):
 
     def set_cube(self, cube, *, live=False, reset_axis=True):
         old_shape = self.cube.shape if self.cube is not None else None
+        self.roi_source_notice = ''
         if self.annotation is not None and self.cube is not cube:
             self.annotation = None
             self.annotation_path = None
@@ -811,7 +815,18 @@ class Workbench(W.QMainWindow):
                 self.plot_mode.blockSignals(False)
                 self.last_quality = 0.0
         if old_shape != cube.shape:
-            self.reset_rois(force=True)
+            matching_coordinates = bool(self.rois) and all(
+                record and record['coordinate_frame']['shape_hw'] == list(cube.shape[:2])
+                for record in self.roi_records)
+            if not matching_coordinates:
+                new_coordinates = bool(self.rois)
+                self.reset_rois(force=True, new_coordinates=new_coordinates)
+                if new_coordinates:
+                    self.roi_source_notice = ('Raw image dimensions changed; new default ROIs created. '
+                                              'Review placement and choose the reference.')
+            elif live and old_shape is None:
+                self.roi_source_notice = ('ROI coordinates retained for matching raw dimensions; '
+                                          'verify placement in the current scene.')
         self.band.blockSignals(True)
         self.band.setRange(0, (self.sequence.frame_count - 1) if self.sequence else cube.shape[2] - 1)
         if not live and reset_axis:
@@ -841,6 +856,8 @@ class Workbench(W.QMainWindow):
         if not live:
             self.update_controls()
             self.update_source_label()
+        if self.roi_source_notice:
+            self.notify(self.roi_source_notice)
 
     def chart_selected(self):
         if self.cube is None:
@@ -1128,7 +1145,7 @@ class Workbench(W.QMainWindow):
             self.plot.removeItem(self.roi_fills.pop(index))
         self.roi_changed()
 
-    def reset_rois(self, force=False):
+    def reset_rois(self, force=False, *, new_coordinates=False):
         if self.cube is None or (self.rois and not force):
             return
         for item in [*self.rois, *self.roi_labels, *self.roi_fills]:
@@ -1137,6 +1154,14 @@ class Workbench(W.QMainWindow):
         self.roi_records = [None] * len(self.roi_names)
         self.reference_roi_id = None
         for index in range(len(self.roi_names)):
+            if new_coordinates:
+                name, show, use = self.roi_names[index], self.roi_visible[index], self.roi_included[index]
+                for control in (name, show, use):
+                    control.blockSignals(True)
+                name.setText(f'ROI {chr(65+index)}')
+                show.setChecked(True); use.setChecked(True)
+                for control in (name, show, use):
+                    control.blockSignals(False)
             self._create_roi(index)
         self.roi_changed()
 
@@ -1846,6 +1871,15 @@ class Workbench(W.QMainWindow):
 
     def update_right_task(self):
         self._right_request += 1
+        task = self.right_task.currentData()
+        distribution_task = task in ('ecdf','histogram')
+        self.brush_controls.setVisible(distribution_task)
+        self.brush_controls.setEnabled(distribution_task)
+        if not distribution_task:
+            self._brush_pending = False
+            self.map_brushes = []
+            self.brush_overlay.clear(); self.brush_mask_overlay.clear()
+            self.brush_note.setText('No selected map range.')
         if self.map_brushes and self.map_brushes[0]['metadata']['roi']['roi_id'] != self.inspect_roi.currentData():
             self.map_brushes = []
             self.brush_overlay.clear(); self.brush_mask_overlay.clear()
@@ -1860,7 +1894,7 @@ class Workbench(W.QMainWindow):
         from hyperlab.plots import map_distribution_plot, strip_profile_plot, roi_transform_plot
         from hyperlab.analysis.regions import strip_profile
         from hyperlab.experiment_metadata import compute_pinned
-        task = self.right_task.currentData(); context = self.map_distribution_context
+        context = self.map_distribution_context
         if task in ('ecdf','histogram'):
             spec = map_distribution_plot(self.map_distributions, source=source_identity(self.product_source),
                                          mode=task, brushes=self.map_brushes)
@@ -1874,7 +1908,7 @@ class Workbench(W.QMainWindow):
             if record['geometry']['type'] != 'strip':
                 self.right_spec = None
                 self.shape_chart.clear(); self.shape_chart.setTitle('Select a line / strip ROI')
-                self.brush_note.setText('Select a line / strip ROI for a profile.'); return
+                self.brush_note.setText('No selected map range. Select a line / strip ROI for a profile.'); return
             cube, product, request = self.product_source, self.map_distribution_product, self._right_request
             def completed(payload):
                 if (self.product_source is not cube or self.map_distribution_product is not product or
@@ -1886,6 +1920,7 @@ class Workbench(W.QMainWindow):
                 spec = strip_profile_plot(result, source=source_identity(cube), source_fingerprint=fingerprint,
                                           analysis_context=context)
                 self.draw_right_plot(spec)
+                self.notify(f"Profile complete: {record['name']} · raw pixel positions and full-resolution counts.")
             self.background(lambda:compute_pinned(cube, lambda:strip_profile(cube,record,policy=context['policy'],exclusions=context['exclusions'])),
                             completed,'Computing exact cross-strip profile…'); return
         if not self.plot_spec or not self.plot_spec.metadata.get('roi_comparison'):
@@ -1901,7 +1936,7 @@ class Workbench(W.QMainWindow):
         self.draw_right_plot(spec)
 
     def apply_map_brush(self):
-        if self.map_distributions is None:
+        if self.map_distributions is None or self.right_task.currentData() not in ('ecdf','histogram'):
             return
         if self.task_busy:
             self._brush_pending = True
@@ -1913,7 +1948,7 @@ class Workbench(W.QMainWindow):
         if record is None:
             return
         product=self.map_distribution_product; bounds=[self.brush_low.value(),self.brush_high.value()]
-        task = self.right_task.currentData()
+        task, request = self.right_task.currentData(), self._right_request
         def completed(result):
             if self.map_distributions is None or self.map_distribution_product is not product:
                 return
@@ -1922,6 +1957,8 @@ class Workbench(W.QMainWindow):
             if (self.inspect_roi.currentData() != record['roi_id'] or
                     [self.brush_low.value(),self.brush_high.value()] != bounds):
                 self._brush_pending = True
+                return
+            if self._right_request != request:
                 return
             self.map_brushes=[result]
             self.brush_low.setValue(result['metadata']['value_range'][0])
@@ -1949,6 +1986,7 @@ class Workbench(W.QMainWindow):
             self.brush_note.setText(f"Selected contrast pixels: {counts['selected']} / {counts['used']} valid / {counts['geometry']} in ROI. No defect truth.")
             if self.right_spec:
                 self.right_spec.brushes=[result]
+            self.notify(f"Map range selection complete: {counts['selected']} / {counts['used']} valid pixels in {record['name']}.")
         self.background(lambda:brush_map(product,record,bounds,exclusions=context['exclusions']),completed,
                         'Selecting the inclusive map range at exact raw pixel coordinates…')
 
@@ -2097,7 +2135,7 @@ class Workbench(W.QMainWindow):
                 self.band.setValue(0)
                 self.band.blockSignals(False)
                 self.band_changed(0, reset_axis=True)
-            self.notify(f'Reopened {path}')
+            self.notify(f'Reopened {path}' + (f' · {self.roi_source_notice}' if self.roi_source_notice else ''))
         self.background(read, loaded, 'Reopening local data…')
 
     def band_changed(self, index, *, reset_axis=False):
@@ -2578,8 +2616,11 @@ class Workbench(W.QMainWindow):
         for spin in (self.brush_low,self.brush_high):
             spin.setDecimals(8); spin.setRange(-1e100,1e100)
         brush_row = W.QHBoxLayout(); brush_row.addWidget(self.brush_low); brush_row.addWidget(self.brush_high)
-        map_form.addRow('Inclusive range',brush_row)
-        map_form.addRow(self.button('Select map range',self.apply_map_brush,'map_brush'))
+        self.brush_controls = W.QWidget()
+        brush_form = W.QFormLayout(self.brush_controls); brush_form.setContentsMargins(0,0,0,0)
+        brush_form.addRow('Inclusive range',brush_row)
+        brush_form.addRow(self.button('Select map range',self.apply_map_brush,'map_brush'))
+        map_form.addRow(self.brush_controls)
         self.brush_note = W.QLabel('No selected contrast range'); self.brush_note.setWordWrap(True)
         map_form.addRow(self.brush_note)
         form.addWidget(self.map_tools); self.map_tools.hide()

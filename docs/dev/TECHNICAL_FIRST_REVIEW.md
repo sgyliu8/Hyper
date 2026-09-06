@@ -15,7 +15,7 @@ scene usefulness, reference applicability and spectroscopy are separate outcomes
 |---|---|---|---|
 | 1 | F1 labels, F2 mailbox events, F3 settings evidence, F4 independent UI states, F5 signal qualification, F6 wavelength support; measured preview optimization/readiness | Reproductions, focused numerical/Qt regressions, real baseline and updated native run | F1–F6 implemented and regression-tested; real RGB/Bayer frames saved; workload display medians now 16–17 fps (below-target intervals retained) |
 | 2 | Stable mask-backed ROIs, exclusions/line strips, exact map distributions and spatial brush, linked task plots; observation Study | Geometry/tail/aggregation oracles, relocation and duplicate handling, actual saved observations | Implemented; exact sparse/aggregation/geometry/Study checks PASS; two real saved observations pass 81 independent numerical/provenance checks |
-| 3 | Physical support/export integration, bounded H2/H3 asset advancement, documentation and package verification | Three actual-code reviews; offline suite, wheel/frozen/native/outside-CWD checks; exact source/package/CI identities | Source review complete; final installed/native/CI acceptance in progress |
+| 3 | Physical support/export integration, bounded H2/H3 asset advancement, documentation and package verification | Three actual-code reviews; offline suite, wheel/frozen/native/outside-CWD checks; exact source/package/CI identities | Source review and installed acceptance PASS at e457cc06; final native UI integration fixes and CI closeout in progress |
 
 ## Three reviewers, three rounds
 
@@ -33,7 +33,7 @@ Private full reports and scripts are in
 | Issue | Round-one evidence | Round-two challenge and convergence | Round-three outcome |
 |---|---|---|---|
 | F1 | Persisted Bayer/Mono explicit None raises TypeError | Display-only shared labels; never mutate channel labels or create a colour axis | PASS: None Bayer/Mono and RGB/BGR regressions; real Bayer raw/ROI display |
-| F2 | 2 captured + 2 displayed + 1 replacement | Rename overlapping mailbox events; reject a false loss partition or premature display acknowledgement | PASS: counter overlap/epoch regressions; real gaps/timeouts 0/0 |
+| F2 | 2 captured + 2 displayed + 1 replacement | Rename overlapping mailbox events; reject a false loss partition or premature display acknowledgement | PASS counter semantics; earlier native runs had 0/0 gaps/timeouts, later storage-stressed run had 88/5 (retained) |
 | F3 | Sparse/empty/auto-only settings falsely MATCH; conflicting chunks missed | Reuse the existing chunk-first tri-state matcher; UNKNOWN traces remain available but unqualified | PASS: chunk-first MATCH/MISMATCH/UNKNOWN; real exposure mismatch retained |
 | F4 | Old replay retains receive age and `stream None` | Camera, viewing and each completed result keep independent identity; explicit return to live | PASS: independent source labels; stale editor/export/worker counterexamples fixed |
 | F5 | Equal small DN perturbations produce different weak/bright ND sensitivity | Numerical denominator validity differs from signal evidence; default UNKNOWN; optional analyst `abs(a)+abs(b)` threshold | PASS: signed ND preserved; numerical and signal evidence separate |
@@ -168,6 +168,60 @@ was used. The highest-value next asset is an authorized copy of this instrument'
 previous working TruScope installation, including controller plugin/API and
 linked per-unit configuration/calibration directories. Manufacturer specification
 revisions differ; a generic brochure does not identify this unit or its protocol.
+
+## Recording limit found during installed acceptance
+
+Native UI acceptance additionally reproduced a destructive ROI transition:
+starting preview replaced saved reference/exclusion/strip definitions with tiled
+rectangles while retaining their names. The correction checks raw coordinate
+dimensions, preserves matching definitions across channel/stream changes, and
+clears old computed results. A genuinely different grid creates new generic IDs
+and explicit placement feedback. Native task switching also exposed irrelevant
+range controls and an indefinitely Computing profile status. Contextual controls,
+pending-request guards and completion messages pass 70 focused regressions.
+Previous completed export receipts remain immutable when the active brush clears.
+
+Two native exports from the actual scene independently pass 57 numerical/hash
+checks: the inclusive Suspect selection contains 1,071 / 102,469 valid pixels
+within 185,500 geometric pixels. The native one-pixel strip profile retains 820
+bins, including 280 empty bins per channel, with 17,569 geometric / 6,044 excluded
+pixels and 11,525 used pixels per channel. Empty bins remain empty. These are
+descriptive contrast and spatial dispersion, not defect labels or repeatability.
+
+The `e457cc06` installed native repeat retained **176 / 300** requested frames:
+accepted/written 176, one writer rejection/overflow, and a verified partial prefix.
+The complete session also recorded **88 device gaps and 5 timeouts** under this
+storage-stressed workload. Those transport observations are separate from the
+writer denominator and do not replace the earlier zero-gap runs. A fresh RGB8
+20 ms snapshot was saved and the camera was normally released.
+
+Its 23 checkpoints had median/P95 data-flush times of 25.020/835.484 ms,
+data-fsync 51.089/97.684 ms, and manifest publication 27.011/77.657 ms;
+checkpoint total was 101.543/992.807 ms. Nested timings are not additive
+percentile estimates. In CPython 3.11.9 on Windows, `mmap.flush` calls
+`FlushViewOfFile` while holding the GIL; this explains a mechanism by which a long
+mapped flush can also delay host acquisition/UI work. See the
+[exact upstream implementation](https://github.com/python/cpython/blob/v3.11.9/Modules/mmapmodule.c).
+
+Four bounded offline writer comparisons used a new local output each and kept
+checkpoint8, queue16, a 300-frame request and a scheduled 34 fps producer. The
+existing full-map and page-range variants retained 120/300 and 64/300. Two direct
+sequential-write variants retained 32/300 and 24/300. In the latter trials producer
+lateness remained below 2 ms but data-fsync medians were 739/829 ms. This isolates
+a remaining measured durable-storage synchronization limit on this Windows path;
+it does not diagnose an SSD fault. No experimental variant was promoted, and no
+queue, durability requirement or original target was relaxed.
+
+High-rate 300-frame recording remains **FAIL**. A separate short-recording smoke,
+if successful, establishes only its own bounded frame count. Each earlier partial
+recording and negative experiment remains available locally.
+
+At `e457cc06`, the complete source suite passed **664 tests** (73.00 s). The
+non-editable wheel and frozen executable both passed doctor and offline smoke
+from an outside-checkout directory containing spaces and Chinese characters,
+with fresh empty configs and producer environment variables removed. These
+checks did not open a camera or load a producer. The existing driver was still
+installed on Windows; this was not a blank-VM driver test.
 
 ## Primary-source design examples
 

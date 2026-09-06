@@ -29,6 +29,12 @@
   straight-strip bin ties without snapping neighboring pixels across a boundary.
 - Serialize complete recording manifests in one write; retain all durability
   steps and separately time data flush, file fsync and manifest publication.
+- Preserve ROI IDs, roles and strip geometry across preview epochs and RGB/Bayer
+  changes with the same raw dimensions; clear prior analysis results on Start.
+- Keep map-range controls within distribution tasks, discard superseded brush
+  work and show successful profile/selection completion explicitly.
+- Replace Study progress messages with the actual completed or failed outcome
+  in both the dialog and main workbench.
 
 ## 0.3.1 — live ROI correction, 2026-09-05
 

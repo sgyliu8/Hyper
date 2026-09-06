@@ -42,6 +42,9 @@ polygon holes or strip width, and can reorder regions.
   Removing or excluding the selected reference requires an explicit selection.
 - IDs and revisions persist when saving the workspace. Loading a different raw
   shape creates new coordinate definitions; geometry is never inferred by zoom.
+  Starting preview or switching RGB/Bayer with the same raw dimensions retains
+  those definitions. Check their placement in the current scene; matching pixel
+  dimensions do not prove image registration.
 
 Pixel centres are at `(x+0.5, y+0.5)`. Rectangles and polygons use a half-open
 membership rule; holes are removed. Strips select pixel centres within half the
@@ -65,6 +68,9 @@ The left plot retains source ROI amplitude. **Right plot** selects exact map
 ECDF/histogram, a raw line/strip profile, reference residual or L2 shape. A profile
 uses the selected strip, exact raw pixel centres and cross-strip bins; empty bins
 remain unavailable. It performs no signal interpolation.
+Range controls appear for ECDF/histogram tasks. Switching to a profile, residual
+or shape clears the active spatial brush; previously exported selections retain
+their original receipt.
 
 For a map distribution, choose **Inspect ROI**, type the inclusive lower/upper
 range or drag the shaded region, and use **Select map range**. Pink points mark
@@ -120,3 +126,13 @@ hash-checked relocation. Copying a saved observation does not create an
 independent specimen. Repositioned images are compared descriptively; no
 unregistered pixel subtraction, pooled pixel p-values or confidence intervals
 are reported.
+
+## Bounded recording on the current Windows host
+
+Inspect **Last recording** after every run. The latest 300-frame high-rate test
+retained a verified 176-frame partial prefix and one rejected writer frame;
+durable storage synchronization remains a measured limit. Earlier 96/300 and
+112/300 failures remain recorded. A short successful run establishes only its
+own frame count. Capture FPS, displayed frames, writer acceptance and device
+gaps have separate denominators. Do not infer complete recording from preview
+smoothness or remove flush/checkpoint guarantees to hide the limitation.
