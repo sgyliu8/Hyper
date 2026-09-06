@@ -2093,10 +2093,14 @@ class Workbench(W.QMainWindow):
             self._brush_pending = False
             self.map_brushes = []
             self.brush_overlay.clear(); self.brush_mask_overlay.clear()
+            self.derived_graphics.viewport().update()
+            self.brush_note.setText('No selected map range.')
+        elif not self.map_brushes:
             self.brush_note.setText('No selected map range.')
         if self.map_brushes and self.map_brushes[0]['metadata']['roi']['roi_id'] != self.inspect_roi.currentData():
             self.map_brushes = []
             self.brush_overlay.clear(); self.brush_mask_overlay.clear()
+            self.derived_graphics.viewport().update()
             self.brush_note.setText('No selection for the current ROI')
         if self.map_distributions is None:
             return
@@ -2308,6 +2312,7 @@ class Workbench(W.QMainWindow):
         dialog = W.QDialog(self); dialog.setWindowTitle('Preview share copy')
         dialog.setProperty('source_bound', True)
         layout = W.QVBoxLayout(dialog)
+        layout.setSizeConstraint(W.QLayout.SizeConstraint.SetFixedSize)
         selected = W.QComboBox(); selected.addItems(list(choices)); layout.addWidget(selected)
         notice = W.QLabel('Review this separate copy before saving. Names and source identifiers use local aliases or are removed; '
             'numeric values, units and support remain. Scientific data are not anonymous. '

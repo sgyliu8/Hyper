@@ -4,7 +4,7 @@ from threading import Event
 
 import numpy as np
 import pytest
-from PySide6 import QtWidgets as W
+from PySide6 import QtCore, QtGui, QtWidgets as W
 
 from hyperlab.analysis.regions import make_roi
 from hyperlab.io import Cube
@@ -60,6 +60,7 @@ def test_non_distribution_task_hides_range_and_keeps_completed_receipt(mapped, q
     assert mapped.brush_low.isVisibleTo(mapped.map_tools)
     assert mapped.findChild(W.QPushButton, 'map_brush').isEnabled()
     assert mapped.right_spec.brushes == []
+    assert mapped.brush_note.text() == 'No selected map range.'
 
 
 def test_old_brush_cannot_return_after_leaving_and_reentering_distribution(mapped, qtbot, monkeypatch):
@@ -130,3 +131,45 @@ def test_brushed_rectangle_profile_instruction_clears_axes_and_valid_plots_resto
     assert (completed.xlabel, completed.ylabel, completed.caption) == labels
     assert completed.brushes[0]['metadata'] == selection['metadata']
     np.testing.assert_array_equal(completed.brushes[0]['mask'], selection['mask'])
+
+
+def test_profile_switch_repaints_old_selection_in_window_backing_store(mapped,qtbot):
+    font_ids=[]
+    for name in ('segoeui.ttf','segoeuib.ttf'):
+        path=QtCore.QStandardPaths.locate(QtCore.QStandardPaths.StandardLocation.FontsLocation,name)
+        if path:
+            font_ids.append(QtGui.QFontDatabase.addApplicationFont(path))
+    mapped.roi_records[0]=make_roi((12,12),{'type':'rectangle','bounds':[0,0,8,8]},name='Reference',role='reference')
+    mapped.rebuild_roi_graphics(); mapped.roi_changed(); mapped.roi_timer.stop(); mapped.analyze('difference')
+    qtbot.waitUntil(lambda:not mapped.task_busy,timeout=10000)
+    mapped.tabs.setCurrentIndex(1); mapped.resize(2048,1104); mapped.show(); mapped.fit(); qtbot.wait(30)
+
+    def painted_selection_pixels():
+        # Grab the backing store: QWidget.grab() would force repaint and hide this defect.
+        image=mapped.screen().grabWindow(int(mapped.winId())).toImage().convertToFormat(QtGui.QImage.Format.Format_RGBA8888)
+        assert not image.isNull()
+        pixels=np.frombuffer(image.bits(),np.uint8).reshape(image.height(),image.bytesPerLine())
+        pixels=pixels[:,:image.width()*4].reshape(image.height(),image.width(),4)
+        bounds=mapped.derived_graphics.mapFromScene(mapped.derived_plot.getViewBox().sceneBoundingRect()).boundingRect()
+        origin=mapped.derived_graphics.viewport().mapTo(mapped,QtCore.QPoint())
+        x0=max(0,int(bounds.left()+origin.x())); x1=min(image.width(),int(bounds.right()+origin.x()))
+        y0=max(0,int(bounds.top()+origin.y())); y1=min(image.height(),int(bounds.bottom()+origin.y()))
+        values=pixels[y0:y1,x0:x1,:3].astype(float)
+        pink=(values[:,:,0] > 130) & (values[:,:,0] > 1.3*values[:,:,1]) & (values[:,:,2] > 1.1*values[:,:,1]) & (values[:,:,2] < .9*values[:,:,0])
+        return int(pink.sum())
+
+    before=painted_selection_pixels()
+    mapped.brush_low.setValue(-20); mapped.brush_high.setValue(-1); mapped.apply_map_brush()
+    qtbot.waitUntil(lambda:not mapped.task_busy,timeout=10000); qtbot.wait(30)
+    assert len(mapped.brush_overlay.points()) == 64 and painted_selection_pixels() > before
+    mapped.robust_map_limits.setChecked(True); qtbot.wait(30)
+    mapped.share_figure(); qtbot.waitUntil(lambda:not mapped.task_busy,timeout=10000)
+    mapped._share_dialog.reject(); qtbot.wait(30)
+    mapped.right_task.setCurrentIndex(mapped.right_task.findData('profile')); mapped.inspect_roi.setCurrentIndex(1)
+    qtbot.waitUntil(lambda:not mapped.task_busy,timeout=10000); qtbot.wait(30)
+    after=painted_selection_pixels()
+    assert mapped.map_brushes == [] and len(mapped.brush_overlay.points()) == 0
+    for font_id in font_ids:
+        if font_id >= 0:
+            QtGui.QFontDatabase.removeApplicationFont(font_id)
+    assert after == before
