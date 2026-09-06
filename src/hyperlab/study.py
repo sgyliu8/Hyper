@@ -9,12 +9,13 @@ from uuid import uuid4
 
 from .experiment_metadata import (_check_annotation, _check_fingerprint, _digest,
     _file_identity, normalize_annotations, source_fingerprint)
-from .experiments import matching_settings
+from .experiments import _unknown, matching_settings
 from .io.labels import display_labels
 from .plots import plain
 
 
 COMPARISON_LEVELS = ('within-session', 'reposition', 'between-specimen', 'between-session')
+COMPARISON_PURPOSES = ('nuisance-control', 'target-change')
 _LINKS = ('specimen_id', 'treatment_id', 'session_id', 'technical_repeat_id')
 
 
@@ -51,6 +52,8 @@ def _check_observation(observation):
     _check_fingerprint(fingerprint)
     if observation['comparison_level'] not in (None, *COMPARISON_LEVELS):
         raise ValueError('Unknown comparison level')
+    if observation.get('comparison_purpose') not in (None, *COMPARISON_PURPOSES):
+        raise ValueError('Unknown comparison purpose')
     if set(observation['links']) != set(_LINKS):
         raise ValueError('Observation hierarchy links are incomplete')
     if observation['annotation'] is not None:
@@ -158,7 +161,8 @@ def _roi_assets(analysis):
 
 
 def observation_from_cube(cube, *, annotation=None, annotation_path=None, roi_results=None,
-                          roi_context=None, feature_result=None, links=None, comparison_level=None):
+                          roi_context=None, feature_result=None, links=None, comparison_level=None,
+                          comparison_purpose=None):
     """Snapshot a saved source and a completed result; never run implicit analysis."""
     fingerprint = source_fingerprint(cube)
     source = cube.metadata.get('source_file')
@@ -170,6 +174,8 @@ def observation_from_cube(cube, *, annotation=None, annotation_path=None, roi_re
         raise ValueError('A declared source asset is missing')
     if comparison_level not in (None, *COMPARISON_LEVELS):
         raise ValueError('Unknown comparison level')
+    if comparison_purpose not in (None, *COMPARISON_PURPOSES):
+        raise ValueError('Unknown comparison purpose')
     if annotation is not None:
         _check_annotation(annotation)
         if annotation['source_fingerprint'] != fingerprint:
@@ -206,6 +212,7 @@ def observation_from_cube(cube, *, annotation=None, annotation_path=None, roi_re
     observation = {'observation_id': str(uuid4()), 'added_utc': _now(),
         'source_fingerprint': fingerprint, 'source_metadata': plain(dict(cube.metadata, shape=list(cube.shape))),
         'source_name': Path(source).name, 'links': hierarchy, 'comparison_level': comparison_level,
+        'comparison_purpose': comparison_purpose,
         'annotation': deepcopy(annotation), 'analysis_run': analysis, 'associated_assets': associated,
         'asset_locations': {asset['path']: asset['path'] for asset in fingerprint['source_files'] + associated},
         'relocations': []}
@@ -316,10 +323,91 @@ def load_study(path):
     return study
 
 
+def _analysis_definition(metadata, evidence, feature):
+    """Define the estimator from retained evidence, without rewriting observations.
+
+    Geometry membership and particular missing samples remain source evidence;
+    their content hashes do not define compatibility between different ROIs.
+    """
+    from types import SimpleNamespace
+    from .analysis.core import saturation_value
+
+    common = feature['support'] == 'common'
+    selected = evidence.get('feature_indices') if common else [feature['feature_index']]
+    shape = metadata.get('shape', [])
+    size = shape[2] if len(shape) == 3 else len(metadata.get('wavelengths') or metadata.get('channel_labels') or [])
+    labels = display_labels(metadata, size) if size else []
+    wave = metadata.get('wavelengths')
+    mappings = None
+    if selected and feature['feature_index'] in selected and all(type(index) is int and 0 <= index < size for index in selected):
+        mappings = [{'feature_index': index, 'label': labels[index],
+            'coordinate': wave[index] if wave is not None else None,
+            'coordinate_units': metadata.get('wavelength_units') if wave is not None else None}
+            for index in sorted(set(selected))]
+    threshold = saturation_value(SimpleNamespace(metadata=metadata))
+    quality = {'policy': feature['policy'], 'invalid_rule': 'finite and supplied source validity; enabled features only',
+        'data_ignore_value': metadata.get('data_ignore_value'),
+        'saturation_rule': 'exclude values >= threshold when known' if feature['policy'] == 'quantitative' else 'retained',
+        'saturation_value': threshold if feature['policy'] == 'quantitative' else None,
+        'saturation_units': feature['units'] if feature['policy'] == 'quantitative' and threshold is not None else None,
+        'low_signal_assessment': deepcopy(metadata.get('low_signal_assessment'))}
+    applied = {key: deepcopy(metadata.get(key)) for key in ('processing_steps', 'calibration_source',
+        'reference_source', 'reference_reflectance', 'reflectance_kind', 'reference_applicability',
+        'response_id', 'response_matrix_id', 'spectral_response_id', 'spatial_calibration')}
+    quantile = evidence.get('quantile_method') if feature['metric'] == 'median' else None
+    unknown = (['support_features'] if mappings is None else []) + (
+        ['quantile_method'] if feature['metric'] == 'median' and quantile is None else [])
+    definition = {'schema_version': 1, 'status': 'UNKNOWN' if unknown else 'KNOWN', 'unknown_fields': unknown,
+        'evidence_source': 'retained completed ROI feature selection' if common else 'output feature per-band support',
+        'data_level': feature['data_level'], 'units': feature['units'], 'summary': feature['metric'],
+        'aggregation_order': feature['aggregation_order'], 'support': feature['support'],
+        'quantile_method': quantile,
+        'support_features': mappings, 'quality': quality, 'applied_context': applied}
+    return plain(definition)
+
+
+def support_label(definition):
+    """Readable support, with hashes reserved for the provenance details."""
+    mappings = definition['support_features']
+    if mappings is None:
+        return definition['support'] + ': UNKNOWN feature population'
+    labels = [f"{item['feature_index']} {item['coordinate']:g} {item['coordinate_units']}"
+              if item['coordinate'] is not None else f"{item['feature_index']} {item['label']}" for item in mappings]
+    return definition['support'] + ': ' + ', '.join(labels)
+
+
+def measurement_comparison(observations):
+    """Declared conditions for these observations, independent of estimator identity."""
+    settings = matching_settings([item['source_metadata'] for item in observations]) if len(observations) >= 2 else {
+        'status': 'UNKNOWN', 'note': 'At least two observations are required for a settings comparison.'}
+    mismatches, unknown = [], []
+    for field in ('illumination_id', 'geometry_id'):
+        values = [normalize_annotations({})[field] if item['annotation'] is None
+                  else item['annotation']['values'].get(field) for item in observations]
+        if any(value is None for value in values) or not values:
+            unknown.append(field)
+        if len({value for value in values if value is not None}) > 1:
+            mismatches.append(field)
+    if settings['status'] == 'MISMATCH':
+        mismatches.append('acquisition_settings')
+    elif settings['status'] != 'MATCH':
+        unknown.append('acquisition_settings')
+    calibration = [item['source_metadata'].get('calibration_source') for item in observations]
+    known_calibration = [value for value in calibration if not _unknown(value)]
+    if len(known_calibration) != len(calibration) or not calibration:
+        unknown.append('response_calibration')
+    if known_calibration and any(value != known_calibration[0] for value in known_calibration[1:]):
+        mismatches.append('response_calibration')
+    return {'status': 'MISMATCH' if mismatches else 'UNKNOWN' if unknown or len(observations) < 2 else 'MATCH',
+        'mismatches': mismatches, 'unknown': unknown, 'settings': settings,
+        'observation_count': len(observations), 'physical_qualification': 'NOT_ASSESSED',
+        'scope': 'All supplied observations: declared acquisition/illumination/geometry evidence; not material equivalence, registration or independent replication.'}
+
+
 def study_summary(study):
     """Unpooled observation rows and compatible feature columns; no inferred n."""
     _check_study(study)
-    rows, feature_rows, columns = [], [], []
+    rows, feature_rows, columns, definitions = [], [], [], {}
     signatures = {}
     seen_arrays = {}
     for index, observation in enumerate(study['observations']):
@@ -334,15 +422,26 @@ def study_summary(study):
             'sequence': origin.get('sequence'), **observation['links'], **{key: values[key] for key in
                 ('material', 'coating_batch', 'dwell_seconds', 'temperature_value', 'temperature_unit',
                  'temperature_meaning', 'temperature_reference_id', 'illumination_id', 'geometry_id')},
-            'comparison_level': observation['comparison_level'], 'analysis_status': 'NOT_RUN' if run is None else run['status'],
+            'comparison_level': observation['comparison_level'], 'comparison_purpose': observation.get('comparison_purpose'),
+            'analysis_status': 'NOT_RUN' if run is None else run['status'],
             'same_array_observations': byte_peers})
         if run is None:
             continue
         for roi_index, roi in enumerate(run['rois']):
             cells = {}
+            evidence = run.get('roi_evidence', [])
+            evidence = evidence[roi_index] if roi_index < len(evidence) else {}
+            common_definition = None
             for feature in (item for item in run['features'] if item['roi_index'] == roi_index):
                 descriptor = {key: feature[key] for key in ('feature_index', 'feature_label', 'axis_kind',
                     'coordinate', 'coordinate_units', 'data_level', 'units', 'metric', 'policy', 'support', 'aggregation_order')}
+                definition = common_definition or _analysis_definition(observation['source_metadata'], evidence, feature)
+                if feature['support'] == 'common':
+                    common_definition = definition
+                definition_id = _digest(definition)
+                definitions.setdefault(definition_id, definition)
+                descriptor.update(definition_id=definition_id, definition_status=definition['status'],
+                                  support_label=support_label(definition))
                 signature = _digest(descriptor)
                 if signature not in signatures:
                     signatures[signature] = len(columns)
@@ -350,10 +449,10 @@ def study_summary(study):
                 cells[signatures[signature]] = {key: feature[key] for key in ('value', 'used', 'total')}
             feature_rows.append({'observation_id': observation['observation_id'], 'number': index+1,
                                  'roi': roi, 'cells': cells})
-    settings = matching_settings([item['source_metadata'] for item in study['observations']]) if len(rows) >= 2 else {
-        'status': 'UNKNOWN', 'note': 'At least two observations are required for a settings comparison.'}
+    comparison = measurement_comparison(study['observations'])
     return {'observations': rows, 'feature_rows': feature_rows, 'feature_columns': columns,
-        'settings_check': settings, 'observation_count': len(rows),
+        'definition_contexts': definitions, 'comparison_evidence': comparison,
+        'settings_check': comparison['settings'], 'observation_count': len(rows),
         'declared_specimen_ids': sorted({row['specimen_id'] for row in rows if row['specimen_id']}),
         'unknown_specimen_observations': sum(row['specimen_id'] is None for row in rows),
         'independent_replicate_count': None, 'registration': 'NOT_VERIFIED',

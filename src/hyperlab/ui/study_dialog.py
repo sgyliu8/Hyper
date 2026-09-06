@@ -3,6 +3,7 @@ from copy import deepcopy
 import csv
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 
 import pyqtgraph as pg
@@ -11,29 +12,39 @@ from PySide6 import QtCore, QtGui, QtWidgets as W
 from hyperlab.experiment_metadata import _digest, _file_identity
 from hyperlab.io import load_cube
 from hyperlab.plots import COLORS, PlotSpec, export_figure_bundle
-from hyperlab.study import (COMPARISON_LEVELS, add_observation, load_study, new_study,
-    observation_from_cube, relocate_observation, save_study, study_summary, verify_study)
+from hyperlab.study import (COMPARISON_LEVELS, COMPARISON_PURPOSES, add_observation, load_study, new_study,
+    measurement_comparison, observation_from_cube, relocate_observation, save_study, study_summary, verify_study)
 
 
 def _text(value):
     return 'Unknown' if value is None else f'{value:g}' if isinstance(value, float) else str(value)
 
 
-def study_point_plot(study, feature_column, *, x_axis='observation', temperature_scope=None):
+def study_point_plot(study, feature_column, *, x_axis='observation', temperature_scope=None,
+                     view='points', group_by='roi'):
     """Original ROI points only; temperature units and meanings define one scope."""
     summary = study_summary(study)
     if isinstance(feature_column, bool) or not isinstance(feature_column, int) or not 0 <= feature_column < len(summary['feature_columns']):
         raise ValueError('Choose one completed Study feature column')
     if x_axis not in ('observation', 'temperature', 'dwell'):
         raise ValueError('Study point x axis must be observation, temperature or dwell')
+    if view not in ('points', 'contrast') or group_by not in ('roi', 'specimen', 'session'):
+        raise ValueError('Choose original points or within-observation contrast, grouped by ROI, specimen or session')
     if temperature_scope is not None:
         temperature_scope = tuple(temperature_scope)
         if len(temperature_scope) != 2 or temperature_scope[0] not in ('degC', 'K') or temperature_scope[1] not in (
                 'setpoint', 'independent_measurement', 'owner_label'):
             raise ValueError('Temperature scope requires one declared unit and meaning')
     feature = summary['feature_columns'][feature_column]
+    definition = summary['definition_contexts'][feature['definition_id']]
     observations = {row['observation_id']: row for row in summary['observations']}
     originals = {row['observation_id']: row for row in study['observations']}
+    reference_rows = {}
+    for row in summary['feature_rows']:
+        original = originals[row['observation_id']]
+        reference_id = original['analysis_run']['recipe'].get('reference_roi_id')
+        if reference_id and row['roi'].get('roi_id') == reference_id and row['roi'].get('role') == 'reference':
+            reference_rows.setdefault(row['observation_id'], []).append(row)
     points, omitted, groups, roi_offsets = [], {}, {}, {}
     for row in summary['feature_rows']:
         observation = observations[row['observation_id']]
@@ -58,6 +69,27 @@ def study_point_plot(study, feature_column, *, x_axis='observation', temperature
             reason = 'different_temperature_unit_or_meaning'
         else:
             x = observation['temperature_value']
+        reference, reference_cell = None, None
+        value = cell['value'] if cell else None
+        if view == 'contrast' and reason is None:
+            references = reference_rows.get(row['observation_id'], [])
+            if len(references) != 1:
+                reason = 'reference_missing_or_ambiguous'
+            elif feature['definition_status'] != 'KNOWN':
+                reason = 'support_definition_unknown'
+            else:
+                reference = references[0]
+                reference_cell = reference['cells'].get(feature_column)
+                if reference['roi'].get('roi_id') == row['roi'].get('roi_id'):
+                    reason = 'reference_operand'
+                elif reference_cell is None or reference_cell['value'] is None:
+                    reason = 'reference_definition_or_value_unavailable'
+                else:
+                    value -= reference_cell['value']
+                    if not math.isfinite(value):
+                        value, reason = None, 'nonfinite_contrast'
+        if view == 'contrast' and reason is not None:
+            value = None  # The original operand is retained separately, never labelled as a difference.
         point = {'observation_id': row['observation_id'], 'observation_number': row['number'],
             'source_id': original['source_fingerprint']['source_id'], 'source_name': original['source_name'],
             'source_origin': observation['origin'], 'frame_sequence': observation['sequence'],
@@ -69,13 +101,27 @@ def study_point_plot(study, feature_column, *, x_axis='observation', temperature
             **{key: observation[key] for key in ('specimen_id', 'technical_repeat_id', 'treatment_id',
                 'session_id', 'comparison_level', 'temperature_value', 'temperature_unit',
                 'temperature_meaning', 'temperature_reference_id', 'dwell_seconds')},
-            'x': x, 'y': cell['value'] if cell else None, 'used': cell['used'] if cell else None,
+            'comparison_purpose': observation['comparison_purpose'],
+            'definition_id': feature['definition_id'], 'definition_status': feature['definition_status'],
+            'support_label': feature['support_label'], 'measurement_compatibility': None,
+            'study_measurement_compatibility': summary['comparison_evidence']['status'],
+            'original_y': cell['value'] if cell else None,
+            'reference_roi_id': reference['roi'].get('roi_id') if reference else None,
+            'reference_roi_revision': reference['roi'].get('revision') if reference else None,
+            'reference_value': reference_cell['value'] if reference_cell else None,
+            'reference_used': reference_cell['used'] if reference_cell else None,
+            'reference_total': reference_cell['total'] if reference_cell else None,
+            'x': x, 'y': value, 'used': cell['used'] if cell else None,
             'total': cell['total'] if cell else None, 'included': reason is None, 'omitted_reason': reason}
         points.append(point)
         if reason is not None:
             omitted[reason] = omitted.get(reason, 0) + 1
             continue
         name = point['roi_name']
+        if group_by != 'roi':
+            identifier = point[group_by + '_id']
+            group = str(identifier) if identifier is not None else f"Unknown {group_by} · Obs {row['number']}"
+            name = group + ' · ' + name
         if name not in groups:
             style_index = len(groups) % 3
             groups[name] = {'name': name, 'color': COLORS[style_index], 'style': 'none',
@@ -83,13 +129,20 @@ def study_point_plot(study, feature_column, *, x_axis='observation', temperature
                 'feature_indices': [], 'sample_indices': [], 'used_counts': [], 'frame_identities': []}
         series = groups[name]
         series['x'].append(x)
-        series['y'].append(cell['value'])
+        series['y'].append(value)
         series['points'].append(point)
         series['feature_indices'].append(feature['feature_index'])
         series['sample_indices'].append(row['number'] - 1)
         series['used_counts'].append(cell['used'])
         origin = original['source_fingerprint']['origin']
         series['frame_identities'].append([origin.get(key) for key in ('session_id', 'stream_epoch', 'sequence')])
+    for series in groups.values():
+        ids = {point['observation_id'] for point in series['points']}
+        comparison = measurement_comparison([originals[identity] for identity in originals if identity in ids])
+        series['comparison_evidence'] = comparison
+        series['name'] += ' · ' + comparison['status']
+        for point in series['points']:
+            point['measurement_compatibility'] = comparison['status']
     plotted = [point for point in points if point['included']]
     counts = {'total_observations': summary['observation_count'], 'total_roi_rows': len(points),
         'observations_without_roi_results': summary['observation_count'] - len({row['observation_id'] for row in summary['feature_rows']}),
@@ -102,15 +155,27 @@ def study_point_plot(study, feature_column, *, x_axis='observation', temperature
         xlabel = 'Observation index (not time)' if x_axis == 'observation' else 'Dwell time (s)'
     origins = sorted({item['origin'] or 'UNKNOWN' for item in summary['observations']})
     caption = (f"{len(plotted)} / {len(points)} ROI points; {counts['plotted_observations']} / {summary['observation_count']} observations shown. "
-        f"Settings {summary['settings_check']['status']}. No pooling, fit or independent n; coincident points remain separate records.")
-    return PlotSpec('points', f"{feature['feature_label']} · original ROI {feature['metric']} observations", xlabel,
-        f"{feature['metric'].title()} ({feature['units']})", source={'study_id': study['study_id'],
+        f"Settings {summary['settings_check']['status']}; measurement compatibility {summary['comparison_evidence']['status']}. "
+        'No pooling, fit or independent n; coincident points remain separate records.')
+    title = f"{feature['feature_label']} · original ROI {feature['metric']} observations"
+    ylabel = f"{feature['metric'].title()} ({feature['units']})"
+    if view == 'contrast':
+        title = f"{feature['feature_label']} · target minus reference ROI {feature['metric']}"
+        ylabel = f"{feature['metric'].title()} difference ({feature['units']})"
+        caption += ' Within each observation: target summary minus its declared reference; no pixel pairing.'
+    return PlotSpec('points', title, xlabel, ylabel, source={'study_id': study['study_id'],
             'acquisition_source': origins[0] if len(origins) == 1 else 'MIXED', 'origins': origins},
         series=list(groups.values()), metadata={'study_sha256': _digest(study), 'feature_column': feature,
             'x_axis': x_axis, 'temperature_scope': list(temperature_scope) if x_axis == 'temperature' and temperature_scope else None,
             'counts': counts, 'points': points, 'settings_check': summary['settings_check'],
-            'colour_group': 'ROI display name only; no pooling or spatial registration',
-            'aggregation': 'original completed ROI summaries; no cross-observation aggregation',
+            'definition': definition, 'comparison_evidence': summary['comparison_evidence'],
+            'view': view, 'group_by': group_by, 'support_label': feature['support_label'],
+            'colour_group': group_by + ' display groups only; no pooling or spatial registration',
+            'declared_specimen_count': len(summary['declared_specimen_ids']),
+            'unknown_specimen_observations': summary['unknown_specimen_observations'],
+            'pairing': 'No cross-observation pair relations declared or inferred',
+            'aggregation': 'original completed ROI summaries; no cross-observation aggregation' if view == 'points'
+                else 'within_observation_summary_then_difference',
             'independent_replicate_count': None, 'study': deepcopy(study)}, caption=caption)
 
 
@@ -122,7 +187,7 @@ def export_study_points(study, spec, directory, *, dpi=300):
     if before['status'] != 'MATCH':
         raise ValueError('Study point export requires every declared source/annotation/ROI asset to match')
     if not spec.metadata['counts']['plotted_points']:
-        raise ValueError('No points have both the selected feature and declared x-axis evidence')
+        raise ValueError('No eligible points for the selected feature, x axis and comparison view')
     completed = deepcopy(spec)
     completed.metadata['integrity_before_export'] = before
     directory = export_figure_bundle(completed, directory, dpi=dpi)
@@ -145,7 +210,7 @@ def export_study_points(study, spec, directory, *, dpi=300):
         'created_utc': datetime.now(timezone.utc).isoformat(), 'study_id': study['study_id'],
         'study_sha256': spec.metadata['study_sha256'], 'integrity_after_export': after,
         'counts': spec.metadata['counts'], 'outputs': outputs,
-        'interpretation': 'Exact original observation points and verified source assets; no physical or independent-replicate qualification.'}
+        'interpretation': 'Exact original observation values and declared contrast operands with verified source assets; no physical or independent-replicate qualification.'}
     (directory / 'study_export_manifest.json').write_text(json.dumps(manifest, indent=2, allow_nan=False), encoding='utf-8')
     return directory
 
@@ -155,7 +220,9 @@ def _point_tip(*, x, y, data):
         *[f'{key}: {_text(data[key])}' for key in ('observation_id', 'specimen_id', 'technical_repeat_id',
             'session_id', 'roi_id', 'roi_revision', 'source_id', 'temperature_value', 'temperature_unit',
             'temperature_meaning', 'temperature_reference_id', 'dwell_seconds')],
-        f"Used {data['used']} / total {data['total']}"])
+        f"Used {data['used']} / total {data['total']}",
+        *[f'{key}: {_text(data.get(key))}' for key in ('support_label', 'measurement_compatibility',
+            'comparison_purpose', 'original_y', 'reference_roi_id', 'reference_value', 'reference_used', 'reference_total')]])
 
 
 class StudyDialog(W.QDialog):
@@ -211,6 +278,11 @@ class StudyDialog(W.QDialog):
         for level in COMPARISON_LEVELS:
             self.comparison.addItem(level, level)
         form.addWidget(self.comparison)
+        self.purpose = W.QComboBox()
+        self.purpose.addItem('Comparison purpose · unknown', None)
+        for purpose in COMPARISON_PURPOSES:
+            self.purpose.addItem(purpose.replace('-', ' ').title(), purpose)
+        form.addWidget(self.purpose)
         self.link_fields.setVisible(False)
         self.link_toggle.toggled.connect(self.link_fields.setVisible)
         control_layout.addWidget(self.link_fields)
@@ -231,8 +303,10 @@ class StudyDialog(W.QDialog):
         self.points_panel = W.QWidget()
         points_layout = W.QVBoxLayout(self.points_panel)
         self.point_controls = W.QWidget()
-        point_row = W.QHBoxLayout(self.point_controls)
-        point_row.setContentsMargins(0, 0, 0, 0)
+        point_layout = W.QVBoxLayout(self.point_controls)
+        point_layout.setContentsMargins(0, 0, 0, 0)
+        point_row = W.QHBoxLayout()
+        point_layout.addLayout(point_row)
         self.point_feature, self.point_x, self.point_temperature = W.QComboBox(), W.QComboBox(), W.QComboBox()
         self.point_feature.setMinimumContentsLength(18)
         self.point_feature.setSizeAdjustPolicy(W.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
@@ -244,6 +318,16 @@ class StudyDialog(W.QDialog):
         self.points_export = W.QPushButton('Export points + figure…')
         self.points_export.clicked.connect(self.choose_points_export)
         point_row.addWidget(self.points_export)
+        comparison_row = W.QHBoxLayout()
+        self.point_view, self.point_group = W.QComboBox(), W.QComboBox()
+        self.point_view.addItem('Original observation points', 'points')
+        self.point_view.addItem('Target minus declared reference', 'contrast')
+        for label, key in (('Group by ROI', 'roi'), ('Group by specimen', 'specimen'), ('Group by session', 'session')):
+            self.point_group.addItem(label, key)
+        comparison_row.addWidget(self.point_view)
+        comparison_row.addWidget(self.point_group)
+        comparison_row.addStretch()
+        point_layout.addLayout(comparison_row)
         points_layout.addWidget(self.point_controls)
         self.points_chart = pg.PlotWidget(background='w')
         self.points_chart.showGrid(x=True, y=True, alpha=.15)
@@ -262,6 +346,8 @@ class StudyDialog(W.QDialog):
         self.point_feature.currentIndexChanged.connect(self.draw_points)
         self.point_x.currentIndexChanged.connect(self.draw_points)
         self.point_temperature.currentIndexChanged.connect(self.draw_points)
+        self.point_view.currentIndexChanged.connect(self.draw_points)
+        self.point_group.currentIndexChanged.connect(self.draw_points)
         self.points_spec = self.points_study = None
         self.point_items = []
         self.details = W.QPlainTextEdit()
@@ -388,8 +474,8 @@ class StudyDialog(W.QDialog):
 
     def _links(self):
         if not self.link_toggle.isChecked():
-            return {}, None
-        return {'treatment_id': self.treatment.text().strip() or None}, self.comparison.currentData()
+            return {}, None, None
+        return {'treatment_id': self.treatment.text().strip() or None}, self.comparison.currentData(), self.purpose.currentData()
 
     def _added(self, result):
         self.study, self.receipt, message = result
@@ -409,10 +495,11 @@ class StudyDialog(W.QDialog):
         results = deepcopy(self.workbench.roi_results) if has_result else None
         context = deepcopy(self.workbench.roi_result_context) if has_result else None
         features = deepcopy(self.workbench.science_result) if has_result else None
-        links, level = self._links()
+        links, level, purpose = self._links()
         def run():
             observation = observation_from_cube(cube, annotation=annotation, annotation_path=annotation_path,
-                roi_results=results, roi_context=context, feature_result=features, links=links, comparison_level=level)
+                roi_results=results, roi_context=context, feature_result=features, links=links, comparison_level=level,
+                comparison_purpose=purpose)
             result = add_observation(study, observation)
             return result, verify_study(result), 'Added original observation · ' + (
                 'completed ROI features retained' if observation['analysis_run'] else 'analysis NOT_RUN')
@@ -428,13 +515,13 @@ class StudyDialog(W.QDialog):
 
     def add_paths(self, paths):
         study = deepcopy(self.study)
-        links, level = self._links()
+        links, level, purpose = self._links()
         def run():
             result, failures, added = study, [], 0
             for path in paths:
                 try:
                     with load_cube(path) as cube:
-                        observation = observation_from_cube(cube, links=links, comparison_level=level)
+                        observation = observation_from_cube(cube, links=links, comparison_level=level, comparison_purpose=purpose)
                     result = add_observation(result, observation)
                     added += 1
                 except Exception as error:
@@ -499,6 +586,7 @@ class StudyDialog(W.QDialog):
             ('technical_repeat_id', 'Technical repeat'), ('temperature_value', 'Temperature'),
             ('temperature_unit', 'Unit'), ('temperature_meaning', 'Temperature meaning'),
             ('temperature_reference_id', 'Temperature source / reference'), ('comparison_level', 'Comparison level'),
+            ('comparison_purpose', 'Declared purpose'),
             ('analysis_status', 'Analysis'), ('integrity', 'File integrity')]
         self.table.blockSignals(True)
         self.table.setRowCount(len(rows))
@@ -520,7 +608,7 @@ class StudyDialog(W.QDialog):
                 self.table.setItem(row_index, col, item)
         optional = {'treatment_id', 'coating_batch', 'dwell_seconds', 'technical_repeat_id',
                     'temperature_value', 'temperature_unit', 'temperature_meaning',
-                    'temperature_reference_id', 'comparison_level'}
+                    'temperature_reference_id', 'comparison_level', 'comparison_purpose'}
         temperature = any(row['temperature_value'] is not None for row in rows) or 'temperature_value' in keys
         for col, (key, _) in enumerate(fields):
             visible = key not in optional or key in keys or any(row[key] is not None for row in rows)
@@ -545,7 +633,8 @@ class StudyDialog(W.QDialog):
                 f'{key}: {_text(context[key])}' for key in ('specimen_id', 'material', 'coating_batch',
                     'dwell_seconds', 'session_id', 'temperature_value', 'temperature_unit',
                     'temperature_meaning', 'temperature_reference_id')))
-        self.heatmap.setHorizontalHeaderLabels([f"{column['feature_label']}\n{column['metric']} ({column['units']})\n{column['policy']} · {column['support']}" for column in columns])
+        self.heatmap.setHorizontalHeaderLabels([f"{column['feature_label']}\n{column['metric']} ({column['units']})\n"
+            f"{column['support_label'][:65]}{'…' if len(column['support_label']) > 65 else ''}" for column in columns])
         for col in range(len(columns)):
             values = [row['cells'][col]['value'] for row in feature_rows if col in row['cells'] and row['cells'][col]['value'] is not None]
             low, high = (min(values), max(values)) if values else (0, 0)
@@ -561,13 +650,15 @@ class StudyDialog(W.QDialog):
                     color = QtGui.QColor(*[int(channel) for channel in rgba])
                 item.setBackground(color)
                 item.setForeground(QtGui.QColor('#ffffff' if color.lightness() < 130 else '#17212b'))
-                item.setToolTip(f"Used {cell['used']} / total {cell['total']} · per-column colour scale [{low:g}, {high:g}].\n{columns[col]}")
+                item.setToolTip(f"Used {cell['used']} / total {cell['total']} · per-column colour scale [{low:g}, {high:g}].\n"
+                    f"{columns[col]['support_label']}\nDefinition {columns[col]['definition_status']}\n"
+                    + json.dumps(summary['definition_contexts'][columns[col]['definition_id']], indent=2))
                 self.heatmap.setItem(row_index, col, item)
         self.heatmap.resizeColumnsToContents()
         self.facts.setText(f"{summary['observation_count']} original observations · "
             f"{len(summary['declared_specimen_ids'])} declared specimen IDs · "
             f"{summary['unknown_specimen_observations']} observations with specimen unknown · "
-            f"settings {summary['settings_check']['status']}. "
+            f"settings {summary['settings_check']['status']} · measurement compatibility {summary['comparison_evidence']['status']}. "
             'Independent replicate count unknown; registration not verified. Heatmap colours scale separately per column; no pooling.')
         self.refresh_point_choices(summary)
         self.show_details()
@@ -578,7 +669,10 @@ class StudyDialog(W.QDialog):
         self.point_feature.clear()
         for column in summary['feature_columns']:
             self.point_feature.addItem(f"{column['feature_label']} · {column['metric']} ({column['units']}) · "
-                f"{column['policy']} / {column['support']}", column)
+                f"{column['support_label'][:65]}{'…' if len(column['support_label']) > 65 else ''}", column)
+            self.point_feature.setItemData(self.point_feature.count()-1,
+                f"{column['policy']} · {column['support_label']} · definition {column['definition_status']}",
+                QtCore.Qt.ItemDataRole.ToolTipRole)
         self.point_feature.setCurrentIndex(max(0, self.point_feature.findData(previous)))
         self.point_feature.blockSignals(False)
         previous = self.point_temperature.currentData()
@@ -609,7 +703,8 @@ class StudyDialog(W.QDialog):
             return
         self.points_study = deepcopy(self.study)
         self.points_spec = study_point_plot(self.points_study, self.point_feature.currentIndex(),
-            x_axis=self.point_x.currentData(), temperature_scope=self.point_temperature.currentData())
+            x_axis=self.point_x.currentData(), temperature_scope=self.point_temperature.currentData(),
+            view=self.point_view.currentData(), group_by=self.point_group.currentData())
         spec = self.points_spec
         self.points_chart.setTitle(spec.title, color='#17212b', size='12pt')
         for axis, label in (('bottom', spec.xlabel), ('left', spec.ylabel)):
@@ -617,7 +712,7 @@ class StudyDialog(W.QDialog):
             self.points_chart.getAxis(axis).setTicks(None if spec.series else [])
         if not spec.series:
             self.points_chart.setRange(xRange=(0, 1), yRange=(0, 1), padding=0)
-            message = pg.TextItem('No points with both the selected feature\nand declared x-axis evidence',
+            message = pg.TextItem('No points for this view\nSee omitted reasons below',
                                   anchor=(.5, .5), color='#5c6875')
             message.setPos(.5, .5)
             self.points_chart.addItem(message)
@@ -632,7 +727,8 @@ class StudyDialog(W.QDialog):
         counts = spec.metadata['counts']
         missing = ', '.join(f"{reason.replace('_', ' ')}: {count}" for reason, count in counts['omitted_by_reason'].items())
         self.points_note.setText(spec.caption + f" Observations without ROI results: {counts['observations_without_roi_results']}. "
-            + (f'Omitted: {missing}. ' if missing else '') + 'Hover points for specimen, repeat, ROI and source identity.')
+            + (f'Omitted: {missing}. ' if missing else '') + f" {spec.metadata['support_label']} · "
+            'Hover points for supports, operands and source identity. No cross-observation pairing is inferred.')
         self.points_export.setEnabled(bool(counts['plotted_points']))
 
     def choose_points_export(self):
