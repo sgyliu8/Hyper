@@ -101,6 +101,8 @@ def roi_plot(results, names, colors, *, source, normalized=False, spatial_sd=Tru
                  'x': np.array([i]) if single_plane else x.copy(), 'y': means,
                  'sd': sd if spatial_sd and summary == 'mean' else None,
                  'counts': result['counts'], 'used_counts':result['count'],
+                 'saturation_value':result.get('saturation_value'),
+                 'saturation_units':result.get('units', 'unknown'),
                  'rect': result['rect'], 'feature_indices': list(range(len(x)))}
         curve.update({key: plain(result.get('metadata', {}).get(key)) for key in
             ('roi_definition', 'exclusion_definitions', 'geometry_counts', 'geometry_semantics', 'membership_rule')})
@@ -598,7 +600,8 @@ def export_figure_bundle(spec, directory, *, width_mm=180, height_mm=115, dpi=30
                          'roi_id', 'roi_revision', 'geometry_count', 'excluded_geometry_count',
                          'geometry_excluded_count', 'support_excluded_count', 'selection_excluded_count',
                          'bin_left_px', 'bin_right_px', 'position_units', 'policy_valid_count',
-                         'source_invalid_count', 'source_ignored_count', 'source_saturated_count', 'value_units'])
+                         'source_invalid_count', 'source_ignored_count', 'source_saturated_count', 'value_units',
+                         'saturation_assessment', 'saturation_value', 'saturation_units'])
         for item in spec.series:
             indices, sample_indices = item.get('feature_indices'), item.get('sample_indices')
             identities = item.get('frame_identities')
@@ -607,6 +610,10 @@ def export_figure_bundle(spec, directory, *, width_mm=180, height_mm=115, dpi=30
             definition, geometry = item.get('roi_definition') or item.get('roi') or {}, item.get('geometry_counts') or {}
             removed = [item.get(key) for key in ('geometry_excluded_count', 'support_excluded_count', 'selection_excluded_count')]
             quality, edges = item.get('counts', {}), item.get('bin_edges_px')
+            saturation = item.get('saturation_value', spec.metadata.get('saturation_value'))
+            saturation_known = 'saturated' in quality and saturation is not None and np.isfinite(saturation)
+            saturation_assessment = ('ASSESSED' if saturation_known else 'UNKNOWN') if 'saturated' in quality else ''
+            saturation_units = item.get('saturation_units', spec.metadata.get('source_units', spec.metadata.get('units', 'unknown')))
             for i, (x, y) in enumerate(zip(item['x'], item['y'])):
                 writer.writerow([item['name'], indices[i] if indices is not None else '' if spec.metadata.get('distribution_mode') else i,
                                  x, y, sd[i] if sd is not None else '',
@@ -622,8 +629,10 @@ def export_figure_bundle(spec, directory, *, width_mm=180, height_mm=115, dpi=30
                                  *[values[i] if values is not None else '' for values in removed],
                                  edges[i] if edges is not None else '', edges[i+1] if edges is not None else '',
                                  item.get('position_units', ''),
-                                 *[sample(quality.get(key, ''), i) for key in ('valid', 'invalid', 'ignored', 'saturated')],
-                                 spec.metadata.get('units', '')])
+                                 *[sample(quality.get(key, ''), i) for key in ('valid', 'invalid', 'ignored')],
+                                 sample(quality['saturated'], i) if saturation_known else '',
+                                 spec.metadata.get('units', ''), saturation_assessment,
+                                 saturation if saturation_known else '', saturation_units if saturation_assessment else ''])
     if any('distribution' in item for item in spec.series):
         with (directory/'distributions.csv').open('x',newline='',encoding='utf-8') as stream:
             writer = csv.writer(stream)

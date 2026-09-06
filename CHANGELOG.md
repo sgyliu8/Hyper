@@ -18,6 +18,12 @@
   and display-only colour limits with clipped counts.
 - Add local Study observation/analysis links, verified portable assets and
   descriptive repeat/thermal plots; unknown conditions remain explicit.
+- Bind modeless editors, profiles, brushes and exports to stable source/ROI
+  revisions; source replacement invalidates old dialogs before file release.
+- Keep terminal recording results visible independently of live camera state,
+  preserve bounded overflow failures and size the camera writer queue at 16.
+- Match right-task point colours to ROI colours and export unknown saturation
+  explicitly rather than treating unavailable assessment as zero.
 
 ## 0.3.1 — live ROI correction, 2026-09-05
 

@@ -81,6 +81,7 @@ class Workbench(W.QMainWindow):
         self.task_busy = False
         self.closing = False
         self.last_status = {}
+        self.recording_receipt = None
         self.last_quality = 0.0
         self.last_log = 0.0
         self.last_frame_identity = None
@@ -181,6 +182,11 @@ class Workbench(W.QMainWindow):
         self.side_toggle = self.button('Settings ▾', lambda: self.side_scroll.setVisible(not self.side_scroll.isVisible()))
         actions.addWidget(self.side_toggle)
         layout.addLayout(actions)
+        self.recording_label = W.QLabel()
+        self.recording_label.setObjectName('recording_result')
+        self.recording_label.setWordWrap(True)
+        self.recording_label.hide()
+        layout.addWidget(self.recording_label)
         split = W.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.side_scroll = W.QScrollArea()
         self.side_scroll.setWidgetResizable(True)
@@ -606,6 +612,8 @@ class Workbench(W.QMainWindow):
                 self.apply_map_brush()
         if self.session:
             for event in self.session.poll_events():
+                if event.get('kind') == 'recording':
+                    self.update_recording_result(event)
                 if event.get('path'):
                     if event.get('kind') == 'snapshot' and event.get('succeeded'):
                         self.add_recent(Path(event['path']))
@@ -664,10 +672,35 @@ class Workbench(W.QMainWindow):
         if not self.task_busy:
             self.executor.submit(write)
 
+    def update_recording_result(self, recording):
+        if not recording or not recording.get('done'):
+            return
+        receipt = {key:recording.get(key) for key in ('path', 'written_frames', 'max_frames',
+            'accepted_frames', 'explicitly_failed_frames', 'rejected_frames', 'overflow',
+            'completed', 'partial', 'error', 'save_reopen_verified')}
+        if receipt == self.recording_receipt:
+            return
+        self.recording_receipt = receipt
+        complete = receipt['completed'] is True and receipt['partial'] is False
+        outcome = 'COMPLETE' if complete else 'PARTIAL' if receipt['partial'] is True else 'UNKNOWN'
+        written, maximum = (receipt[key] if receipt[key] is not None else '—'
+                            for key in ('written_frames', 'max_frames'))
+        text = f'Last recording: {outcome} · {written} / {maximum} frames written'
+        if not complete:
+            text += ' · ' + (receipt['error'] or 'Reason not recorded')
+        text += ' · reopen verified' if receipt['save_reopen_verified'] else ' · reopen not verified'
+        self.recording_label.setText(text)
+        self.recording_label.setToolTip('Latest terminal recording receipt; independent of camera state. '
+            'The frame limit is an upper bound; a duration-limited recording may complete earlier.\n' + json_text(receipt))
+        self.recording_label.setStyleSheet('padding:5px 8px; border-radius:4px; ' +
+            ('background:#e6f1eb; color:#256348;' if complete else 'background:#fff0da; color:#775120;'))
+        self.recording_label.show()
+
     def update_status(self):
         status = self.last_status
         metrics = status.get('metrics', status)
         recording = status.get('recording') or {}
+        self.update_recording_result(recording)
         def metric(name):
             value = metrics.get(name)
             return f'{value:.1f}' if isinstance(value, (int, float)) else '—'
@@ -1788,9 +1821,11 @@ class Workbench(W.QMainWindow):
                 upper = chart.plot(x,y+sd,pen=None,connect='finite')
                 shade = pg.mkColor(item['color']); shade.setAlpha(43)
                 chart.addItem(pg.FillBetweenItem(lower,upper,brush=shade))
-            chart.plot(x,y,pen=pg.mkPen(item['color'],width=2.5,
+            points_only = spec.categories and spec.metadata.get('categorical_style') == 'points'
+            chart.plot(x,y,pen=None if points_only else pg.mkPen(item['color'],width=2.5,
                 style=QtCore.Qt.PenStyle.DashLine if item.get('style') == '--' else QtCore.Qt.PenStyle.SolidLine),
-                name=item['name'],connect='finite',symbol='o' if spec.categories else None,symbolSize=7)
+                name=item['name'],connect='finite',symbol='o' if spec.categories else None,symbolSize=7,
+                symbolBrush=item['color'],symbolPen='w')
         if brush and spec.series:
             values = np.concatenate([np.asarray(item.get('ecdf',{}).get('values',item['x'])) for item in spec.series])
             values = values[np.isfinite(values)]

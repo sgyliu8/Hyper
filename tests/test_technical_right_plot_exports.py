@@ -46,6 +46,8 @@ def test_profile_csv_preserves_real_channels_bins_and_all_quality_denominators(t
         assert [int(row['geometry_count']) for row in channel] == [1,1,1,2]
         assert [int(row['excluded_geometry_count']) for row in channel] == [0,1,0,0]
         assert all(row['position_units']=='px' and row['value_units']=='DN' for row in channel)
+        assert all(row['saturation_assessment']=='ASSESSED' and row['saturation_value']=='32.0'
+                   and row['saturation_units']=='DN' for row in channel)
         assert all(row['roi_id']=='strip-A' and row['roi_revision']=='3' for row in channel)
         for row in channel:
             assert int(row['used_count'])+int(row['geometry_excluded_count']) == int(row['policy_valid_count'])
@@ -73,6 +75,36 @@ def test_profile_snapshot_rejects_later_same_path_source_change(tmp_path):
     with pytest.raises(ValueError,match='Source changed'):
         export_figure_bundle(spec,tmp_path/'rejected',source_cube=cube,dpi=72)
     assert not (tmp_path/'rejected').exists()
+
+
+@pytest.mark.parametrize('data_level,units',[('raw_frame','DN'),('reflectance_cube','dimensionless')])
+def test_profile_unknown_saturation_is_explicit_without_inferred_inapplicability(data_level,units,tmp_path):
+    cube=Cube(np.arange(1.,6.).reshape(1,5,1),
+              {'data_level':data_level,'units':units,'data_source':'SYNTHETIC','pixel_format':'Unknown'})
+    roi=make_roi((1,5),{'type':'strip','points':[[.5,.5],[4.5,.5]],'width_px':1.})
+    result,fingerprint=compute_pinned(cube,lambda:strip_profile(cube,roi))
+    spec=strip_profile_plot(result,source=source_identity(cube),source_fingerprint=fingerprint)
+    output=export_figure_bundle(spec,tmp_path/'unknown-saturation',source_cube=cube,dpi=72)
+    rows=list(csv.DictReader((output/'series.csv').open()))
+    assert spec.metadata['saturation_value'] is None
+    assert all(row['saturation_assessment']=='UNKNOWN' and row['source_saturated_count']==''
+               and row['saturation_value']=='' and row['saturation_units']==units for row in rows)
+    assert all(int(row['used_count'])>0 for row in rows)
+    assert not np.any(result['curves'][0]['counts']['saturated'])
+
+
+def test_normalized_roi_export_saturation_uses_original_input_units(tmp_path):
+    cube=Cube(np.array([[[10.,20.],[30.,50.]]]),
+              {'data_level':'raw_frame','data_source':'SYNTHETIC','units':'DN',
+               'channel_labels':['A','B'],'effective_bits':5})
+    stats=roi_comparison(cube,[(0,0,2,1)])
+    amplitude=roi_plot(stats,['Region'],COLORS,source=source_identity(cube))
+    spec=roi_transform_plot(amplitude,'shape')
+    output=export_figure_bundle(spec,tmp_path/'normalized',dpi=72)
+    rows=list(csv.DictReader((output/'series.csv').open()))
+    assert [row['source_saturated_count'] for row in rows]==['0','1']
+    assert all(row['saturation_assessment']=='ASSESSED' and row['saturation_value']=='31.0'
+               and row['saturation_units']=='DN' and row['value_units']=='dimensionless' for row in rows)
 
 
 def test_profile_spec_copies_computed_arrays_and_context(tmp_path):

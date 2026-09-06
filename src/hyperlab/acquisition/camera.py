@@ -14,7 +14,7 @@ from hyperlab.profiling import StageTimings
 
 class CameraSession:
     def __init__(self, cti, serial, *, settings=None, mode="measurement", backend_factory=None,
-                 writer_capacity=8, recorder_factory=SequenceRecorder, fetch_timeout=0.25, phase_log=None):
+                 writer_capacity=16, recorder_factory=SequenceRecorder, fetch_timeout=0.25, phase_log=None):
         if not 0 < fetch_timeout <= 1:
             raise ValueError("Fetch timeout must be in (0,1] seconds")
         self.cti, self.serial = str(cti), str(serial)
