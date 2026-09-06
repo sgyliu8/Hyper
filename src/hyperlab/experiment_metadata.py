@@ -90,6 +90,12 @@ def _digest(value):
 
 
 def _array_identity(array):
+    view = array
+    while view is not None:
+        mapped = getattr(view, '_mmap', None)
+        if mapped is not None and mapped.closed:
+            raise ValueError('Source mapping is closed; reopen the source and run analysis again before exporting')
+        view = getattr(view, 'base', None)
     digest = hashlib.sha256()
     # Buffered C-order iteration also handles transposed ENVI and sliced masks.
     with np.nditer(array, flags=['external_loop', 'buffered', 'zerosize_ok'],

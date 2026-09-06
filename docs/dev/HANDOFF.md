@@ -10,7 +10,7 @@ The English UI retains the approved scientific palette and simplifies analysis
 to a method selector, contextual parameters, Run, Results and one Export menu.
 See the [complete technical/user guide](../user/MATERIALS_AND_THERMAL_PAINT.md).
 
-The source suite passes 415 tests. The isolated installation smoke exercises
+The source suite passes 416 tests. The isolated installation smoke exercises
 the new scientific modules, annotation/reference dialogs and output manifest.
 Actual saved RGB/Bayer frames, a complete recording and a partial durable prefix
 pass 14 independent checks with originals unchanged. A separate official USGS
@@ -25,7 +25,8 @@ fixture now fits its pre-gap prefix in its test queue; independent overflow test
 and every actual partial recording remain unchanged. Later native/integration
 review fixes source pinning, source-switch invalidation, asynchronous Run recovery,
 RGB/BGR labels, failed chart-selection identity and modeless figure settings.
-These changes have dedicated regressions.
+Closed file mappings are rejected before hashing when a previous export dialog
+outlives a replay-source switch. These changes have dedicated regressions.
 
 Physical FP control/reconstruction/calibration, a temperature-history inverse
 model and a validated defect classifier remain conditional on the evidence

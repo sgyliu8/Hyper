@@ -196,3 +196,16 @@ def test_figure_dialog_is_modeless_and_keeps_opening_source(qtbot,monkeypatch):
     buttons=window._figure_dialog.findChild(W.QDialogButtonBox)
     buttons.button(W.QDialogButtonBox.StandardButton.Save).click(); complete(window,qtbot)
     assert captured['source_cube'] is first
+
+
+def test_modeless_figure_source_closed_by_replay_switch_is_rejected(qtbot,tmp_path):
+    from hyperlab.io import load_cube
+    path=tmp_path/'first.npy'; save_cube(rgb(),path)
+    window=Workbench(); qtbot.addWidget(window); original=load_cube(path); window.set_cube(original)
+    window.figure_export()
+    original.close()
+    window.set_cube(rgb())
+    buttons=window._figure_dialog.findChild(W.QDialogButtonBox)
+    buttons.button(W.QDialogButtonBox.StandardButton.Save).click(); complete(window,qtbot)
+    assert 'Source mapping is closed' in window.message.text()
+    assert window.run_button.isEnabled()
