@@ -5,7 +5,7 @@
 | Mode | Requirements | Qualification |
 |---|---|---|
 | Offline / demo | Windows x64, Python 3.11, or the evaluation desktop ZIP | No camera or manufacturer runtime required |
-| Image acquisition | Above plus official USB3 Vision driver, Balluff Impact Acquire 3.7.2, Harvester 1.4.3 | Experimental; current sustained hardware revalidation deferred |
+| Image acquisition | Above plus official USB3 Vision driver, Balluff Impact Acquire 3.7.2, Harvester 1.4.3 | Experimental; qualify the selected recording mode and actual setup |
 | Spectroscopy | Verified FP control, synchronization and device-matched reconstruction/calibration | Not recovered |
 
 Original-code licensing is undecided. The following are evaluation installation
@@ -29,8 +29,8 @@ py -3.11 -m venv .venv
 This is a normal, non-editable install. Reinstall with `pip install .` after a
 source update. For acquisition only, install `.[camera]` into this environment.
 Do not copy someone else's virtual environment. No test packages are required.
-Use the exact commit recorded in [release evidence](../dev/RELEASE_PLAN.md) for a
-reproducible candidate, with `git checkout COMMIT` after cloning.
+For a reproducible installation, use the source commit recorded in the supplied
+BUILD.json or build receipt. An online branch may be older than a local candidate.
 
 ## Wheel installation
 
@@ -39,7 +39,7 @@ Use the actual `.whl` file from the local build evidence, then:
 
 ```powershell
 py -3.11 -m venv "$env:USERPROFILE\HyperLabEnv"
-& "$env:USERPROFILE\HyperLabEnv\Scripts\python.exe" -m pip install C:/path/to/hyperlab-0.3.0-py3-none-any.whl
+& "$env:USERPROFILE\HyperLabEnv\Scripts\python.exe" -m pip install C:/path/to/hyperlab-VERSION-py3-none-any.whl
 & "$env:USERPROFILE\HyperLabEnv\Scripts\python.exe" -m hyperlab demo
 ```
 
@@ -59,9 +59,9 @@ Python/Qt libraries and their notices, but no Balluff driver, CTI or private dat
 The console build retains startup errors for troubleshooting.
 
 The local acceptance distinguishes same-machine independent installation from a
-new Windows machine. No clean physical PC/VM or driver installation was validated
-this phase. Artifact paths, SHA and actual smoke results are in the release plan;
-there is no published GitHub Release yet.
+new Windows machine. A successful offline installation does not qualify a camera, driver or clean
+physical Windows machine. Check the supplied artifact hash and BUILD.json;
+there is no authorized public binary release yet.
 
 ## Workspace and configuration
 

@@ -1,6 +1,6 @@
 # Third-party notices and distribution boundary
 
-HyperLab 0.3.0 is a research preview. The owner has **not selected an original-code
+HyperLab is a research application. The owner has **not selected an original-code
 license**. No new LICENSE file or public release is authorized by this notice.
 Public repository visibility is not a reuse or redistribution license. The
 local wheel and desktop ZIP are evaluation artifacts pending ownership,

@@ -69,5 +69,4 @@
 - Add private reference import/export, Locate, redacted support reports, an
   independent wheel smoke and one Windows onedir ZIP build.
 
-Long-duration/spectral hardware qualification and original-code licensing remain pending. Older engineering
-history is in [the archived Phase 2 handoff](docs/dev/archive/PHASE2_HANDOFF.md).
+Long-duration/spectral hardware qualification and original-code licensing remain pending.

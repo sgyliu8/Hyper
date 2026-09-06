@@ -1,79 +1,114 @@
-# Workbench user guide
+# HyperLab user guide
 
-## Source and task controls
+## Start and identify the source
 
-The badge separates EMPTY, SYNTHETIC, REPLAY, LIVE, FROZEN and STALE. Acquisition
-origin is retained when a saved measurement is replayed. Top-level Acquisition,
-Analysis and Calibration tabs change the right panel; Settings collapses it.
-Diagnostics contains detailed device evidence, setup/About and a preview of the
-redacted support report. It is not necessary to enter a CTI path for normal use.
+Open the app with Start-HyperLab.cmd or `python -m hyperlab app`. Startup and
+file analysis do not open hardware. Camera state, the viewed observation and a
+completed result have separate identities. A saved real capture is replay data;
+it can be viewed while a camera is connected. Return to live resumes following
+that session. Freeze holds only the display. Details retains full paths, clocks,
+settings and result recipes for copying.
 
-Opening the app never opens the camera. The normal prepared-hardware workflow is
-Connect camera → Start preview → Stop acquisition → Disconnect. Runtime/device
-selection is explicit if discovery has multiple candidates. That physical workflow
-was not revalidated this phase. The following controls are implemented:
+## Camera and saving
 
-| Control | Meaning |
-|---|---|
-| Apply on next start | Temporary requested settings; check actual readback after start |
-| Freeze display | Hold the displayed frame while acquisition continues |
-| Save current frame | Save the explicitly displayed immutable frame, including an older frozen frame; identity is preserved |
-| Record | Start only after the current stream epoch has a new frame; set finite frame/time and disk limits |
-| Stop acquisition | Cooperatively stop the stream and restore session settings |
-| Disconnect / normal close | Request cleanup; a timeout does not prove native cleanup |
+Use Connect camera, Start preview, Stop acquisition and Disconnect for one
+supported camera owner. If multiple targets/runtimes are discovered, select the
+intended one. Pending exposure/gain/format changes apply on next start; inspect
+the actual readback. Per-frame settings require chunk evidence. Preview preserves
+supported automatic processing; measurement mode attempts supported transient
+processing changes and reports its actual qualification. Normal release restores
+session settings. A native timeout is not proof of cancellation or release.
 
-Capture, display and write rates are separate. Preview drops, device frame gaps
-and writer overflow have different meanings. Receive age excludes unknown
-exposure/transport delay and is not end-to-end latency. Screen age refers to the
-shown frame. A frozen or stale picture is not evidence of current acquisition.
-A partial sequence remains partial with its failure reason and counts.
+Save current frame stores the exact displayed raw frame and metadata, including
+an older frozen frame; it does not fetch a replacement. Check the saved result
+and reopen it from Recent saves before adding analysis to a Study or reference.
+Capture, display, recorder admission and durable writing are distinct counts.
+Mailbox replacement events may overlap displayed frames and are not USB loss.
 
-## Image and ROI work
+A nearly black image can still be a valid received frame. Inspect raw values,
+saturation/coverage and known illumination/target conditions. Unknown cause does
+not qualify a dark reference. Bayer mosaic, CFA-cell display, camera RGB and
+calibrated spectra have different meanings. CFA display requires delivered
+pattern, offsets and orientation evidence; an unavailable transform must remain
+labelled. Display stretching never creates measured signal or linearity evidence.
 
-Raw pixel coordinates are independent of zoom. Fit shows the field; 1:1 uses a
-screen pixel view. Use the slider for wavelength/state or sequence frame index,
-following its label. RGB is categorical; a Bayer plane is a raw sensor diagnostic.
-CFA-cell colour preview is available only with evidenced delivered pattern and
-orientation. Colour rendering is display-only, not colorimetric calibration.
+## Regions and the four panels
 
-Up to eight rectangles can be named, moved, resized, hidden and deleted (at least
-one remains). Names/colours follow the image, curves and exports. Edit ROI bounds
-uses half-open pixel bounds, x0/y0 included and x1/y1 excluded. ROI definitions
-stay on the same source geometry. Computations debounce edits; obsolete results
-are discarded. Analysis source/version is pinned, so a new LIVE frame cannot be
-silently substituted into an old result.
+Use Analysis to define named rectangle, polygon, binary-mask or line/strip ROIs.
+Give reference/target/exclude roles and select the reference explicitly. The
+stable reference ID survives rename/reorder; verify changes after deletion.
+Show controls visibility, Use controls statistical inclusion. Exclusions subtract
+their union from each selected region. A profile can be inspected independently
+of whether it participates in the material amplitude comparison.
 
-Compare ROIs plots means and optional ±1 spatial SD. L2 normalization adds a
-separate panel over common valid features; it does not overwrite raw amplitudes.
-Bad bands remain gaps. A zero norm produces an unavailable shape curve. The
-quality-count dialog and figure JSON retain sample denominators and exclusions.
-There is no smoothing, derivative or significance test in this release.
+Select mean/spatial SD or median/Q25–Q75, quality and common/per-band support.
+Choose the method and Run analysis. Results and Export act on its completed,
+source-bound result. Changing pending controls cannot rename or rebind an old
+figure. A later live frame is a different observation.
 
-## Maps and PCA
+- Source panel: original coordinate grid, ROI geometry, linked pixel readout.
+- Map panel: selected features, formula/units and validity; grey is unavailable.
+- Amplitude panel: each ROI's selected statistic and spatial dispersion.
+- Right panel: ECDF/histogram and brush, line/strip profile, residual or L2 shape.
 
-Choose input indices A/B, then Difference or Ratio. Difference uses a diverging
-map centered at zero, Ratio at one. Low/invalid denominators stay masked. Angle
-uses a sequential map with rad or deg; degree conversion changes the numeric
-figure values and unit. Shared map limits are enabled by default for repeated
-comparisons of the same operation/units; disable them to fit each new map.
+For an ECDF/histogram, choose Inspect ROI and an inclusive range, then Select map
+range or drag the range selector. Selected/used/geometric counts refer to exact
+raw pixels; the overview preserves sparse hits. Excluded/invalid pixels are not
+zero. For a profile, choose a line/strip ROI and inspect per-bin used counts and
+reasons. Empty bins stay gaps at their original pixel distances. Profile mean/SD
+is separate from a median/quartile amplitude panel. No mm calibration is assumed.
 
-PCA uses the documented common feature selection and mean centering. Choose PC
-score, explained variance or loading curves. PC signs are arbitrary; variance
-explained is not classification accuracy. Angle/SAM is not a defect probability.
-Pixelwise A/B file comparisons require alignment evidence; the separate saved
-file comparison is descriptive ROI/field statistics, not registration.
+## Spectral and derived operations
 
-## Recording replay and exports
+RGB feature selectors refer to stored colour categories, not wavelengths. A
+documented external spectral cube can use actual wavelength smoothing, first/
+second derivatives and interval maps. The inclusive first/last indices retain
+their original feature mapping. Physical window span, maximum gap and available
+response/FWHM evidence remain inspectable. Unsupported windows stay unavailable.
+Continuum depth requires reflectance with supported shoulders. PCA scores,
+loadings, variance and angle are descriptive, not defect probabilities.
 
-Open sequence.npy.json (or its sequence folder). The slider visits recorded
-frames. ROI time trend uses recorded host receive time within a known clock
-session or explicit recorded frame index. Playback speed does not create sample
-times. Its interactive curve contains displayed/visited samples, bounded to 300
-unique identities. Calibration → Plot all recorded ROI samples recomputes all
-persisted frames; temporal statistics create mean, SD and drift outputs. These
-describe stability and do not identify the cause of material change.
+## Study observations
 
-Image export writes a display PNG. Export derived values + mask writes numerical
-data. Figure export writes annotated plots plus source data; see
-[Scientific figures](SCIENTIFIC_FIGURES.md). All outputs use new names/directories,
-leaving raw measurements unchanged. Recent saves can be reopened or relocated.
+Save/reopen a source, optionally save a source-bound Specimen / thermal context
+revision, and complete its ROI analysis. Open Study and Add current saved
+observation. Unknown fields can remain blank. Add saved files imports sources
+with analysis NOT_RUN until a completed result is supplied. Save the Study JSON
+to keep it across app restarts; closing its dialog alone is not a durable save.
+
+Observations, feature heatmap and original points preserve separate source rows.
+Select one compatible feature recipe before comparing. Mean/median, quality,
+common feature population, units, preprocessing and known response/context
+affect compatibility. UNKNOWN/MISMATCH rows remain viewable without silent pooling.
+Group by recorded specimen/session; repeated photos are not independent specimens.
+Reference-target contrasts are descriptive within the declared observation.
+Connections across observations require an explicit pairing relation. Unknown
+temperature/dwell points are omitted with counts, not fabricated or interpolated.
+
+Verify files checks all recorded source/annotation/mask assets. Relocate selected
+requires explicit locations and matching bytes; no nearby-file substitution.
+Copy a workspace with its associated files and save the Study inside it when
+possible. Missing and mismatched assets remain visible. Equal settings/dimensions
+do not register images or justify pixelwise difference across observations.
+
+## Recording, replay and output
+
+Recording is bounded by declared frame/time/resource limits and needs a fresh
+frame in the active stream epoch. Inspect the selected recording mode and its
+memory/durability contract before starting. Accepted/captured is not durable.
+Preserve partial directories and errors; only the confirmed manifest prefix is
+readable. Never turn a short successful recording into sustained-rate qualification.
+
+Open sequence.npy.json or its directory to inspect recorded frames. The interactive
+trace contains visited unique samples; Plot all recorded ROI samples traverses
+every persisted frame. Its time uses recorded receive clocks or explicit frame
+indices, not redraw/playback times. Known settings changes prevent unqualified
+pooled repeatability. Statistics describe signal changes without identifying cause.
+
+Export display PNG, derived values/mask, ROI tables or Publication figure + data
+as distinct outputs. Figure size uses mm/DPI; SVG/PDF preserve text where applicable.
+Exports retain completed-source identity and never overwrite originals. Check
+Data and methods for formulas, denominators, units and the full bundle contents.
+
+[Installation](INSTALL.md) · [Data and methods](DATA_AND_METHODS.md) ·
+[Troubleshooting](TROUBLESHOOTING.md)
