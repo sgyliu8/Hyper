@@ -1,4 +1,38 @@
-# Current handoff — ROI/display follow-up; historical Phase 3 below
+# Current handoff — 0.4.0 materials and thermal-paint workbench
+
+The latest owner request is implemented as S1–S9 in the
+[research, three-round review and delivery record](SCIENCE_ROADMAP_REVIEW.md).
+Current branch: `feature/materials-science-v040`, based on the already merged
+0.3.1 PR at `904cc2f`. The earlier PR was merged externally during this work;
+this increment does not merge or change the repository's default branch.
+Three AI reviewers completed nine reports and converged before implementation.
+The English UI retains the approved scientific palette and simplifies analysis
+to a method selector, contextual parameters, Run, Results and one Export menu.
+See the [complete technical/user guide](../user/MATERIALS_AND_THERMAL_PAINT.md).
+
+The source suite passes 415 tests. The isolated installation smoke exercises
+the new scientific modules, annotation/reference dialogs and output manifest.
+Actual saved RGB/Bayer frames, a complete recording and a partial durable prefix
+pass 14 independent checks with originals unchanged. A separate official USGS
+measured coating spectrum passes 53 numerical/provenance and 36 export checks;
+it is one external spectrum, never a HinaLea spatial image or temperature model.
+Build/native-delivery status is recorded in the delivery record as it completes.
+
+The first integrated suite retained three failures: two old UI fixtures needed
+the new explicit completed-analysis export contract, and a bounded fake-camera
+gap test reached writer overflow first under concurrent disk load. The gap
+fixture now fits its pre-gap prefix in its test queue; independent overflow tests
+and every actual partial recording remain unchanged. Later native/integration
+review fixes source pinning, source-switch invalidation, asynchronous Run recovery,
+RGB/BGR labels, failed chart-selection identity and modeless figure settings.
+These changes have dedicated regressions.
+
+Physical FP control/reconstruction/calibration, a temperature-history inverse
+model and a validated defect classifier remain conditional on the evidence
+listed in the plan. No reset, driver/firmware change or unknown control command
+belongs to this increment. Original-code licensing/public release remain deferred.
+
+## Historical 0.3.1 ROI/display follow-up and Phase 3
 
 The owner subsequently authorized a real imaging/UI follow-up for the Compare
 ROIs error and chart styling. See [0.3.1 live ROI follow-up](ROI_LIVE_FIX.md) for

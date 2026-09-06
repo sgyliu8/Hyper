@@ -6,7 +6,7 @@ from .core import _floating, _quality, roi_statistics
 
 def quality_summary(cube, rect=None, *, policy="diagnostic"):
     h, w, _ = cube.shape
-    stats = roi_statistics(cube, rect or (0, 0, w, h), policy=policy)
+    stats = roi_statistics(cube, rect or (0, 0, w, h), policy=policy, robust=False)
     counts = {key: int(values.sum()) for key, values in stats["counts"].items()}
     return {**counts, "policy": policy, "saturation_value": stats["saturation_value"],
             "saturation_fraction": None if stats["saturation_value"] is None else
@@ -34,7 +34,7 @@ def cfa_statistics(cube, rect=None, *, policy="diagnostic"):
         raise ValueError("CFA phase statistics require a documented Bayer pattern")
     h, w, _ = cube.shape
     rect = rect or (0, 0, w, h)
-    roi_statistics(cube, rect, policy=policy)  # Reuse coordinate validation.
+    roi_statistics(cube, rect, policy=policy, robust=False)  # Reuse coordinate validation.
     x0, y0, x1, y1 = rect
     offset = meta.get("cfa_offset", [meta.get("offset_x", 0), meta.get("offset_y", 0)])
     flip_x, flip_y = bool(meta.get("flip_x", False)), bool(meta.get("flip_y", False))

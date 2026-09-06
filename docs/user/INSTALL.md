@@ -10,7 +10,7 @@
 
 Original-code licensing is undecided. The following are evaluation installation
 instructions, not a public-release or redistribution authorization. The release
-candidate is `feature/scientific-workbench-portable-v3`; default clone currently
+candidate is `feature/materials-science-v040`; default clone currently
 selects the older `recovery/hinalea-local` branch.
 
 ## Source installation (ordinary user)
@@ -18,7 +18,7 @@ selects the older `recovery/hinalea-local` branch.
 Install Python 3.11 x64 and Git, then in PowerShell:
 
 ```powershell
-git clone --branch feature/scientific-workbench-portable-v3 --single-branch https://github.com/sgyliu8/Hyper.git
+git clone --branch feature/materials-science-v040 --single-branch https://github.com/sgyliu8/Hyper.git
 cd Hyper
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install .

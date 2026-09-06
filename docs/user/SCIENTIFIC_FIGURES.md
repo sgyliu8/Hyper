@@ -1,5 +1,12 @@
 # Scientific figures
 
+In 0.4.0, use **Analysis → ROI summary → Run analysis**, then **Export → Publication
+figure + data**. Mean/SD remains the default; Median/Q25–Q75 adds an asymmetric
+quartile ribbon. Common-pixel support is an explicit choice. Results lists mean,
+SD, median, quartiles, IQR, raw MAD, range and the actual used/quality denominators.
+The [materials guide](MATERIALS_AND_THERMAL_PAINT.md) covers pair metrics and
+spectral operations. The plot selector lives in expandable **Plot and view options**.
+
 In 0.3.1, **Compare ROIs** on one raw sensor plane shows ROI means with
 mean +/- 1 spatial SD error bars and a second panel of intensity distributions.
 The distributions use 64 shared bins and all pixels admitted by the selected
@@ -18,12 +25,17 @@ quality policy, counts, normalization, limits, colormap, units and caption.
 | Figure | Required interpretation |
 |---|---|
 | ROI amplitude | Mean ±1 spatial SD (population ddof=0), pixel dispersion; no CI or independent-repeat claim |
+| Robust ROI | Median and Q25–Q75; raw MAD is unscaled; neither spread is measurement uncertainty |
 | L2 shape | Common finite feature set; dimensionless; original amplitude stays visible |
 | Wavelength curve | Only with a declared wavelength array and unit; declared is distinct from independently verified |
 | Unknown scan axis | Scan state index, never invented nanometres |
 | RGB / Bayer | Categorical colour channels / sensor DN summary, not a measured spectrum |
 | Difference | Signed units, zero-centered diverging map |
 | Ratio | A/B, dimensionless, semantic center 1; invalid/low denominator masked |
+| Normalized difference | (A−B)/(A+B), center zero; explicit absolute-denominator threshold; generic contrast, not an automatically named vegetation or defect index |
+| Reference RMSE | Equal-feature distance from the first ROI; common reference pixels and fixed feature set; sequential nonnegative scale |
+| Derivative/integral | Actual wavelength coordinates converted to nm; common pixels; complete windows/intervals; no hidden resampling or transformed SD |
+| Continuum depth | Reflectance only; signed 1−R/C with an endpoint line; sampled minimum, not fitted center or temperature |
 | Angle | Sequential map, rad or deg; not defect probability |
 | PCA | PC score units follow mean-centered input; loadings and explained variance retain used features |
 | Time trend | Known recorded host clock or frame index; displayed subset or all persisted frames is explicit |
@@ -43,6 +55,11 @@ width/height (mm) and DPI. The directory contains:
   SVG/PDF; dense maps are rasterized inside vector figures.
 - `plot.json`: PlotSpec, source/quality/ROI/feature metadata, dimensions, version.
 - `series.csv`: the actual x/y/SD/normalized curve values.
+- `analysis_manifest.json`: exact source/output SHA-256, recipe and optional
+  analyst revision for workbench exports. A changed source invalidates an old
+  result export; completed results do not adopt new controls or a later live frame.
+- Quartile bounds and used counts accompany applicable curves. The ROI table
+  export also includes full statistics, optional pair/feature CSV and pinned recipe.
 - `values.npy`, `valid.npy`: numerical map and mask for map bundles.
 
 Public examples exclude private file paths and identifiers. Local PlotSpec files

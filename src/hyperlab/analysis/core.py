@@ -106,15 +106,33 @@ def composite(cube, bands=(0, 1, 2)):
                          "wavelength_units": cube.metadata["wavelength_units"]}}
 
 
-def roi_statistics(cube, rect, *, policy="diagnostic"):
-    """Half-open rectangle (x0,y0,x1,y1); population standard deviation (ddof=0)."""
+def roi_statistics(cube, rect, *, policy="diagnostic", bands=None, support="per_band", robust=True):
+    """Half-open ROI; original policy quality and actually used samples stay distinct."""
     if len(rect) != 4 or any(not isinstance(x, (int, np.integer)) for x in rect):
         raise ValueError("ROI must contain four integer coordinates")
     x0, y0, x1, y1 = rect
     h, w, k = cube.shape
     if not (0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h):
         raise ValueError("ROI is empty or outside image")
+    if support not in {"per_band", "common"}:
+        raise ValueError("ROI support must be per_band or common")
+    requested = list(range(k)) if bands is None else list(bands)
+    if (not requested or any(isinstance(i, (bool, np.bool_)) or not isinstance(i, (int, np.integer))
+                            or not 0 <= i < k for i in requested) or len(set(requested)) != len(requested)):
+        raise ValueError("ROI feature indices must be nonempty, unique integers inside the cube")
+    enabled = np.asarray(cube.metadata.get("band_validity", [True] * k), bool)
+    features = [int(i) for i in requested if enabled[i]]
+    selected = set(features)
+    common = None
+    if support == "common":
+        common = np.full((y1-y0, x1-x0, 1), bool(features))
+        for band in features:
+            selection = (slice(y0, y1), slice(x0, x1), slice(band, band + 1))
+            common &= _valid(cube, cube.data[selection], selection, policy)
     means, stds, counts = np.full(k, np.nan), np.full(k, np.nan), np.zeros(k, dtype=np.int64)
+    summaries = {key: np.full(k, np.nan) for key in ("median", "q25", "q75", "iqr", "mad", "min", "max")}
+    support_excluded = np.zeros(k, dtype=np.int64)
+    selection_excluded = np.zeros(k, dtype=np.int64)
     quality_counts = {key: np.zeros(k, dtype=np.int64) for key in
                       ("total", "valid", "saturated", "ignored", "invalid")}
     # One band at a time keeps ROI working memory independent of K.
@@ -124,25 +142,48 @@ def roi_statistics(cube, rect, *, policy="diagnostic"):
         good, quality, saturation = _quality(cube, data, selection, policy)
         for key, mask in quality.items():
             quality_counts[key][band] = np.count_nonzero(mask)
+        if band not in selected:
+            selection_excluded[band] = quality_counts["valid"][band]
+            continue
+        if common is not None:
+            good = good & common
         values = _floating(data[good], dtype=np.float64)
         counts[band] = len(values)
+        support_excluded[band] = quality_counts["valid"][band] - counts[band]
         if len(values):
             means[band] = values.mean()
             stds[band] = values.std(ddof=0)
-    return {"mean": means, "std": stds, "count": counts, "counts": quality_counts,
+            if robust:
+                q25, median, q75 = np.quantile(values, [.25, .5, .75], method="linear")
+                for key, value in (("median", median), ("q25", q25), ("q75", q75),
+                                   ("iqr", q75-q25), ("mad", np.median(np.abs(values-median))),
+                                   ("min", values.min()), ("max", values.max())):
+                    summaries[key][band] = value
+    return {"mean": means, "std": stds, **summaries, "count": counts, "counts": quality_counts,
+            "support": support, "feature_indices": features,
+            "support_excluded_count": support_excluded, "selection_excluded_count": selection_excluded,
+            "valid_fraction": quality_counts["valid"] / quality_counts["total"],
+            "used_fraction": counts / quality_counts["total"],
+            "common_count": None if common is None else int(np.count_nonzero(common)),
             "policy": policy, "saturation_value": saturation, "rect": tuple(rect),
             "wavelengths": cube.wavelengths, "axis_label": _axis(cube),
             "channel_labels": cube.metadata.get("channel_labels"),
             "wavelength_units": cube.metadata["wavelength_units"], "units": cube.metadata["units"],
             "metadata": {"std_ddof": 0, "std_interpretation": "spatial SD; not temporal noise",
+                "support": support, "feature_indices": features, "requested_features": [int(i) for i in requested],
+                "robust_computed": bool(robust), "quantile_method": "linear", "mad_scale": "unscaled",
+                "used_count_semantics": "count + support_excluded_count + selection_excluded_count = counts.valid",
+                "valid_fraction_semantics": "policy-valid count / total; used_fraction is the analysis support fraction",
                 "policy": policy, "saturation_status": "unknown" if saturation is None else "known sample threshold",
-                "count_semantics": "invalid/ignored/saturated are disjoint; diagnostic valid includes saturated",
+                "count_semantics": "original policy quality: invalid/ignored/saturated are disjoint; diagnostic valid includes saturated",
                 "source_provenance": deepcopy(cube.metadata)}}
 
 
-def roi_comparison(cube, rectangles, *, policy="diagnostic"):
+def roi_comparison(cube, rectangles, *, policy="diagnostic", bands=None, support="per_band", robust=True):
     """ROI statistics, plus shared-bin DN distributions for a single plane."""
-    results = [roi_statistics(cube, rect, policy=policy) for rect in rectangles]
+    rectangles = list(rectangles)
+    results = [roi_statistics(cube, rect, policy=policy, bands=bands, support=support, robust=robust)
+               for rect in rectangles]
     if cube.shape[2] != 1:
         return results
 
@@ -182,16 +223,25 @@ def export_roi_csv(stats, path, wavelengths=None):
     with path.open("x", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
         writer.writerow(["index", "wavelength", "wavelength_units", "mean", "std_ddof0", "valid_count", "signal_units",
-                         "axis_label", "channel_label", "policy", "total_count", "saturated_count", "ignored_count", "invalid_count"])
+                         "axis_label", "channel_label", "policy", "total_count", "saturated_count", "ignored_count", "invalid_count",
+                         "median", "q25", "q75", "iqr", "mad_unscaled", "min", "max", "policy_valid_count",
+                         "support_excluded_count", "selection_excluded_count", "policy_valid_fraction", "used_fraction", "support"])
         for i, (mean, std, count) in enumerate(zip(stats["mean"], stats["std"], stats["count"])):
             labels = stats.get("channel_labels")
             quality = stats.get("counts", {})
             writer.writerow([i, "" if wave is None else wave[i], stats.get("wavelength_units") or "",
                 mean, std, int(count), stats.get("units", "unknown"), stats.get("axis_label", "index"),
                 labels[i] if labels else "", stats.get("policy", "diagnostic"),
-                *[int(quality[key][i]) if key in quality else "" for key in ("total", "saturated", "ignored", "invalid")]])
+                *[int(quality[key][i]) if key in quality else "" for key in ("total", "saturated", "ignored", "invalid")],
+                *[stats[key][i] if key in stats else "" for key in ("median", "q25", "q75", "iqr", "mad", "min", "max")],
+                int(quality["valid"][i]) if "valid" in quality else "",
+                *[stats[key][i] if key in stats else "" for key in ("support_excluded_count", "selection_excluded_count",
+                                                                "valid_fraction", "used_fraction")],
+                stats.get("support", "per_band")])
     from hyperlab.io.cube import _dumps
-    sidecar.write_text(_dumps({"schema_version": 1, "rect": stats["rect"],
+    sidecar.write_text(_dumps({"schema_version": 2, "rect": stats["rect"],
+        "count_columns": {"valid_count": "actual samples used by mean, SD and robust statistics",
+                          "policy_valid_count": "policy quality before selected-feature/common-support restrictions"},
         "axis_label": stats.get("axis_label"), "metadata": stats.get("metadata", {})}), encoding="utf-8")
     return path
 
@@ -336,6 +386,8 @@ def reflectance(sample, white, dark_sample, dark_white, *, reference_reflectance
                 reference_source=None, minimum_denominator=1.0, chunk_pixels=65536,
                 output_path=None, memory_threshold_bytes=256 * 1024**2):
     """Strict matching, float dark subtraction, no clipping of physically unusual ratios."""
+    from .applicability import reference_applicability
+
     cubes = [sample, white, dark_sample, dark_white]
     if chunk_pixels < 1 or memory_threshold_bytes < 1:
         raise ValueError("Chunk size and memory threshold must be positive")
@@ -359,6 +411,12 @@ def reflectance(sample, white, dark_sample, dark_white, *, reference_reflectance
                 raise ValueError(f"Reflectance input {key} mismatch")
         if cube.metadata.get("partial") is True or cube.metadata.get("completed") is not True:
             raise ValueError("Reflectance requires completed, non-partial inputs")
+    applicability = reference_applicability(sample, white, dark_sample, dark_white)
+    if applicability["status"] != "MATCH":
+        failures = [f"{check['role']}.{check['field']}: {check['reason']}"
+                    for check in applicability["checks"] if check["status"] != "MATCH"]
+        raise ValueError(f"Reflectance reference applicability {applicability['status'].lower()}: "
+                         + "; ".join(failures))
     saturations = [_saturation(cube) for cube in cubes]
     k = sample.shape[2]
     if reference_reflectance is None:
@@ -387,6 +445,7 @@ def reflectance(sample, white, dark_sample, dark_white, *, reference_reflectance
     meta.update(data_level="reflectance_cube", units="dimensionless", reflectance_kind=kind,
                 calibration_source=reference_source, reference_source=reference_source,
                 reference_reflectance=reference.tolist(), source_provenance=source_provenance,
+                reference_applicability=applicability,
                 processing_steps=list(meta["processing_steps"]) + [{"operation": "dark-corrected reference ratio",
                     "kind": kind, "minimum_denominator": minimum_denominator, "clipped": False}],
                 validity_note="Output mask: finite unsaturated inputs and positive denominator above threshold",

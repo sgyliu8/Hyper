@@ -49,6 +49,14 @@ class Workbench(W.QMainWindow):
         self.product = None
         self.product_source = None
         self.roi_results = []
+        self.roi_result_context = None
+        self.roi_source = None
+        self.science_result = None
+        self.annotation = None
+        self.annotation_path = None
+        self.plot_source = None
+        self.plot_annotation = None
+        self.completed_plot_mode = 0
         self.recent = []
         self.rois = []
         self.results = queue.Queue(maxsize=4)
@@ -164,6 +172,7 @@ class Workbench(W.QMainWindow):
         for control in self.sidebar.findChildren(W.QAbstractSpinBox):
             control.setSizePolicy(W.QSizePolicy.Policy.Ignored, W.QSizePolicy.Policy.Fixed)
         self.tabs.currentChanged.connect(self.sidebar.setCurrentIndex)
+        self.tabs.currentChanged.connect(self.update_controls)
         self.vertical = W.QSplitter(QtCore.Qt.Orientation.Vertical)
         self.images = W.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.graphics = pg.GraphicsLayoutWidget()
@@ -326,8 +335,8 @@ class Workbench(W.QMainWindow):
         self.plot_mode = W.QComboBox()
         self.plot_mode.addItems(['Histogram (sampled)', 'ROI time trend', 'ROI channel / state curves'])
         self.plot_mode.addItems(['PCA explained variance', 'PCA loadings'])
-        self.plot_mode.currentIndexChanged.connect(lambda: self.update_chart(self.image.image) if self.cube else None)
-        form.addWidget(self.plot_mode)
+        self.plot_mode.addItem('Computed feature / recorded trace')
+        self.plot_mode.currentIndexChanged.connect(self.chart_selected)
         self.quality_label = W.QLabel('Quality: —')
         self.quality_label.setWordWrap(True)
         form.addWidget(self.quality_label)
@@ -351,6 +360,7 @@ class Workbench(W.QMainWindow):
             self.notify('A background operation is still running.')
             return
         self.task_busy = True
+        self.update_controls()
         self.notify(label)
         future = self.executor.submit(function)
         def completed(result):
@@ -503,13 +513,20 @@ class Workbench(W.QMainWindow):
             while True:
                 callback, result, error = self.results.get_nowait()
                 self.task_busy = False
+                failed = bool(error)
                 if error:
                     self.notify(f'{type(error).__name__}: {error}')
                 else:
                     try:
                         callback(result)
                     except Exception as callback_error:
+                        failed = True
                         self.notify(f'{type(callback_error).__name__}: {callback_error}')
+                if failed:
+                    self.plot_mode.blockSignals(True)
+                    self.plot_mode.setCurrentIndex(self.completed_plot_mode)
+                    self.plot_mode.blockSignals(False)
+                self.update_controls()
         except queue.Empty:
             pass
         if self.session:
@@ -605,6 +622,14 @@ class Workbench(W.QMainWindow):
             self.last_status.get('has_current_frame', self.displayed_frame is not None)))
         self.record_button.setText('Stop recording' if state == 'recording' else 'Record…')
         self.save_button.setEnabled(self.cube is not None)
+        active = state in ('streaming', 'recording')
+        acquisition = self.tabs.currentIndex() == 0
+        for item in (self.preview_button, self.save_button, self.record_button, self.freeze):
+            item.setVisible(acquisition or active)
+        self.stop_button.setVisible(acquisition or active)
+        self.metrics_label.setVisible(self.session is not None)
+        if hasattr(self, 'run_button'):
+            self.method_changed()
         for item in (self.format, self.exposure, self.gain, self.session_mode, self.apply_button):
             item.setEnabled(state in ('disconnected', 'ready'))
 
@@ -616,10 +641,20 @@ class Workbench(W.QMainWindow):
 
     def set_cube(self, cube, *, live=False, reset_axis=True):
         old_shape = self.cube.shape if self.cube is not None else None
+        if self.annotation is not None and self.cube is not cube:
+            self.annotation = None
+            self.annotation_path = None
         self.cube = cube
         if not live:
             if reset_axis:
                 self.analysis_version += 1
+                self.annotation = None
+                self.annotation_path = None
+                self.science_result = None
+                self.roi_result_context = None
+                self.roi_source = None
+                self.plot_source = None
+                self.plot_annotation = None
             self.display_mode = 'SYNTHETIC' if cube.metadata.get('data_source') == 'SYNTHETIC' else 'REPLAY'
             self.displayed_frame = None
             self.product = None
@@ -640,9 +675,19 @@ class Workbench(W.QMainWindow):
             self.band.setValue(0)
         self.band.blockSignals(False)
         if old_shape != cube.shape:
-            for control in (self.pair_a, self.pair_b):
+            for control in (self.pair_a, self.pair_b, self.feature_first, self.feature_last):
                 control.setMaximum(cube.shape[2] - 1)
             self.pair_b.setValue(min(1, cube.shape[2] - 1))
+            self.feature_last.setValue(cube.shape[2] - 1)
+        labels = cube.metadata.get('channel_labels') or [str(i) for i in range(cube.shape[2])]
+        if labels != [self.trace_channel.itemText(i) for i in range(self.trace_channel.count())]:
+            channel = max(0, self.trace_channel.currentIndex())
+            self.trace_channel.blockSignals(True)
+            self.trace_channel.clear()
+            self.trace_channel.addItems(labels)
+            self.trace_channel.setCurrentIndex(min(channel, len(labels)-1))
+            self.trace_channel.blockSignals(False)
+        if old_shape != cube.shape:
             self.reset_rois(force=True)
         self.render_current()
         if not live or old_shape != cube.shape:
@@ -653,6 +698,23 @@ class Workbench(W.QMainWindow):
         restore_view(self)
         self.update_controls()
         self.update_source_label()
+
+    def chart_selected(self):
+        if self.cube is None:
+            return
+        mode = self.plot_mode.currentIndex()
+        unavailable = ((mode in (3, 4) and (self.product is None or 'scores' not in self.product))
+                       or (mode == 5 and self.completed_plot_mode != 5))
+        if unavailable:
+            self.plot_mode.blockSignals(True)
+            self.plot_mode.setCurrentIndex(self.completed_plot_mode)
+            self.plot_mode.blockSignals(False)
+            self.notify('Run the corresponding analysis before choosing this chart.')
+            return
+        if mode == 2:
+            self.analyze_rois()
+        else:
+            self.update_chart(self.image.image)
 
     def render_current(self):
         if self.cube is None:
@@ -859,11 +921,11 @@ class Workbench(W.QMainWindow):
             self.draw_plot(spec)
         elif mode == 1:
             rects = self.rectangles()
-            stats = [roi_statistics(cube, rect, policy=policy) for rect in rects]
-            means = [float(np.nanmean(r['mean'])) if cube.metadata.get('channel_labels') and np.any(np.isfinite(r['mean']))
-                     else float(r['mean'][band]) for r in stats]
+            band = max(0, self.trace_channel.currentIndex())
+            stats = [roi_statistics(cube, rect, policy=policy, bands=[band], robust=False) for rect in rects]
+            means = [float(r['mean'][band]) for r in stats]
             definition = {'rectangles':rects, 'names':[edit.text() for edit in self.roi_names],
-                          'policy':policy, 'band':None if self.sequence else band,
+                          'policy':policy, 'band':band,
                           'source_file':cube.metadata.get('source_file'),
                           'session_id':cube.metadata.get('session_id'),
                           'stream_epoch':cube.metadata.get('stream_epoch'),
@@ -873,11 +935,14 @@ class Workbench(W.QMainWindow):
             self.temporal_plot.add(meta, means, definition, sequence=self.sequence,
                                    index=self.band.value() if self.sequence else None)
             spec = self.temporal_plot.plot(definition['names'], self.roi_colors, source)
+            spec.title += f' · channel {self.trace_channel.currentText()}'
             if not len(self.temporal_plot):
                 spec.caption = 'A static frame has no temporal samples. Open a recorded sequence for time analysis.'
             self.draw_plot(spec)
         elif mode in (3,4) and self.product is not None and 'scores' in self.product:
+            self._completed_source = self.product_source
             self.draw_plot(pca_diagnostics(self.product, self.product_source)[mode-3])
+            self._completed_source = None
 
     @staticmethod
     def _style_scientific_chart(chart):
@@ -896,11 +961,15 @@ class Workbench(W.QMainWindow):
     def draw_plot(self, spec):
         was_comparison = bool(self.plot_spec and self.plot_spec.metadata.get('roi_comparison'))
         self.plot_spec = spec
+        self.completed_plot_mode = self.plot_mode.currentIndex()
+        self.plot_source = getattr(self, '_completed_source', None) or self.cube
+        self.plot_annotation = spec.metadata.get('analysis_context', {}).get('annotation', self.annotation)
         origin = spec.source.get('acquisition_source') or spec.source.get('data_source') or 'UNKNOWN'
         frame = spec.source.get('sequence')
         source = (f"frame {frame} / stream {spec.source.get('stream_epoch')}" if frame is not None
                   else Path(spec.source.get('source_file') or 'in-memory example').name)
-        self.analysis_label.setText(f'Pinned analysis: {source} · {origin} origin · {spec.caption}')
+        self.analysis_label.setText(f'{source} · {origin} · {spec.ylabel}')
+        self.analysis_label.setToolTip(spec.caption)
         self.chart.clear()
         legend = self.chart.plotItem.legend
         legend.clear()
@@ -937,6 +1006,20 @@ class Workbench(W.QMainWindow):
                     color = pg.mkColor(item['color']); color.setAlpha(44)
                     ribbon = pg.FillBetweenItem(low,high,brush=color)
                     ribbon.setZValue(-1); self.chart.addItem(ribbon)
+            if item.get('lower') is not None:
+                y = np.asarray(item['y'])
+                if len(item['x']) == 1:
+                    error = pg.ErrorBarItem(x=np.asarray(item['x']), y=y,
+                        bottom=y-item['lower'], top=item['upper']-y, beam=.12,
+                        pen=pg.mkPen(item['color'], width=2))
+                    self.chart.addItem(error); self.error_bars.append(error)
+                else:
+                    low = pg.PlotCurveItem(item['x'], item['lower'], pen=None, connect='finite')
+                    high = pg.PlotCurveItem(item['x'], item['upper'], pen=None, connect='finite')
+                    self.chart.addItem(low); self.chart.addItem(high)
+                    color = pg.mkColor(item['color']); color.setAlpha(44)
+                    ribbon = pg.FillBetweenItem(low, high, brush=color)
+                    ribbon.setZValue(-1); self.chart.addItem(ribbon)
         # Preserve the two default curve handles for existing integrations.
         while len(self.curves) < 2:
             self.curves.append(self.chart.plot([],[],pen=None))
@@ -954,11 +1037,12 @@ class Workbench(W.QMainWindow):
         distributions = [item for item in spec.series if 'distribution' in item]
         self.shape_chart.setVisible(bool(normalized or distributions))
         if normalized or distributions:
-            units = spec.ylabel.removeprefix('Mean (').removesuffix(')')
+            units = spec.metadata.get('units', spec.ylabel.removeprefix('Mean (').removesuffix(')'))
             self.shape_chart.setTitle('ROI intensity distribution' if distributions else 'L2 normalized shape',
                                       color='#17212b',size='12pt')
             self.shape_chart.setLabel('bottom',f'Pixel intensity ({units})' if distributions else spec.xlabel,**label_style)
-            self.shape_chart.setLabel('left',f'Density (1/{units})' if distributions else 'Normalized mean',**label_style)
+            self.shape_chart.setLabel('left',f'Density (1/{units})' if distributions else
+                                      f"Normalized {spec.metadata.get('summary', 'mean')}",**label_style)
             self.shape_chart.getAxis('left').enableAutoSIPrefix(False)
             self.shape_chart.getAxis('bottom').setTicks([list(enumerate(spec.categories))] if spec.categories and not distributions else None)
             for item in distributions or normalized:
@@ -980,15 +1064,18 @@ class Workbench(W.QMainWindow):
         for op, button in self.analysis_buttons.items():
             button.setEnabled(cap['operations'].get(op, False))
             button.setToolTip(cap.get('reasons', {}).get(op, ''))
-        self.capability_label.setText(f"{cap['axis_label']} · {cap['effective_dimensions']} enabled features\n" +
-                                     '\n'.join(dict.fromkeys(cap.get('reasons', {}).values())))
+        self.method_changed()
 
     def analysis_context(self):
         return {'version':self.analysis_version, 'source':source_identity(self.cube),
                 'rectangles':self.rectangles(), 'names':[name.text() for name in self.roi_names],
                 'colors':list(self.roi_colors), 'visible':[item.isChecked() for item in self.roi_visible],
                 'policy':self.policy.currentData(), 'normalized':self.shape_normalize.isChecked(),
-                'spatial_sd':self.spatial_sd.isChecked()}
+                'spatial_sd':self.spatial_sd.isChecked(), 'summary':self.roi_summary.currentData(),
+                'support':self.roi_support.currentData(), 'annotation':self.annotation,
+                'method':self.analysis_method.currentData(), 'trace_channel':self.trace_channel.currentIndex(),
+                'feature_interval':[self.feature_first.value(), self.feature_last.value()],
+                'window':self.local_window.value(), 'degree':self.local_degree.value()}
 
     def analyze_rois(self):
         if self.cube is None or self.closing:
@@ -997,19 +1084,26 @@ class Workbench(W.QMainWindow):
             self.roi_timer.start(180)
             return
         from hyperlab.analysis import roi_comparison
+        from hyperlab.experiment_metadata import compute_pinned
         cube, context = self.cube, self.analysis_context()
-        def completed(results):
+        def completed(payload):
+            results, context['source_fingerprint'] = payload
             if context['version'] != self.analysis_version:
                 self.notify('ROI definition changed; obsolete result discarded.')
                 self.roi_timer.start(180)
                 return
+            self.roi_source = cube
             self.show_rois(results, context)
-        self.background(lambda: roi_comparison(cube,context['rectangles'],policy=context['policy']),
+        self.background(lambda: compute_pinned(cube, lambda: roi_comparison(cube,context['rectangles'],
+                        policy=context['policy'],support=context['support'])),
                         completed, 'Computing pinned ROI statistics…')
 
     def show_rois(self, results, context=None):
         context = context or self.analysis_context()
         self.roi_results = results
+        self.roi_result_context = context
+        self.roi_source = self.roi_source or self.cube
+        self.science_result = None
         self.plot_mode.blockSignals(True)
         self.plot_mode.setCurrentIndex(2)
         self.plot_mode.blockSignals(False)
@@ -1019,81 +1113,223 @@ class Workbench(W.QMainWindow):
             return
         spec = roi_plot([results[i] for i in enabled], [context['names'][i] for i in enabled],
                         [context['colors'][i] for i in enabled], source=context['source'],
-                        normalized=context['normalized'], spatial_sd=context['spatial_sd'])
+                        normalized=context['normalized'], spatial_sd=context['spatial_sd'], summary=context['summary'])
         spec.metadata['analysis_version'] = context['version']
+        spec.metadata['analysis_context'] = context
+        spec.metadata['source_fingerprint'] = context.get('source_fingerprint')
+        self._completed_source = self.roi_source
         self.draw_plot(spec)
+        self._completed_source = None
         self.notify('Shape comparison unavailable for a zero norm or missing common features; raw amplitude is retained.'
                     if any('normalized' in item and not np.any(np.isfinite(item['normalized'])) for item in spec.series)
-                    else 'Pinned ROI means and spatial SD; source identity and quality counts are retained in Figure export.')
+                    else 'ROI results ready. Summary, spatial spread and sample counts are available in Results and Export.')
 
     def export_rois(self):
-        if self.cube is None:
+        if not self.roi_results or self.roi_result_context is None:
+            self.notify('Run ROI analysis before exporting its completed results.')
             return
-        from hyperlab.analysis import roi_statistics, export_roi_csv
-        cube, rects, policy = self.cube, self.rectangles(), self.policy.currentData()
-        names = [edit.text() for edit in self.roi_names]
-        shape_branch = self.shape_normalize.isChecked()
+        from copy import deepcopy
+        from hyperlab.analysis import export_roi_csv
+        from hyperlab.plots import plain
+        from hyperlab.experiment_metadata import source_fingerprint, write_analysis_manifest
+        cube, results = self.roi_source, deepcopy(self.roi_results)
+        context, feature_result = deepcopy(self.roi_result_context), deepcopy(self.science_result)
+        selected = context.get('analyzed_roi_indices', range(len(results)))
+        names = [context['names'][i] for i in selected]
         directory = self.output_dir / ('roi_' + stamp())
         def run():
+            fingerprint = source_fingerprint(cube)
+            if context.get('source_fingerprint') and fingerprint != context['source_fingerprint']:
+                raise ValueError('Source changed since this ROI result was computed; run analysis again before exporting.')
             directory.mkdir()
-            results = [roi_statistics(cube, rect, policy=policy) for rect in rects]
             branch = None
-            if shape_branch:
-                common = np.all(np.isfinite([stats['mean'] for stats in results]), axis=0)
-                branch = {'operation': 'L2 normalization on common finite ROI features',
-                          'feature_indices': np.flatnonzero(common).tolist(),
-                          'excluded_indices': np.flatnonzero(~common).tolist(),
-                          'excluded_reason': 'At least one ROI lacks a valid mean; original indices are retained',
-                          'normalized_means': [], 'norms': [], 'valid': []}
-                for stats in results:
-                    norm = float(np.linalg.norm(stats['mean'][common]))
-                    valid = bool(np.any(common) and np.isfinite(norm) and norm > 0)
-                    values = np.full(stats['mean'].shape, np.nan)
-                    if valid:
-                        values[common] = stats['mean'][common] / norm
-                    branch['normalized_means'].append([float(value) if np.isfinite(value) else None for value in values])
-                    branch['norms'].append(norm if np.isfinite(norm) else None)
-                    branch['valid'].append(valid)
+            if context['normalized'] and cube.shape[2] > 1:
+                visible = [i for i, original in enumerate(selected) if context['visible'][original]]
+                if visible:
+                    shape = roi_plot([results[i] for i in visible], [names[i] for i in visible],
+                        COLORS, source=context['source'], normalized=True, summary=context['summary'])
+                    branch = {'operation':shape.metadata['normalization'], 'summary':context['summary'],
+                        'feature_indices':shape.metadata['common_feature_indices'], 'roi_indices':visible,
+                        'normalized_summaries':plain([item['normalized'] for item in shape.series])}
+                    if context['summary'] == 'mean':
+                        branch['normalized_means'] = branch['normalized_summaries']
             for index, stats in enumerate(results):
-                stats.setdefault('metadata', {}).update(roi_name=names[index], source=cube.metadata)
-                if branch is not None:
-                    stats['metadata']['shape_comparison'] = {'operation': branch['operation'],
-                        'feature_indices': branch['feature_indices'], 'excluded_indices': branch['excluded_indices'],
-                        'norm': branch['norms'][index], 'valid': branch['valid'][index]}
+                stats.setdefault('metadata', {}).update(roi_name=names[index], analysis_context=context)
+                if branch is not None and index in branch['roi_indices']:
+                    stats['metadata']['shape_comparison'] = branch
                 export_roi_csv(stats, directory / f'roi_{index + 1}.csv')
-            (directory / 'comparison.json').write_text(json_text({'source': cube.metadata, 'rectangles': rects,
-                'names': names, 'policy': policy, 'shape_branch': branch}), encoding='utf-8')
+            payload = {'source':cube.metadata, 'analysis_context':context, 'feature_result':feature_result,
+                       'shape_branch':branch}
+            (directory / 'comparison.json').write_text(json.dumps(plain(payload), indent=2, allow_nan=False), encoding='utf-8')
+            if feature_result:
+                import csv
+                with (directory / 'features.csv').open('x', newline='', encoding='utf-8') as stream:
+                    writer = csv.writer(stream)
+                    if 'pairs' in feature_result:
+                        keys = ['target','reference','bias','rmse','correlation','angle','feature_count','unavailable']
+                        writer.writerow(keys)
+                        for pair in feature_result['pairs']:
+                            writer.writerow([json.dumps(plain(pair[key])) if key == 'unavailable' else pair[key] for key in keys])
+                    else:
+                        writer.writerow(['roi','feature','value'])
+                        for curve in feature_result['curves']:
+                            for key,value in curve['features'].items():
+                                writer.writerow([names[curve['roi_index']], key, value])
+            write_analysis_manifest(directory, fingerprint, payload, annotation=context['annotation'])
             return directory
-        self.background(run, lambda path: self.notify(f'ROI CSV saved: {path}'), 'Exporting ROI values and provenance…')
+        self.background(run, lambda path: self.notify(f'Completed ROI tables and manifest saved: {path}'),
+                        'Exporting completed ROI results and source hashes…')
 
     def analyze(self, operation):
         if self.cube is None:
             return
         from hyperlab.analysis import capabilities, pca, spectral_angle, difference, ratio, roi_statistics
         cap = capabilities(self.cube)
-        if not cap['operations'].get(operation):
-            self.notify(cap['reasons'].get(operation, 'This data does not support the operation'))
+        gate = {'reference_rmse':'roi', 'normalized_difference':'ratio'}.get(operation, operation)
+        if not cap['operations'].get(gate):
+            self.notify(cap['reasons'].get(gate, 'This data does not support the operation'))
             return
         cube, rect, policy = self.cube, self.rectangles()[0], self.policy.currentData()
         reference_name = self.roi_names[0].text()
         context = self.analysis_context()
         a, b = self.pair_a.value(), self.pair_b.value()
+        minimum_denominator = self.minimum_denominator.value()
+        context.update(pair_indices=[a, b], minimum_denominator=minimum_denominator)
+        if operation in ('spectral_angle', 'reference_rmse'):
+            context['support'] = 'common'
         def run():
             if operation == 'pca':
                 return pca(cube, min(3, cap['effective_dimensions']), policy=policy)
-            if operation == 'spectral_angle':
-                result = spectral_angle(cube, roi_statistics(cube, rect, policy=policy)['mean'], policy=policy)
+            if operation in ('spectral_angle', 'reference_rmse'):
+                from hyperlab.analysis.maps import reference_rmse
+                stats = roi_statistics(cube, rect, policy=policy, support='common')
+                reference = stats[context['summary']]
+                result = (spectral_angle if operation == 'spectral_angle' else reference_rmse)(cube, reference, policy=policy)
                 result['metadata']['reference_roi'] = {'name': reference_name, 'rect': list(rect),
-                    'coordinates': 'raw pixels; half-open x0,y0,x1,y1 rectangle'}
+                    'coordinates': 'raw pixels; half-open x0,y0,x1,y1 rectangle',
+                    'used_counts':stats['count'].tolist(), 'quality_counts':{k:v.tolist() for k,v in stats['counts'].items()}}
+                result['metadata'].update(summary=context['summary'], reference_support='common')
                 return result
-            return (difference if operation == 'difference' else ratio)(cube, a, b, policy=policy)
+            if operation == 'difference':
+                return difference(cube, a, b, policy=policy)
+            from hyperlab.analysis.maps import normalized_difference
+            return (normalized_difference if operation == 'normalized_difference' else ratio)(
+                cube, a, b, policy=policy, minimum_denominator=minimum_denominator)
         def completed(result):
+            result, context['source_fingerprint'] = result
             result['metadata']['analysis_context'] = context
+            result['metadata']['source_fingerprint'] = context['source_fingerprint']
             if context['version'] != self.analysis_version:
                 self.notify('Analysis definition changed; obsolete result discarded. Compute again with the new ROI.')
                 return
             self.show_product(result, cube)
-        self.background(run, completed, f'Computing pinned {operation}…')
+        from hyperlab.experiment_metadata import compute_pinned
+        self.roi_timer.stop()
+        self.background(lambda:compute_pinned(cube, run), completed, f'Computing pinned {operation}…')
+
+    def analyze_roi_features(self, operation):
+        if self.cube is None:
+            return
+        from hyperlab.analysis import roi_comparison
+        from hyperlab.analysis.roi_features import roi_pairwise, spectral_roi_features
+        from hyperlab.plots import roi_feature_plot, roi_pair_plot
+        cube, context = self.cube, self.analysis_context()
+        visible = [i for i, flag in enumerate(context['visible']) if flag]
+        if not visible:
+            self.notify('Show at least one ROI before analysis.')
+            return
+        rects = [context['rectangles'][i] for i in visible]
+        names = [context['names'][i] for i in visible]
+        colors = [context['colors'][i] for i in visible]
+        first, last = context['feature_interval']
+        bands = list(range(first, last+1)) if operation != 'pairs' else None
+        support = 'common' if operation != 'pairs' else context['support']
+        context.update(support=support, feature_indices=bands, analyzed_roi_indices=visible)
+        self.roi_timer.stop()
+        def run():
+            results = roi_comparison(cube, rects, policy=context['policy'], bands=bands, support=support)
+            if operation == 'pairs':
+                result = roi_pairwise(cube, results, names, summary=context['summary'])
+                spec = roi_pair_plot(cube, results, result, colors)
+            else:
+                result = spectral_roi_features(cube, results, operation, summary=context['summary'], bands=bands,
+                    window=context['window'], degree=context['degree'])
+                spec = roi_feature_plot(result, names, colors, source=context['source'])
+            spec.metadata['analysis_context'] = context
+            return result, spec, results
+        def completed(payload):
+            payload, context['source_fingerprint'] = payload
+            if context['version'] != self.analysis_version:
+                self.notify('Analysis definition changed; obsolete result discarded.')
+                return
+            self.science_result, spec, self.roi_results = payload
+            spec.metadata['source_fingerprint'] = context['source_fingerprint']
+            self.roi_source, self.roi_result_context = cube, context
+            self.plot_mode.blockSignals(True); self.plot_mode.setCurrentIndex(5); self.plot_mode.blockSignals(False)
+            self._completed_source = cube
+            self.draw_plot(spec)
+            self._completed_source = None
+            self.notify('Analysis complete. Results includes numeric features, support counts and unavailable-metric reasons.')
+        from hyperlab.experiment_metadata import compute_pinned
+        self.background(lambda:compute_pinned(cube, run), completed, f'Computing {operation} on pinned ROI summaries…')
+
+    def science_results_dialog(self):
+        if not self.roi_results:
+            self.notify('Run an ROI analysis before opening Results.')
+            return
+        dialog = W.QDialog(self); dialog.setWindowTitle('ROI results · descriptive statistics')
+        dialog.resize(960, 570); layout = W.QVBoxLayout(dialog); tabs = W.QTabWidget(); layout.addWidget(tabs)
+        context = self.roi_result_context or self.analysis_context()
+        selected = context.get('analyzed_roi_indices', range(len(self.roi_results)))
+        names = [context['names'][i] for i in selected]
+        columns = ['ROI', 'Feature', 'Mean', 'SD', 'Median', 'Q25', 'Q75', 'IQR', 'MAD', 'Min', 'Max',
+                   'Used', 'Policy valid', 'Total', 'Saturated', 'Used fraction']
+        rows = []
+        for name, result in zip(names, self.roi_results):
+            for i in range(len(result['mean'])):
+                labels = result.get('channel_labels')
+                label = labels[i] if labels else (f"{result['wavelengths'][i]:g} {result['wavelength_units']}"
+                    if result.get('wavelengths') is not None else str(i))
+                rows.append([name, label, *[result.get(key, np.full(len(result['mean']), np.nan))[i]
+                    for key in ('mean','std','median','q25','q75','iqr','mad','min','max')], result['count'][i],
+                    *[result['counts'][key][i] for key in ('valid','total','saturated')], result.get('used_fraction', [np.nan]*len(result['mean']))[i]])
+        def table(label, headers, values):
+            widget = W.QTableWidget(len(values), len(headers)); widget.setHorizontalHeaderLabels(headers)
+            widget.setEditTriggers(W.QAbstractItemView.EditTrigger.NoEditTriggers)
+            for row, values in enumerate(values):
+                for col, value in enumerate(values):
+                    text = 'Unavailable' if value is None or isinstance(value, (float,np.floating)) and not np.isfinite(value) else (
+                        f'{value:.7g}' if isinstance(value, (float,np.floating)) else str(value))
+                    widget.setItem(row, col, W.QTableWidgetItem(text))
+            widget.resizeColumnsToContents(); tabs.addTab(widget, label)
+        table('ROI summary', columns, rows)
+        if self.science_result and 'pairs' in self.science_result:
+            table('Pair metrics', ['Target','Reference','Bias','RMSE','Correlation','Angle (rad)','Features','Unavailable reasons'],
+                [[p['target'],p['reference'],p['bias'],p['rmse'],p['correlation'],p['angle'],p['feature_count'],
+                  '; '.join(f'{k}: {v}' for k,v in p['unavailable'].items())] for p in self.science_result['pairs']])
+        if self.science_result and 'curves' in self.science_result:
+            table('Spectral features', ['ROI','Feature','Value'],
+                [[names[curve['roi_index']], key, value] for curve in self.science_result['curves']
+                 for key,value in curve['features'].items()])
+        text = W.QPlainTextEdit(json_text({'context':context, 'result':self.science_result,
+            'denominators':'Used counts apply to all displayed summary statistics; spatial spread is not a confidence interval.'}))
+        text.setReadOnly(True); tabs.addTab(text, 'Recipe and provenance')
+        layout.addWidget(self.button('Close', dialog.accept))
+        self._science_results_dialog = dialog
+        dialog.show()
+
+    def annotation_dialog(self):
+        if self.cube is None:
+            self.notify('Open source data before adding specimen context.')
+            return
+        from hyperlab.ui.annotation_dialog import AnnotationDialog
+        self._annotation_dialog = AnnotationDialog(self)
+        self._annotation_dialog.show()
+
+    def reference_correction_dialog(self):
+        from hyperlab.ui.reference_dialog import ReferenceCorrectionDialog
+        self._reference_dialog = ReferenceCorrectionDialog(self, sample=self.cube, workspace=self.workspace)
+        self._reference_dialog.show()
 
     def show_product(self, result, source_cube=None):
         self.product = result
@@ -1133,7 +1369,9 @@ class Workbench(W.QMainWindow):
         self.notify(f'Pinned result from {label}; units and invalid mask retained. Raw data is unchanged.')
         if 'scores' in result:
             self.plot_mode.setCurrentIndex(3)
+            self._completed_source = self.product_source
             self.draw_plot(pca_diagnostics(result, self.product_source)[0])
+            self._completed_source = None
 
     def refresh_product(self):
         if self.product is not None:
@@ -1141,8 +1379,11 @@ class Workbench(W.QMainWindow):
 
     def figure_export(self):
         choices = {'Current chart': self.plot_spec}
+        sources = {'Current chart': (self.plot_source, self.plot_annotation)}
         if self.map_spec:
             choices['Derived map'] = self.map_spec
+            sources['Derived map'] = (self.product_source,
+                self.map_spec.metadata.get('analysis_context', {}).get('annotation'))
         choices = {name:spec for name,spec in choices.items() if spec is not None}
         if not choices:
             self.notify('Display a chart or compute a map before Figure export.')
@@ -1162,16 +1403,21 @@ class Workbench(W.QMainWindow):
         form.addRow(W.QLabel('Editable vector text; map pixels rasterized. CSV / NPY / PlotSpec accompany the figures.'))
         buttons = W.QDialogButtonBox(W.QDialogButtonBox.StandardButton.Save | W.QDialogButtonBox.StandardButton.Cancel)
         form.addRow(buttons)
-        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject)
-        if dialog.exec() != W.QDialog.DialogCode.Accepted:
-            return
-        from dataclasses import replace
-        spec = replace(choices[selected.currentText()], title=title.text())
-        directory = self.output_dir / ('figure_' + stamp())
-        width_mm, height_mm, output_dpi = width.value(), height.value(), dpi.value()
-        self.background(lambda: export_figure_bundle(spec, directory, width_mm=width_mm,
-                        height_mm=height_mm, dpi=output_dpi),
-                        lambda path: self.notify(f'Figure and source-data bundle saved: {path}'), 'Rendering publication figure…')
+        def save():
+            if self.task_busy:
+                self.notify('Wait for the current background operation before exporting.'); return
+            from dataclasses import replace
+            spec = replace(choices[selected.currentText()], title=title.text())
+            directory = self.output_dir / ('figure_' + stamp())
+            width_mm, height_mm, output_dpi = width.value(), height.value(), dpi.value()
+            source_cube, annotation = sources[selected.currentText()]
+            dialog.accept()
+            self.background(lambda: export_figure_bundle(spec, directory, width_mm=width_mm,
+                            height_mm=height_mm, dpi=output_dpi, source_cube=source_cube, annotation=annotation),
+                            lambda path: self.notify(f'Figure and source-data bundle saved: {path}'), 'Rendering publication figure…')
+        buttons.accepted.connect(save); buttons.rejected.connect(dialog.reject)
+        self._figure_dialog = dialog
+        dialog.show()
 
     def set_view_link(self, enabled):
         # Two aspect constraints with different viewport sizes feed range changes
@@ -1252,18 +1498,18 @@ class Workbench(W.QMainWindow):
                 self.band.setRange(0, value.frame_count - 1)
                 self.band.setValue(0)
                 self.band.blockSignals(False)
-                self.band_changed(0)
+                self.band_changed(0, reset_axis=True)
             self.notify(f'Reopened {path}')
         self.background(read, loaded, 'Reopening local data…')
 
-    def band_changed(self, index):
+    def band_changed(self, index, *, reset_axis=False):
         if self.sequence:
             frame = self.sequence.frame(index)
             meta = dict(frame.metadata)
             if frame.data.ndim == 3:
-                meta['channel_labels'] = list(str(meta.get('pixel_format', 'RGB8'))[:3])
+                meta.setdefault('channel_labels', list(str(meta.get('pixel_format', 'RGB8'))[:3]))
             self.set_cube(Cube(frame.data if frame.data.ndim == 3 else frame.data[..., None],
-                               dict(meta, data_level='raw_frame')), reset_axis=False)
+                               dict(meta, data_level='raw_frame')), reset_axis=reset_axis)
         else:
             self.render_current()
 
@@ -1471,14 +1717,23 @@ class Workbench(W.QMainWindow):
             return
         from hyperlab.plots import recorded_roi_plot
         context,sequence = self.analysis_context(),self.sequence
+        cube = self.cube
         def completed(spec):
+            spec, context['source_fingerprint'] = spec
             if context['version'] != self.analysis_version or sequence is not self.sequence:
                 self.notify('Recorded ROI definition changed; obsolete curve discarded.')
                 return
             spec.metadata['analysis_context'] = context
+            spec.metadata['source_fingerprint'] = context['source_fingerprint']
+            self.plot_mode.blockSignals(True); self.plot_mode.setCurrentIndex(5); self.plot_mode.blockSignals(False)
+            self._completed_source = cube
             self.draw_plot(spec)
-        self.background(lambda:recorded_roi_plot(sequence,context['rectangles'],context['names'],context['colors'],
-                        policy=context['policy']),completed,'Computing all recorded ROI samples…')
+            self._completed_source = None
+        from hyperlab.experiment_metadata import compute_pinned
+        self.roi_timer.stop()
+        self.background(lambda:compute_pinned(cube, lambda:recorded_roi_plot(sequence,context['rectangles'],
+                        context['names'],context['colors'], policy=context['policy'], band=context['trace_channel'])),
+                        completed,'Computing all recorded ROI samples…')
 
     def quality_details(self):
         payload = {'display': self.quality_label.toolTip(),
@@ -1597,72 +1852,149 @@ class Workbench(W.QMainWindow):
 
     def _analysis_panel(self):
         form = self.panel()
-        form.addWidget(W.QLabel('ROI coordinates always use raw pixels'))
         self.roi_names = []
         self.roi_form = W.QVBoxLayout()
         form.addLayout(self.roi_form)
         self._roi_row('ROI A', COLORS[0])
         self._roi_row('ROI B', COLORS[1])
-        form.addWidget(self.button('Add ROI', lambda: self.add_roi(), 'add_roi'))
-        form.addWidget(self.button('Reset ROI geometry', lambda: self.reset_rois(force=True)))
-        form.addWidget(self.button('Edit ROI bounds…', self.edit_roi_bounds, 'roi_edit_bounds'))
-        self.policy = W.QComboBox()
-        self.policy.addItem('Diagnostic · include saturation', 'diagnostic')
-        self.policy.addItem('Quantitative · exclude known saturation', 'quantitative')
-        form.addWidget(self.policy)
-        self.policy.currentIndexChanged.connect(self.roi_changed)
-        self.policy.currentIndexChanged.connect(lambda: self.render_current())
-        self.shape_normalize = W.QCheckBox('L2 normalized shape')
-        self.shape_normalize.setToolTip('Compare curve shape over common valid features; exports retain raw amplitudes.')
-        form.addWidget(self.shape_normalize)
-        self.spatial_sd = W.QCheckBox('Show ±1 spatial SD (not CI)')
-        self.spatial_sd.setChecked(True)
-        form.addWidget(self.spatial_sd)
-        self.shape_normalize.toggled.connect(self.roi_changed)
-        self.spatial_sd.toggled.connect(self.roi_changed)
-        form.addWidget(self.button('Compare ROIs', self.analyze_rois, 'roi_compare'))
-        form.addWidget(self.button('Export ROI CSV + provenance', self.export_rois, 'roi_export'))
-        self.analysis_buttons = {}
-        for label, op in [('PCA · mean centered', 'pca'), ('Angle from ROI A', 'spectral_angle')]:
-            button = self.button(label, lambda checked=False, operation=op: self.analyze(operation), op)
-            self.analysis_buttons[op] = button
-            form.addWidget(button)
-        pair = W.QHBoxLayout()
-        self.pair_a, self.pair_b = W.QSpinBox(), W.QSpinBox()
-        pair.addWidget(self.pair_a)
-        pair.addWidget(self.pair_b)
-        form.addLayout(pair)
-        for label, op in [('Index A − B', 'difference'), ('Index A / B', 'ratio')]:
-            button = self.button(label, lambda checked=False, operation=op: self.analyze(operation), op)
-            self.analysis_buttons[op] = button
-            form.addWidget(button)
-        self.pc_component = W.QComboBox()
-        self.pc_component.addItem('PC1 score')
-        self.pc_component.setEnabled(False)
-        self.pc_component.currentIndexChanged.connect(self.refresh_product)
-        form.addWidget(self.pc_component)
         row = W.QHBoxLayout()
-        row.addWidget(self.button('PCA variance', lambda: self.plot_mode.setCurrentIndex(3)))
-        row.addWidget(self.button('PCA loadings', lambda: self.plot_mode.setCurrentIndex(4)))
+        row.addWidget(self.button('Add ROI', lambda: self.add_roi(), 'add_roi'))
+        row.addWidget(self.button('Bounds…', self.edit_roi_bounds, 'roi_edit_bounds'))
         form.addLayout(row)
-        self.angle_degrees = W.QCheckBox('Angle in degrees (default: rad)')
-        self.angle_degrees.toggled.connect(self.refresh_product)
-        form.addWidget(self.angle_degrees)
-        self.lock_map_limits = W.QCheckBox('Share map limits across comparisons')
-        self.lock_map_limits.setChecked(True)
-        form.addWidget(self.lock_map_limits)
-        self.link_views = W.QCheckBox('Link raw / derived views')
-        self.link_views.setChecked(True)
+        self.policy = W.QComboBox()
+        self.policy.addItem('Include saturation', 'diagnostic')
+        self.policy.addItem('Exclude known saturation', 'quantitative')
+        self.policy.setToolTip('Pixel inclusion policy; excluding saturation does not establish radiometric calibration.')
+        self.roi_summary = W.QComboBox()
+        self.roi_summary.addItem('Mean / spatial SD', 'mean')
+        self.roi_summary.addItem('Median / Q25–Q75', 'median')
+        self.roi_support = W.QComboBox()
+        self.roi_support.addItem('Per-feature valid pixels', 'per_band')
+        self.roi_support.addItem('Common pixels across features', 'common')
+        for control in (self.policy, self.roi_summary, self.roi_support):
+            form.addWidget(control)
+            control.currentIndexChanged.connect(self.roi_changed)
+        self.policy.currentIndexChanged.connect(lambda: self.render_current())
+        self.analysis_method = W.QComboBox()
+        self.analysis_buttons = {}
+        methods = [('ROI summary', 'roi'), ('ROI pair comparison', 'pairs'),
+                   ('Reference ROI RMSE map', 'reference_rmse'), ('Normalized difference map', 'normalized_difference'),
+                   ('Difference map', 'difference'), ('Ratio map', 'ratio'),
+                   ('Local polynomial smoothing', 'smooth'), ('First derivative', 'derivative1'),
+                   ('Second derivative', 'derivative2'), ('Interval integral / mean', 'integral'),
+                   ('Endpoint continuum / band depth', 'continuum'), ('PCA', 'pca'),
+                   ('Spectral / state-vector angle', 'spectral_angle'), ('Recorded ROI trace', 'recorded')]
+        for label, operation in methods:
+            self.analysis_method.addItem(label, operation)
+            action = QtGui.QAction(label, self)
+            action.triggered.connect(lambda checked=False, op=operation: self.analyze(op))
+            self.analysis_buttons[operation] = action
+        self.analysis_method.currentIndexChanged.connect(self.method_changed)
+        form.addWidget(self.analysis_method)
+        self.pair_controls = W.QWidget()
+        pair = W.QFormLayout(self.pair_controls); pair.setContentsMargins(0, 0, 0, 0)
+        self.pair_a, self.pair_b = W.QSpinBox(), W.QSpinBox()
+        pair.addRow('Feature A', self.pair_a); pair.addRow('Feature B', self.pair_b)
+        self.minimum_denominator = W.QDoubleSpinBox()
+        self.minimum_denominator.setDecimals(8); self.minimum_denominator.setRange(1e-8, 1e12)
+        self.minimum_denominator.setValue(1e-6)
+        pair.addRow('Min. |denominator|', self.minimum_denominator)
+        form.addWidget(self.pair_controls)
+        self.spectral_controls = W.QWidget()
+        spectral = W.QFormLayout(self.spectral_controls); spectral.setContentsMargins(0, 0, 0, 0)
+        self.feature_first, self.feature_last = W.QSpinBox(), W.QSpinBox()
+        spectral.addRow('First stored feature', self.feature_first)
+        spectral.addRow('Last stored feature', self.feature_last)
+        self.local_window, self.local_degree = W.QSpinBox(), W.QSpinBox()
+        self.local_window.setRange(3, 101); self.local_window.setSingleStep(2); self.local_window.setValue(5)
+        self.local_degree.setRange(1, 6); self.local_degree.setValue(2)
+        spectral.addRow('Window (odd)', self.local_window); spectral.addRow('Polynomial degree', self.local_degree)
+        form.addWidget(self.spectral_controls)
+        self.trace_channel = W.QComboBox(); self.trace_channel.addItem('0')
+        self.trace_channel.setToolTip('Stored channel for time traces; channels are never averaged together.')
+        self.trace_channel.currentIndexChanged.connect(self.roi_changed)
+        for control in (self.pair_a, self.pair_b, self.minimum_denominator, self.feature_first,
+                        self.feature_last, self.local_window, self.local_degree):
+            control.valueChanged.connect(self.roi_changed)
+        form.addWidget(self.trace_channel)
+        self.run_button = self.button('Run analysis', self.run_analysis, 'roi_compare')
+        self.run_button.setStyleSheet('background:#147b83; color:white; padding:8px; font-weight:600')
+        form.addWidget(self.run_button)
+        row = W.QHBoxLayout()
+        row.addWidget(self.button('Results…', self.science_results_dialog, 'science_results'))
+        export = W.QToolButton(); export.setText('Export…')
+        export.setPopupMode(W.QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = W.QMenu(export)
+        for label, callback in [('Publication figure + data', self.figure_export), ('ROI tables + recipe', self.export_rois),
+                                ('Derived array + mask', self.export_derived), ('Display image', self.export_display)]:
+            menu.addAction(label, callback)
+        export.setMenu(menu); row.addWidget(export); form.addLayout(row)
+        form.addWidget(self.button('Specimen / thermal context…', self.annotation_dialog, 'annotation'))
+        details = W.QToolButton(); details.setText('Plot and view options ▸'); details.setCheckable(True)
+        form.addWidget(details)
+        options = W.QWidget(); options_form = W.QVBoxLayout(options); options_form.setContentsMargins(0, 0, 0, 0)
+        details.toggled.connect(options.setVisible)
+        options_form.addWidget(self.plot_mode)
+        self.shape_normalize = W.QCheckBox('L2 normalized shape')
+        self.shape_normalize.setToolTip('Amplitude is retained. Normalization uses common finite features.')
+        self.spatial_sd = W.QCheckBox('Show spatial spread (SD / IQR)'); self.spatial_sd.setChecked(True)
+        for control in (self.shape_normalize, self.spatial_sd):
+            options_form.addWidget(control); control.toggled.connect(self.roi_changed)
+        self.pc_component = W.QComboBox(); self.pc_component.addItem('PC1 score'); self.pc_component.setEnabled(False)
+        self.pc_component.currentIndexChanged.connect(self.refresh_product); options_form.addWidget(self.pc_component)
+        self.angle_degrees = W.QCheckBox('Angle in degrees'); self.angle_degrees.toggled.connect(self.refresh_product)
+        self.lock_map_limits = W.QCheckBox('Share map limits'); self.lock_map_limits.setChecked(True)
+        self.link_views = W.QCheckBox('Link image views'); self.link_views.setChecked(True)
         self.link_views.toggled.connect(self.set_view_link)
-        form.addWidget(self.link_views)
-        form.addWidget(self.button('Export derived values + mask…', self.export_derived))
-        form.addWidget(self.button('Image export…', self.export_display))
-        form.addWidget(self.button('Figure export…', self.figure_export, 'figure_export'))
-        self.capability_label = W.QLabel('Load data to see available analysis')
-        self.capability_label.setWordWrap(True)
-        form.addWidget(self.capability_label)
-        form.addWidget(self.button('Load synthetic example', self.synthetic, 'synthetic'))
+        for control in (self.angle_degrees, self.lock_map_limits, self.link_views):
+            options_form.addWidget(control)
+        options_form.addWidget(self.button('Reset ROI geometry', lambda: self.reset_rois(force=True)))
+        options_form.addWidget(self.button('Load synthetic example', self.synthetic, 'synthetic'))
+        form.addWidget(options); options.hide()
+        self.capability_label = W.QLabel('Open data to analyze')
+        self.capability_label.setWordWrap(True); form.addWidget(self.capability_label)
         form.addStretch()
+
+    def method_changed(self):
+        if not hasattr(self, 'run_button'):
+            return
+        from hyperlab.analysis import capabilities
+        operation = self.analysis_method.currentData()
+        spectral = operation in ('smooth', 'derivative1', 'derivative2', 'integral', 'continuum')
+        self.pair_controls.setVisible(operation in ('difference', 'ratio', 'normalized_difference'))
+        self.spectral_controls.setVisible(spectral)
+        self.local_window.setEnabled(operation in ('smooth', 'derivative1', 'derivative2'))
+        self.local_degree.setEnabled(self.local_window.isEnabled())
+        self.trace_channel.setVisible(operation == 'recorded' or self.plot_mode.currentIndex() == 1)
+        if self.cube is None:
+            self.run_button.setEnabled(False)
+            return
+        cap = capabilities(self.cube)
+        gate = {'pairs':'roi', 'reference_rmse':'roi', 'normalized_difference':'ratio',
+                'smooth':'spectral_features', 'derivative1':'spectral_features',
+                'derivative2':'spectral_features', 'integral':'spectral_features'}.get(operation, operation)
+        allowed = bool(self.sequence) if operation == 'recorded' else cap['operations'].get(gate, False)
+        self.run_button.setEnabled(allowed and not self.task_busy)
+        if spectral:
+            note = 'Common pixel support; measured wavelengths only.'
+        elif operation in ('reference_rmse', 'spectral_angle'):
+            note = 'First ROI is the reference; all enabled features must be valid.'
+        else:
+            note = 'ROI bounds use raw pixels.'
+        if not allowed:
+            note = 'Open a recorded sequence.' if operation == 'recorded' else cap['reasons'].get(gate, 'Unavailable for these data.')
+        self.capability_label.setText(f"{cap['axis_kind']} · {cap['effective_dimensions']} features · {self.cube.metadata['units']}\n{note}")
+
+    def run_analysis(self):
+        operation = self.analysis_method.currentData()
+        if operation == 'roi':
+            self.analyze_rois()
+        elif operation == 'recorded':
+            self.plot_recorded_rois()
+        elif operation in ('pairs', 'smooth', 'derivative1', 'derivative2', 'integral', 'continuum'):
+            self.analyze_roi_features(operation)
+        else:
+            self.analyze(operation)
 
     def _calibration_panel(self):
         form = self.panel()
@@ -1693,7 +2025,8 @@ class Workbench(W.QMainWindow):
         label.setWordWrap(True)
         form.addWidget(label)
         form.addWidget(W.QLabel('3 · Reflectance reference correction'))
-        note = W.QLabel('External spectral data can be corrected through the analysis API. Wavelength provenance, linear intensity and matched references are required; an ordinary white target cannot recover the FP response.')
+        form.addWidget(self.button('Reflectance correction…', self.reference_correction_dialog, 'reflectance_correction'))
+        note = W.QLabel('Requires documented wavelengths, linear intensity and applicable sample / white / dark references.')
         note.setWordWrap(True)
         form.addWidget(note)
         form.addStretch()

@@ -558,7 +558,8 @@ def test_device_frame_gap_makes_recording_partial(tmp_path):
                 self.index += 2
             return super().fetch(timeout)
     fake = GapFake()
-    session = CameraSession("fixture", "fixture", backend_factory=lambda *args: fake)
+    # Fit the bounded pre-gap fixture prefix; overflow is tested independently.
+    session = CameraSession("fixture", "fixture", backend_factory=lambda *args: fake, writer_capacity=32)
     try:
         session.connect().result(5)
         session.start_preview().result(5)

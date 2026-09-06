@@ -7,14 +7,22 @@ from hyperlab.analysis import difference, pca, reflectance, roi_statistics, spec
 from hyperlab.io import Cube
 
 
-def spectral(values):
+def spectral(values, role):
+    context = {"instrument_id": "synthetic instrument", "response_calibration_id": "synthetic response",
+        "temperature_condition_id": "synthetic thermal condition", "role": role,
+        "evidence_kind": "declared", "evidence_source": "analytic test fixture"}
+    if role == "dark":
+        context.update(light_blocked=True, dark_method="synthetic blocked-light input")
+    else:
+        context.update(illumination_id="synthetic light", geometry_id="synthetic geometry")
     data = np.asarray(values, dtype=np.uint16).reshape(1, 2, 2)
     return Cube(data, {"data_level": "spectral_cube", "wavelengths": [500, 600],
         "wavelength_units": "nm", "wavelength_source": "synthetic test", "units": "DN",
         "linear_intensity": True, "settings": {"fixture": True}, "exposure": 10,
         "gain": 0, "processing_steps": [], "completed": True, "partial": False,
         "effective_bits": 12, "data_ignore_value": 0, "pixel_format": "Mono12",
-        "envi_header": {"data ignore value": "0"}})
+        "envi_header": {"data ignore value": "0"}, "data_source": "SYNTHETIC", "synthetic": True,
+        "measurement_context": context})
 
 
 def test_global_bad_band_uses_common_feature_mapping():
@@ -47,7 +55,8 @@ def test_all_bad_and_insufficient_features_rejected():
 
 
 def test_reflectance_zero_is_not_raw_ignore_and_sources_survive():
-    sample, white, ds, dw = [spectral([v] * 4) for v in [10, 100, 10, 10]]
+    sample, white, ds, dw = [spectral([v] * 4, role) for v, role in
+        zip([10, 100, 10, 10], ("sample", "white", "dark", "dark"))]
     corrected = reflectance(sample, white, ds, dw)
     stats = roi_statistics(corrected, (0, 0, 2, 1))
     assert stats["count"].tolist() == [2, 2]
@@ -81,7 +90,8 @@ def test_quality_policy_counts_saturation_without_discarding_raw():
 
 
 def test_reflectance_requires_target_over_budget_and_reopens(tmp_path):
-    args = [spectral([v] * 4) for v in [10, 100, 10, 10]]
+    args = [spectral([v] * 4, role) for v, role in
+        zip([10, 100, 10, 10], ("sample", "white", "dark", "dark"))]
     with pytest.raises(ValueError, match="output_path"):
         reflectance(*args, memory_threshold_bytes=1)
     path = tmp_path / "reflectance.npy"
@@ -107,7 +117,8 @@ def test_out_of_core_failure_keeps_durable_prefix_and_closed_files(tmp_path, mon
 
     monkeypatch.setattr(core, "_blocks", fail_after_first)
     path = tmp_path / "partial.npy"
-    args = [spectral([v] * 4) for v in [10, 100, 10, 10]]
+    args = [spectral([v] * 4, role) for v, role in
+        zip([10, 100, 10, 10], ("sample", "white", "dark", "dark"))]
     with pytest.raises(RuntimeError, match="injected"):
         reflectance(*args, output_path=path, chunk_pixels=1)
     from hyperlab.io import load_cube

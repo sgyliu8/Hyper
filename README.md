@@ -5,9 +5,9 @@ and exporting reproducible scientific figures. Offline analysis works without a
 camera. An experimental acquisition backend supports the mvBlueFOX3 USB3 Vision
 imaging module used in the investigated HinaLea system.
 
-![Offline validation](https://github.com/sgyliu8/Hyper/actions/workflows/offline.yml/badge.svg?branch=feature%2Fscientific-workbench-portable-v3)
+![Offline validation](https://github.com/sgyliu8/Hyper/actions/workflows/offline.yml/badge.svg?branch=feature%2Fmaterials-science-v040)
 
-**0.3.1 research preview:** install the explicit branch below. The repository's
+**0.4.0 research preview:** install the explicit branch below. The repository's
 default branch is still `recovery/hinalea-local`. Original-code licensing and
 public release remain pending; this is not a completed open-source license grant.
 
@@ -18,10 +18,19 @@ public release remain pending; this is not a completed open-source license grant
 - NPY/NPZ/ENVI data, explicit source/axis metadata, private reference exchange,
   saved workspace, view and ROI configuration.
 
+The [materials and thermal-paint workbench](docs/user/MATERIALS_AND_THERMAL_PAINT.md)
+adds median/IQR/MAD, explicit common-pixel support, ROI pair metrics, true-coordinate
+spectral derivatives/integrals/continuum depth, reference RMSE and normalized
+difference maps, source-bound specimen/thermal annotations, guarded reference
+correction and hashed publication bundles. Analysis now uses one contextual
+method selector and Run / Results / Export. Recorded colour traces select one
+stored channel. [Three reviewers and three review rounds](docs/dev/SCIENCE_ROADMAP_REVIEW.md)
+document the mathematical choices, implementation tests and remaining physical prerequisites.
+
 ![Synthetic ROI comparison in the native Windows workbench](docs/assets/workbench-roi-031-native.jpg)
 
 This is a native Windows desktop capture at 125% display scale, using the
-0.3.1 Windows package and built-in synthetic data. It is not a camera
+historical 0.3.1 Windows package and built-in synthetic data. It is not a camera
 acquisition or a material identification result. A separate
 [offscreen Qt layout render](docs/assets/workbench-synthetic.png) documents layout
 checks. [Reproducible figure examples](docs/user/SCIENTIFIC_FIGURES.md)
@@ -34,7 +43,7 @@ offline computation and offscreen Qt; macOS is not qualified. No camera/runtime
 is needed for the following evaluation flow:
 
 ```powershell
-git clone --branch feature/scientific-workbench-portable-v3 --single-branch https://github.com/sgyliu8/Hyper.git
+git clone --branch feature/materials-science-v040 --single-branch https://github.com/sgyliu8/Hyper.git
 cd Hyper
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install .

@@ -18,6 +18,11 @@ def save_state(window):
              'auto_levels':window.auto_levels.isChecked(), 'levels':list(window.levels or (0,1)),
              'policy':window.policy.currentData(), 'shape_normalize':window.shape_normalize.isChecked(),
              'spatial_sd':window.spatial_sd.isChecked(),
+             'roi_summary':window.roi_summary.currentData(), 'roi_support':window.roi_support.currentData(),
+             'analysis_method':window.analysis_method.currentData(),
+             'feature_interval':[window.feature_first.value(),window.feature_last.value()],
+             'trace_channel':window.trace_channel.currentIndex(),
+             'annotation_path':str(window.annotation_path) if window.annotation_path else None,
              'rois':[{'name':window.roi_names[i].text(), 'rect':list(rect), 'color':window.roi_colors[i],
                       'visible':window.roi_visible[i].isChecked()} for i,rect in enumerate(window.rectangles())] if cube else previous.get('rois',[]),
              'references':[window.references.item(i).data(QtCore.Qt.ItemDataRole.UserRole)
@@ -37,6 +42,11 @@ def restore_controls(window, state):
     window.policy.setCurrentIndex(1 if state.get('policy') == 'quantitative' else 0)
     window.shape_normalize.setChecked(bool(state.get('shape_normalize')))
     window.spatial_sd.setChecked(state.get('spatial_sd',True))
+    for name, key in (('roi_summary','roi_summary'),('roi_support','roi_support'),('analysis_method','analysis_method')):
+        control = getattr(window,name)
+        index = control.findData(state.get(key))
+        if index >= 0:
+            control.setCurrentIndex(index)
     window.auto_levels.setChecked(state.get('auto_levels',True))
     for control,value in zip((window.low,window.high),state.get('levels',[0,4095])):
         control.setValue(value)
@@ -70,6 +80,17 @@ def restore_view(window):
         if not window.rois:
             window.add_roi()
     window.band.setValue(min(window.band.maximum(),state.get('band',0)))
+    window.trace_channel.setCurrentIndex(min(window.trace_channel.count()-1, max(0,state.get('trace_channel',0))))
+    for control,value in zip((window.feature_first,window.feature_last),state.get('feature_interval',[0,window.cube.shape[2]-1])):
+        control.setValue(min(control.maximum(),max(0,value)))
+    if state.get('annotation_path'):
+        from hyperlab.experiment_metadata import load_annotation
+        cube, path = window.cube, Path(state['annotation_path'])
+        def attach(record):
+            if window.cube is cube:
+                window.annotation, window.annotation_path = record, path
+                window.roi_changed()
+        window.background(lambda:load_annotation(path,cube),attach,'Checking saved specimen context against source hashes…')
     if state.get('view_range'):
         x,y = state['view_range']
         window.plot.setRange(xRange=x,yRange=y,padding=0)

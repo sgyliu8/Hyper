@@ -73,6 +73,7 @@ def test_roi_export_keeps_amplitude_and_shared_shape_provenance(window, monkeypa
     window.shape_normalize.setChecked(True)
     monkeypatch.setattr(window, 'rectangles', lambda: rects)
     monkeypatch.setattr(window, 'background', lambda run, done, message: done(run()))
+    window.analyze_rois()
     window.export_rois()
     directory = next(window.output_dir.glob('roi_*'))
     comparison = json.loads((directory / 'comparison.json').read_text())
@@ -95,7 +96,8 @@ def test_sam_captures_reference_roi_before_worker_and_keeps_it_on_export(window,
     monkeypatch.setattr(window, 'background', lambda run, done, message: pending.update(run=run, done=done))
     window.analyze('spectral_angle')
     window.roi_names[0].setText('Renamed later')
-    result = pending['run']()
+    result, fingerprint = pending['run']()
+    assert fingerprint['array']['shape'] == list(cube.shape)
     assert result['metadata']['reference_roi']['name'] == 'Reference patch'
     assert result['metadata']['reference_roi']['rect'] == list(rect)
     path = export_product(result, window.output_dir / 'angle.npy', cube)

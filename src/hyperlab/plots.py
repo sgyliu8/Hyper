@@ -53,7 +53,9 @@ class PlotSpec:
                       if key not in ('image', 'valid_mask')})
 
 
-def roi_plot(results, names, colors, *, source, normalized=False, spatial_sd=True):
+def roi_plot(results, names, colors, *, source, normalized=False, spatial_sd=True, summary='mean'):
+    if summary not in ('mean', 'median'):
+        raise ValueError('ROI summary must be mean or median')
     first = results[0]
     labels = first.get('channel_labels')
     wave = first.get('wavelengths')
@@ -64,27 +66,35 @@ def roi_plot(results, names, colors, *, source, normalized=False, spatial_sd=Tru
     x = np.arange(len(first['mean'])) if wave is None or not units else np.asarray(wave)
     xlabel = ('Colour channel' if labels else f'Wavelength ({units})' if wave is not None and units
               else 'Scan state index' if len(x) > 1 else 'Sensor DN summary')
-    common = np.all(np.isfinite([result['mean'] for result in results]), axis=0)
+    common = np.all(np.isfinite([result[summary] for result in results]), axis=0)
     spec = PlotSpec('lines', 'ROI amplitude and spatial variation', xlabel,
-                    f"Mean ({first.get('units', 'unknown')})", source=source, categories=labels,
+                    f"{summary.title()} ({first.get('units', 'unknown')})", source=source, categories=labels,
                     metadata={'policy': first['policy'], 'spatial_sd': spatial_sd, 'std_ddof': 0,
                               'roi_comparison':True, 'single_sensor_plane':single_plane,
+                              'summary':summary, 'support':first.get('support', 'per_band'),
+                              'units':first.get('units', 'unknown'),
                               'normalization': 'L2 on common finite features' if normalized else None,
                               'common_feature_indices': np.flatnonzero(common).tolist(),
                               'excluded_indices': np.flatnonzero(~common).tolist()},
                     caption='Mean ± 1 spatial SD when enabled; pixel dispersion, not a confidence interval.')
+    if summary == 'median':
+        spec.caption = 'Median with Q25–Q75 spatial interval when enabled; pixel dispersion, not a confidence interval.'
     if single_plane:
-        spec.title = 'ROI mean and spatial variation'
+        spec.title = f'ROI {summary} and spatial variation'
         spec.xlabel, spec.categories = 'Region of interest', list(names)
         spec.caption += ' Single sensor plane: comparing ROI intensities, not a spectrum; L2 shape is unavailable.'
         if any('distribution' in result for result in results):
             spec.metadata['distribution'] = '64 shared bins; all policy-valid ROI pixels; density integrates to one'
     for i, result in enumerate(results):
-        means = np.array(result['mean'], copy=True)
+        means = np.array(result[summary], copy=True)
         sd = np.array(result['std'], copy=True)
         curve = {'name': names[i], 'color': colors[i], 'style': '-' if i % 2 == 0 else '--',
-                 'x': np.array([i]) if single_plane else x.copy(), 'y': means, 'sd': sd if spatial_sd else None,
-                 'counts': result['counts'], 'rect': result['rect'], 'feature_indices': list(range(len(x)))}
+                 'x': np.array([i]) if single_plane else x.copy(), 'y': means,
+                 'sd': sd if spatial_sd and summary == 'mean' else None,
+                 'counts': result['counts'], 'used_counts':result['count'],
+                 'rect': result['rect'], 'feature_indices': list(range(len(x)))}
+        if spatial_sd and summary == 'median':
+            curve.update(lower=np.array(result['q25'], copy=True), upper=np.array(result['q75'], copy=True))
         if normalized:
             norm = np.linalg.norm(means[common])
             curve['normalized'] = np.where(common, means / norm, np.nan) if norm > 0 else np.full(means.shape, np.nan)
@@ -109,7 +119,7 @@ def map_plot(result, source, *, component=0, degrees=False, limits=None):
     title = operation
     pair = meta.get('indices', ['A', 'B'])
     labels = source.get('channel_labels')
-    if labels and operation in ('difference', 'ratio'):
+    if labels and operation in ('difference', 'ratio', 'normalized_difference'):
         pair = [labels[index] for index in pair]
     if 'scores' in result:
         title = f'PCA · PC{component + 1} score'
@@ -125,6 +135,11 @@ def map_plot(result, source, *, component=0, degrees=False, limits=None):
     elif operation == 'ratio':
         title = f"Ratio · {pair[0]} / {pair[1]}"
         center, cmap, units = 1., 'RdBu_r', 'dimensionless'
+    elif operation == 'normalized_difference':
+        title = f"Normalized difference · {pair[0]}, {pair[1]}"
+        center, cmap, units = 0., 'RdBu_r', 'dimensionless'
+    elif operation == 'reference_rmse':
+        title = 'Reference ROI RMSE'
     values = data[valid]
     if limits is None:
         low, high = (float(values.min()), float(values.max())) if values.size else (0., 1.)
@@ -133,13 +148,57 @@ def map_plot(result, source, *, component=0, degrees=False, limits=None):
             low, high = center-radius, center+radius
         elif high <= low:
             high = low + 1
+        if operation == 'reference_rmse':
+            low = 0.
         limits = (low, high)
     return PlotSpec('map', title, 'Raw x (pixel)', 'Raw y (pixel)', source=source,
                     metadata={**plain(meta), 'component': component, 'valid_count': int(valid.sum()),
                               'total_count': int(valid.size), 'semantic_center': center},
                     image=np.where(valid, data, np.nan), valid_mask=valid.copy(),
                     colour_label=f'{title} ({units})', colormap=cmap, limits=tuple(limits),
-                    caption='Invalid / masked values are grey; an angle or score is not a defect probability.')
+                    caption=(f"({pair[0]} − {pair[1]}) / ({pair[0]} + {pair[1]}). "
+                             if operation == 'normalized_difference' else '') +
+                    'Invalid / masked values are grey; an angle or score is not a defect probability.')
+
+
+def roi_feature_plot(result, names, colors, *, source):
+    """Use the computed recipe and feature values for both screen and export."""
+    meta = result['metadata']
+    titles = {'smooth':'Local polynomial smoothing', 'derivative1':'First wavelength derivative',
+              'derivative2':'Second wavelength derivative', 'integral':'Measured interval amplitude',
+              'continuum':'Endpoint continuum band depth'}
+    spec = PlotSpec('lines', titles[meta['operation']], 'Wavelength (nm)',
+        f"{meta['summary'].title()} feature ({meta['units']})", source=source,
+        metadata=plain(meta), caption='Feature of the ROI summary; no transformed SD or confidence interval. '
+        'Measured coordinates and missing intervals are retained.')
+    spec.metadata['feature_results'] = plain([curve['features'] for curve in result['curves']])
+    for curve in result['curves']:
+        i = curve['roi_index']
+        spec.series.append({'name':names[i], 'color':colors[i], 'style':'-' if i % 2 == 0 else '--',
+            'x':curve['x_nm'], 'y':curve['y'], 'feature_indices':meta['feature_indices'],
+            'rect':curve['rect'], 'used_counts':[curve['used_count']]*len(curve['y']),
+            'invalid_reasons':curve['invalid_reasons']})
+    return spec
+
+
+def roi_pair_plot(cube, results, comparison, colors):
+    meta = comparison['metadata']
+    x = np.arange(cube.shape[2]) if cube.wavelengths is None else cube.wavelengths
+    labels = cube.metadata.get('channel_labels')
+    xlabel = 'Colour channel' if labels else (f"Wavelength ({cube.metadata['wavelength_units']})"
+              if cube.wavelengths is not None else 'Stored feature index')
+    spec = PlotSpec('lines', 'ROI residuals · target minus reference', xlabel,
+        f"{meta['summary'].title()} difference ({meta['units']})", source=source_identity(cube),
+        metadata={**plain(meta), 'pair_results':plain(comparison['pairs'])}, categories=labels,
+        caption='One common finite feature set across all compared ROIs. Descriptive metrics; no p-values or defect probability.')
+    for i, pair in enumerate(comparison['pairs']):
+        residual = np.full(cube.shape[2], np.nan)
+        features = meta['feature_indices']
+        residual[features] = (np.asarray(results[pair['target_index']][meta['summary']])[features]
+                              - np.asarray(results[pair['reference_index']][meta['summary']])[features])
+        spec.series.append({'name':f"{pair['target']} − {pair['reference']}", 'color':colors[i % len(colors)],
+                            'style':'-' if i % 2 == 0 else '--', 'x':x, 'y':residual})
+    return spec
 
 
 def pca_diagnostics(result, cube):
@@ -267,6 +326,13 @@ def render_figure(spec, *, width_mm=180, height_mm=115, dpi=300):
                     ax.errorbar(x,y,yerr=sd,fmt='none',ecolor=item['color'],capsize=4,linewidth=1.3)
                 else:
                     ax.fill_between(x, y-sd, y+sd, color=item['color'], alpha=.17)
+            if item.get('lower') is not None:
+                lower, upper = np.asarray(item['lower']), np.asarray(item['upper'])
+                if len(x) == 1:
+                    ax.errorbar(x, y, yerr=np.stack((y-lower, upper-y)), fmt='none',
+                                ecolor=item['color'], capsize=4, linewidth=1.3)
+                else:
+                    ax.fill_between(x, lower, upper, color=item['color'], alpha=.17)
             if 'distribution' in item:
                 distribution = item['distribution']
                 axes[1].plot(distribution['x'],distribution['y'],item.get('style','-'),
@@ -283,12 +349,13 @@ def render_figure(spec, *, width_mm=180, height_mm=115, dpi=300):
             if spec.categories and (a is ax or not distributions):
                 a.set_xticks(range(len(spec.categories)), spec.categories)
         if distributions:
-            units = spec.ylabel.removeprefix('Mean (').removesuffix(')')
+            units = spec.metadata.get('units', spec.ylabel.removeprefix('Mean (').removesuffix(')'))
             axes[1].set(title='ROI intensity distribution',xlabel=f'Pixel intensity ({units})',
                         ylabel=f'Probability density (1/{units})')
             axes[1].legend(fontsize=7,frameon=False)
         elif shape_branch:
-            axes[1].set(title='L2 normalized shape', xlabel=spec.xlabel, ylabel='Normalized mean (dimensionless)')
+            axes[1].set(title='L2 normalized shape', xlabel=spec.xlabel,
+                        ylabel=f"Normalized {spec.metadata.get('summary', 'mean')} (dimensionless)")
         origin = spec.source.get('acquisition_source') or spec.source.get('data_source') or 'UNKNOWN'
         figure.suptitle(f'HyperLab · {origin} origin', fontsize=10, fontweight='bold')
         # Fixed caption area is part of the saved figure, not a clipped UI label.
@@ -298,34 +365,51 @@ def render_figure(spec, *, width_mm=180, height_mm=115, dpi=300):
         return figure
 
 
-def recorded_roi_plot(sequence, rectangles, names, colors, *, policy='diagnostic', cancelled=None):
+def recorded_roi_plot(sequence, rectangles, names, colors, *, policy='diagnostic', band=0, cancelled=None):
     from .analysis import roi_statistics
     from .io import Cube
     x,xlabel = sequence_coordinates(sequence.metadata['frames'])
     values = np.full((len(rectangles),sequence.frame_count),np.nan)
     valid_counts = np.zeros_like(values,dtype=np.int64)
+    channel, settings = None, []
     for index in range(sequence.frame_count):
         if cancelled is not None and cancelled.is_set():
             raise InterruptedError('Recorded ROI analysis cancelled; no partial curve presented as complete')
         frame = sequence.frame(index)
         cube = Cube(frame.data if frame.data.ndim==3 else frame.data[...,None],dict(frame.metadata))
+        if not isinstance(band, (int, np.integer)) or not 0 <= band < cube.shape[2]:
+            raise ValueError('Trace channel must be a stored feature index in every frame')
+        label = cube.metadata.get('channel_labels', [str(i) for i in range(cube.shape[2])])[band]
+        if channel is not None and label != channel:
+            raise ValueError('Stored channel identity changed inside the sequence')
+        channel = label
+        settings.append(plain(cube.metadata.get('readback_settings') or cube.metadata.get('current_settings')))
         for i,rect in enumerate(rectangles):
-            stats = roi_statistics(cube,rect,policy=policy)
-            finite = np.isfinite(stats['mean'])
-            values[i,index] = np.mean(stats['mean'][finite]) if np.any(finite) else np.nan
-            valid_counts[i,index] = stats['count'].sum()
-    return PlotSpec('lines','ROI trend · all recorded frames',xlabel,'ROI mean (DN)',
+            stats = roi_statistics(cube,rect,policy=policy,bands=[band],robust=False)
+            values[i,index] = stats['mean'][band]
+            valid_counts[i,index] = stats['count'][band]
+    settings_match = bool(settings) and settings[0] is not None and all(s == settings[0] for s in settings)
+    return PlotSpec('lines',f'ROI trend · channel {channel} · all recorded frames',xlabel,'ROI mean (DN)',
         source={'source_file':str(sequence.path),'acquisition_source':sequence.metadata.get('acquisition_source','UNKNOWN')},
         series=[{'name':name,'color':colors[i],'style':'-','x':x[:sequence.frame_count],'y':values[i],
                  'rect':rectangles[i],'valid_counts':valid_counts[i]} for i,name in enumerate(names)],
         metadata={'frame_count':sequence.frame_count,'sampling':'all persisted frames','policy':policy,
-                  'color_policy':'arithmetic mean of valid channel means when colour is present'},
+                  'channel_index':int(band),'channel_label':channel,'frame_settings':settings,
+                  'settings_match':settings_match, 'recording':plain({k:v for k,v in sequence.metadata.items() if k != 'frames'})},
         caption='Recorded host clock or explicit frame index; missing samples remain gaps. No playback-clock timing.')
 
 
-def export_figure_bundle(spec, directory, *, width_mm=180, height_mm=115, dpi=300):
+def export_figure_bundle(spec, directory, *, width_mm=180, height_mm=115, dpi=300,
+                         source_cube=None, annotation=None):
     if not 60 <= width_mm <= 400 or not 50 <= height_mm <= 400 or not 72 <= dpi <= 1200:
         raise ValueError('Figure dimensions or DPI exceed the supported range')
+    fingerprint = None
+    if source_cube is not None:
+        from hyperlab.experiment_metadata import source_fingerprint, write_analysis_manifest
+        fingerprint = source_fingerprint(source_cube)
+        expected = spec.metadata.get('source_fingerprint')
+        if expected is not None and fingerprint != expected:
+            raise ValueError('Source changed since this plot was computed; run analysis again before exporting.')
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=False)
     record = spec.record()
@@ -338,12 +422,17 @@ def export_figure_bundle(spec, directory, *, width_mm=180, height_mm=115, dpi=30
         record.update(values_file='values.npy', valid_file='valid.npy')
     with (directory/'series.csv').open('x', newline='', encoding='utf-8') as stream:
         writer = csv.writer(stream)
-        writer.writerow(['series', 'feature_index', 'x', 'y', 'spatial_sd_ddof0', 'normalized'])
+        writer.writerow(['series', 'feature_index', 'x', 'y', 'spatial_sd_ddof0', 'normalized',
+                         'spatial_q25', 'spatial_q75', 'used_count'])
         for item in spec.series:
             for i, (x, y) in enumerate(zip(item['x'], item['y'])):
                 sd = item.get('sd')
-                writer.writerow([item['name'], i, x, y, sd[i] if sd is not None else '',
-                                 item['normalized'][i] if 'normalized' in item else ''])
+                writer.writerow([item['name'], item.get('feature_indices', range(len(item['x'])))[i],
+                                 x, y, sd[i] if sd is not None else '',
+                                 item['normalized'][i] if 'normalized' in item else '',
+                                 item['lower'][i] if 'lower' in item else '',
+                                 item['upper'][i] if 'upper' in item else '',
+                                 item.get('used_counts', item.get('valid_counts', ['']*len(item['x'])))[i]])
     if any('distribution' in item for item in spec.series):
         with (directory/'distributions.csv').open('x',newline='',encoding='utf-8') as stream:
             writer = csv.writer(stream)
@@ -358,4 +447,8 @@ def export_figure_bundle(spec, directory, *, width_mm=180, height_mm=115, dpi=30
     with mpl.rc_context({'svg.fonttype':'none', 'pdf.fonttype':42}):
         for extension in ('svg', 'pdf', 'png'):
             figure.savefig(directory/f'figure.{extension}', dpi=dpi)
+    if source_cube is not None:
+        if source_fingerprint(source_cube) != fingerprint:
+            raise ValueError('Source changed during export; partial outputs retained without a COMPLETE manifest.')
+        write_analysis_manifest(directory, fingerprint, spec.record(), annotation=annotation)
     return directory
