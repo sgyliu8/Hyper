@@ -277,3 +277,142 @@ def test_shared_legacy_unknown_definition_remains_unknown_without_invented_suppo
             'summary':'median','support':'common','support_features':None,'quantile_method':None,'units':'DN'}})
     safe = sanitized_plot(spec)
     assert safe.metadata['definition'] == spec.metadata['definition']
+
+
+@pytest.mark.parametrize('view', ['points', 'contrast'])
+def test_shared_actual_study_renders_every_group_marker_and_declared_comparison_level(tmp_path, view):
+    from hyperlab.study import COMPARISON_LEVELS, new_study, add_observation, observation_from_cube
+    from hyperlab.ui.study_dialog import study_point_plot
+
+    study = new_study(PRIVATE)
+    rois = [make_roi((1,5), {'type':'rectangle','bounds':bounds}, roi_id=role, role=role)
+        for role,bounds in [('reference',[0,0,2,1]),('target',[2,0,5,1])]]
+    data = np.repeat(np.array([[[-5.],[-1.],[2.],[4.],[20.]]]),3,axis=2)
+    for sequence,level in enumerate(COMPARISON_LEVELS):
+        path = save_cube(Cube(data, {'data_level':'raw_frame','units':'DN','data_source':'SYNTHETIC',
+            'channel_labels':['R','G','B'],'session_id':PRIVATE,'sequence':sequence}), tmp_path/f'input-{sequence}.npy')
+        with load_cube(path) as source:
+            results = [roi_statistics(source,roi,bands=[0,1],support='common') for roi in rois]
+            context = {'source_fingerprint':source_fingerprint(source), 'summary':'median',
+                'roi_definitions':rois, 'names':['Reference','Target'], 'reference_roi_id':'reference'}
+            study = add_observation(study, observation_from_cube(source, roi_results=results,
+                roi_context=context, comparison_level=level, comparison_purpose='nuisance-control'))
+    original = study_point_plot(study,0,view=view,group_by='specimen')
+    before = original.record()
+    safe = sanitized_plot(original)
+    assert {item['marker'] for item in safe.series} == {'o','s','^'}
+    assert [item['marker'] for item in safe.series] == [item['marker'] for item in original.series]
+    assert {point['comparison_level'] for point in safe.metadata['points']} == set(COMPARISON_LEVELS)
+    assert safe.metadata['aggregation'] == original.metadata['aggregation']
+    assert safe.metadata['pairing'] == original.metadata['pairing']
+    assert safe.metadata['counts'] == original.metadata['counts']
+    assert [point['omitted_reason'] for point in safe.metadata['points']] == [
+        point['omitted_reason'] for point in original.metadata['points']]
+    for old,new in zip(original.series,safe.series):
+        for key in ('x','y','used_counts','feature_indices'):
+            np.testing.assert_array_equal(old[key],new[key])
+    output = export_share_bundle(original,tmp_path/'shared',dpi=72)
+    record = json.loads((output/'plot.json').read_text())
+    assert [item['marker'] for item in record['series']] == [item['marker'] for item in original.series]
+    assert PRIVATE not in json.dumps(record)
+    assert original.record() == before
+
+
+@pytest.mark.parametrize('style', ['connected', 'points'])
+def test_shared_actual_rgb_categorical_style_remains_exact(style):
+    original = roi_plot([roi_statistics(cube(),(0,0,5,4))],[PRIVATE],COLORS,
+        source=source_identity(cube()),categorical_style=style)
+    safe = sanitized_plot(original)
+    assert safe.metadata['categorical_style'] == style
+    render_figure(safe,dpi=72)
+
+
+@pytest.mark.parametrize('field', ['marker', 'style', 'drawstyle', 'categorical_style'])
+def test_custom_renderer_text_is_rejected_before_creating_shared_output(tmp_path, field):
+    from hyperlab.plots import PlotSpec
+
+    original = PlotSpec('lines','Plot','Index','Mean (DN)',
+        series=[{'name':'ROI','x':[0],'y':[1],'color':COLORS[0]}])
+    (original.metadata if field == 'categorical_style' else original.series[0])[field] = PRIVATE
+    with pytest.raises(ValueError,match='Custom rendering options') as error:
+        export_share_bundle(original,tmp_path/'blocked',dpi=72)
+    assert PRIVATE not in str(error.value) and not (tmp_path/'blocked').exists()
+
+
+@pytest.mark.parametrize('operation', ['smooth', 'derivative1', 'derivative2', 'integral', 'continuum'])
+def test_shared_spectral_features_keep_math_availability_and_gap_reasons(tmp_path, operation):
+    from hyperlab.analysis.roi_features import spectral_roi_features
+    from hyperlab.plots import roi_feature_plot
+    from test_science_features import spectrum, pixel_rois
+
+    source = spectrum([1.,2.,3.,2.,1.,2.,3.], level='reflectance_cube' if operation == 'continuum' else 'spectral_cube')
+    result = spectral_roi_features(source,pixel_rois(source,support='common'),operation)
+    original = roi_feature_plot(result,[PRIVATE],COLORS,source=source_identity(source))
+    safe = sanitized_plot(original)
+    for key in ('operation','units','feature_indices','window_support','interval_support','method',
+                'window','degree','derivative_order','rank_rcond','offset_scale','edge_policy','feature_results'):
+        if key in original.metadata:
+            assert safe.metadata[key] == original.metadata[key]
+    for old,new in zip(original.series,safe.series):
+        for key in ('x','y','used_counts','invalid_reasons'):
+            np.testing.assert_equal(old[key],new[key])
+    export_share_bundle(original,tmp_path/'complete',dpi=72)
+
+    unavailable = spectral_roi_features(source,pixel_rois(source,support='common'),operation,
+        max_gap_nm=5,measurement_gaps_nm=[[515,535]])
+    original = roi_feature_plot(unavailable,[PRIVATE],COLORS,source=source_identity(source))
+    safe = sanitized_plot(original)
+    assert safe.metadata['interval_support'] == original.metadata['interval_support']
+    assert safe.series[0]['invalid_reasons'] == original.series[0]['invalid_reasons']
+    assert safe.metadata['feature_results'] == original.metadata['feature_results']
+
+
+@pytest.mark.parametrize('operation', ['difference', 'ratio', 'angle', 'pca', 'interval_integral', 'interval_mean'])
+def test_shared_spectral_maps_keep_actual_operation_axis_and_values(tmp_path, operation):
+    from hyperlab.analysis import difference, ratio, spectral_angle, pca
+    from hyperlab.analysis.distributions import spectral_interval_map
+    from test_science_features import spectrum
+
+    source = spectrum([[1.,2.,3.],[2.,4.,7.],[3.,2.,5.]])
+    if operation == 'difference':
+        product = difference(source,0,1)
+    elif operation == 'ratio':
+        product = ratio(source,0,1)
+    elif operation == 'angle':
+        product = spectral_angle(source,np.array([1.,2.,3.]))
+    elif operation == 'pca':
+        product = pca(source,n_components=2)
+    else:
+        product = spectral_interval_map(source,statistic='mean' if operation == 'interval_mean' else 'integral')
+    original = map_plot(product,source_identity(source))
+    safe = sanitized_plot(original)
+    for key in ('operation','axis','feature_indices','units','semantic_center','coordinate_frame',
+                'equation','reason_counts','count_semantics','minimum_denominator','policy','interval_support'):
+        if key in original.metadata:
+            assert safe.metadata[key] == original.metadata[key]
+    np.testing.assert_array_equal(safe.image,original.image)
+    np.testing.assert_array_equal(safe.valid_mask,original.valid_mask)
+    assert safe.colormap == original.colormap and safe.limits == original.limits
+    export_share_bundle(original,tmp_path/'copy',dpi=72)
+
+
+def test_shared_residual_retains_pair_statistics_and_private_operand_aliases(tmp_path):
+    from hyperlab.analysis.roi_features import roi_pairwise
+    from hyperlab.plots import roi_pair_plot
+    from test_science_features import spectrum, pixel_rois
+
+    source = spectrum([[1.,2.,3.],[2.,3.,4.]])
+    results = pixel_rois(source,support='common')
+    original = roi_pair_plot(source,results,roi_pairwise(source,results,[PRIVATE+'A',PRIVATE+'B']),COLORS)
+    safe = sanitized_plot(original)
+    for key in ('feature_count','feature_indices','weighting','bias_direction','angle_units','correlation_label',
+                'correlation_near_constant_tolerance','metric_domain','support_counts','rectangles'):
+        assert safe.metadata[key] == original.metadata[key]
+    old,new = original.metadata['pair_results'][0],safe.metadata['pair_results'][0]
+    for key in ('target_index','reference_index','bias','rmse','correlation','angle','unavailable','feature_count'):
+        assert new[key] == old[key]
+    assert new['target'] == safe.metadata['names'][new['target_index']]
+    assert new['reference'] == safe.metadata['names'][new['reference_index']]
+    assert PRIVATE not in json.dumps(safe.record())
+    np.testing.assert_array_equal(safe.series[0]['y'],original.series[0]['y'])
+    export_share_bundle(original,tmp_path/'copy',dpi=72)

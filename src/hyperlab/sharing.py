@@ -58,6 +58,22 @@ _TEXT.update(('first requested path point', 'count zero and mean/SD NaN',
     'HW pixels; source causes overlap across features and source_excluded. '
     'total = source_excluded + low_denominator + nonfinite_calculation + enabled low_signal + used; '
     'unknown low_signal is not a mask. Saturation is retained under diagnostic policy.'))
+_TEXT.update(('available', 'unavailable', 'Spectral Angle Mapper', 'Local polynomial',
+    'maximum absolute wavelength offset within each centered window',
+    'invalid without a complete centered window', 'first increasing wavelength',
+    'equal feature weights', 'target minus reference', 'Channel correlation',
+    'State-vector correlation', 'Spectral-shape correlation', 'Correlation',
+    'Unsupported centered edge window', 'Incomplete finite window',
+    'Rank-deficient polynomial window', 'Nonfinite polynomial result',
+    'Adjacent wavelength spacing exceeds max_gap_nm', 'Support crosses a declared measurement gap',
+    'Adjacent wavelength spacing exceeds max_gap_nm; Support crosses a declared measurement gap',
+    'No finite common-support summary', 'No complete finite common-support interval',
+    'Integral is not representable as finite float64', 'Nonpositive or nonfinite endpoint continuum',
+    'Nonfinite continuum ratio', 'Incomplete finite continuum ratio',
+    'Depth area is not representable as finite float64', 'No common finite features across all ROIs',
+    'Amplitude result is not representable as finite float64', 'Correlation needs at least three common features',
+    'Constant or near-constant summary vector', 'Angle needs at least two common features',
+    'Zero-norm summary vector', 'not selected or globally invalid', 'not finite/used in every ROI'))
 _KEYS = set('''kind title xlabel ylabel source series metadata image valid_mask colour_label colormap limits caption categories brushes
 name color style x y sd lower upper normalized feature_indices sample_indices used_counts valid_counts sample_count
 roi roi_id revision roi_revision roi_index roi_name roi_definition roi_definitions rect descriptor geometry geometry_counts
@@ -120,8 +136,24 @@ path_length_px requested_bin_width_px actual_bin_width_px position_origin canoni
 projection binning bin_boundary_arithmetic std_interpretation empty_bins band_indices max_adjacent_delta_nm
 crossed_measurement_gaps_nm comparison_roundoff_nm statistic normalized_trapezoid_weights gap_policy
 measurement_gap_rule physical_gap_unsupported'''.split())
+_KEYS.update('''axis offset_scale edge_policy feature_count weighting bias_direction angle_units correlation_label
+correlation_near_constant_tolerance metric_domain support_counts rectangles pair_results target target_index
+reference_index bias rmse correlation angle names excluded_features index fwhm_units'''.split())
 _UNITS = re.compile(r'^(?:DN|nm|um|µm|μm|px|pixel|pixels|s|ms|us|ns|rad|deg|degC|K|dB|dimensionless|reflectance|relative intensity|unknown|score)(?:[*/·]nm(?:\^2)?|/s)?$')
 _IDENTITY = re.compile(r'(?:^|_)(?:id|ids|identity|identities|path|paths|file|files|sha256|fingerprint|utc|timestamp|monotonic)(?:_|$)')
+_FIELD_TEXT = {
+    'marker': {'o', 's', '^'},
+    'style': {'-', '--', 'none'},
+    'drawstyle': {'default', 'steps-post', 'steps-mid'},
+    'categorical_style': {'connected', 'points'},
+    'comparison_level': {'within-session', 'reposition', 'between-specimen', 'between-session'},
+    'aggregation': {'original completed ROI summaries; no cross-observation aggregation'},
+    'pairing': {'No cross-observation pair relations declared or inferred'},
+    'omitted_reason': {'feature_unavailable', 'unknown_dwell', 'unknown_temperature',
+        'temperature_scope_not_selected', 'different_temperature_unit_or_meaning',
+        'reference_missing_or_ambiguous', 'support_definition_unknown', 'reference_operand',
+        'reference_definition_or_value_unavailable', 'nonfinite_contrast'},
+}
 
 
 def sanitized_plot(spec):
@@ -167,9 +199,11 @@ def sanitized_plot(spec):
         if isinstance(value, str):
             if key in {'measurement_compatibility', 'study_measurement_compatibility'}:
                 return 'MISMATCH' if value == 'MISMATCH' else 'UNKNOWN'
-            if key in {'name', 'roi_name'}:
+            if key in {'name', 'roi_name', 'names', 'target', 'reference'}:
                 return alias(value, 'Region')
-            if (value in _TEXT or _UNITS.fullmatch(value) or
+            if key in {'marker', 'style', 'drawstyle', 'categorical_style'} and value not in _FIELD_TEXT[key]:
+                raise ValueError('Custom rendering options need the internal export; no reduced copy was made')
+            if (value in _TEXT or value in _FIELD_TEXT.get(key, ()) or _UNITS.fullmatch(value) or
                     key == 'color' and re.fullmatch(r'#[0-9a-fA-F]{6,8}', value) or
                     key in {'label', 'feature_label', 'feature_labels'} and re.fullmatch(r'[-+0-9.eE]+ (?:nm|um|µm|μm)', value)):
                 return value

@@ -41,7 +41,7 @@ def test_acquired_target_with_zero_durable_does_not_complete_or_offer_restart(wi
     window.update_recording_result(rec); window.update_controls()
     text=window.recording_label.text()
     assert 'Persisting' in text and 'admitted 300 / 300' in text and 'durable 0' in text
-    assert 'reopened not checked' in text and 'COMPLETE' not in text
+    assert 'reopened unconfirmed' in text and 'COMPLETE' not in text
     assert not window.preview_button.isEnabled() and not window.record_button.isEnabled()
     assert not window.apply_button.isEnabled() and not window.recording_recovery.isVisibleTo(window)
     window.start_preview()
@@ -111,3 +111,27 @@ def test_modal_preflight_uses_shared_budget_and_preserves_requested_count(window
     window.record_dialog()
     assert len(calls) == 1 and calls[0][0][1] == 300 and calls[0][1]['recording_mode'] == 'continuous'
     window.session=None
+
+
+@pytest.mark.parametrize('transition',['replacement','stopped','closing'])
+def test_modal_recording_rejects_changed_owner_or_state(window,tmp_path,transition):
+    frame=Frame(np.arange(20,dtype=np.uint16).reshape(4,5),{'session_id':'synthetic-owner-a','sequence':1})
+    calls=[]
+    first=SimpleNamespace(state='streaming',status=lambda:{},latest_frame=lambda:frame,
+        start_recording=lambda *args,**kwargs:calls.append('first'))
+    second=SimpleNamespace(state='streaming',status=lambda:{},latest_frame=lambda:frame,
+        start_recording=lambda *args,**kwargs:calls.append('second'))
+    window.session=first; window.output_dir=tmp_path/'recordings'
+    def change_context():
+        if transition == 'replacement':
+            window.session=second
+        elif transition == 'stopped':
+            first.state='ready'
+        else:
+            window.closing=True
+        window.findChild(W.QDialog).accept()
+    QtCore.QTimer.singleShot(0,change_context)
+    window.record_dialog()
+    window.session=None; window.closing=False
+    assert calls == [] and not window.output_dir.exists()
+    assert 'source or state changed' in window.message.text() and 'not started' in window.message.text()

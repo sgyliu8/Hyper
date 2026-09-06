@@ -102,3 +102,52 @@ def test_cfa_request_fallback_is_effective_display_without_mutating_evidence(qtb
     window.refresh_details()
     assert json.loads(window.detail_text.toPlainText())['effective_display']['effective'] == 'Raw gray'
     assert cube.metadata == original
+
+
+def test_visible_details_follow_offline_source_without_serializing_unchanged_ticks(qtbot,monkeypatch):
+    window=Workbench(); qtbot.addWidget(window); window.show()
+    first=source(); first.metadata['sequence']=1
+    second=source(); second.metadata['sequence']=2
+    window.set_cube(first); window.toggle_details()
+    assert json.loads(window.detail_text.toPlainText())['viewed_source']['sequence'] == 1
+    refresh=window.refresh_details
+    calls=[]
+    def tracked_refresh():
+        calls.append(True); refresh()
+    monkeypatch.setattr(window,'refresh_details',tracked_refresh)
+    window.set_cube(second); window.tick()
+    assert json.loads(window.detail_text.toPlainText())['viewed_source']['sequence'] == 2
+    assert len(calls) == 1
+    for _ in range(10):
+        window.tick()
+    assert len(calls) == 1
+    window.diagnostics.hide(); window.set_cube(first); window.tick()
+    assert len(calls) == 1
+
+
+def test_visible_details_follow_new_completed_offline_recipe(qtbot):
+    window=Workbench(); qtbot.addWidget(window); window.show(); window.set_cube(source())
+    window.analyze_rois(); qtbot.waitUntil(lambda:not window.task_busy,timeout=10000)
+    window.toggle_details()
+    assert json.loads(window.detail_text.toPlainText())['completed_chart']['recipe']['summary'] == 'mean'
+    old=window.plot_spec
+    window.roi_summary.setCurrentIndex(window.roi_summary.findData('median'))
+    window.roi_timer.stop(); window.analyze_rois()
+    qtbot.waitUntil(lambda:not window.task_busy,timeout=10000)
+    assert window.plot_spec is not old and window.plot_spec.metadata['summary'] == 'median'
+    assert json.loads(window.detail_text.toPlainText())['completed_chart']['recipe']['summary'] == 'median'
+
+
+def test_live_details_refresh_on_status_poll_not_each_preview_identity(qtbot,monkeypatch):
+    window=Workbench(); qtbot.addWidget(window); window.show(); window.set_cube(source()); window.toggle_details()
+    window.timer.stop()
+    window.session=SimpleNamespace(state='streaming')
+    window.follow_camera=True
+    calls=[]
+    monkeypatch.setattr(window,'refresh_details',lambda:calls.append(True))
+    for _ in range(3):
+        window.cube=source(); window.update_source_label()
+    assert calls == []
+    window.last_status={'state':'streaming'}; window.update_status()
+    assert calls == [True]
+    window.session=None

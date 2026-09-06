@@ -593,16 +593,17 @@ class Workbench(W.QMainWindow):
             self.background(lambda: save_cube(cube, path), lambda _: self.add_recent(path), 'Saving a copy of the selected raw array…')
 
     def record_dialog(self):
-        if not self.session:
+        owner = self.session
+        if not owner:
             return
-        recording = self.session.status().get('recording') or {}
-        if self.session.state == 'recording':
-            self.session.stop_recording()
+        recording = owner.status().get('recording') or {}
+        if owner.state == 'recording':
+            owner.stop_recording()
             return
         if recording.get('recording_mode') == 'ram_burst' and not recording.get('done'):
             self.notify('Finish persistence or resolve retained frames before a new recording.')
             return
-        frame = self.session.latest_frame()
+        frame = owner.latest_frame()
         if frame is None:
             return
         dialog = W.QDialog(self)
@@ -650,7 +651,10 @@ class Workbench(W.QMainWindow):
         buttons.rejected.connect(dialog.reject)
         update_budget()
         if dialog.exec() == W.QDialog.DialogCode.Accepted:
-            self.session.start_recording(directory, frames.value(), duration_s=seconds.value(), recording_mode=mode.currentData())
+            if self.session is not owner or self.closing or owner.state != 'streaming':
+                self.notify('Camera source or state changed; recording was not started. Reopen Record for the current stream.')
+                return
+            owner.start_recording(directory, frames.value(), duration_s=seconds.value(), recording_mode=mode.currentData())
 
     def retry_recording(self):
         if self.session and (self.session.status().get('recording') or {}).get('can_retry'):
@@ -787,7 +791,7 @@ class Workbench(W.QMainWindow):
                     receipt['partial'] is False and receipt['save_reopen_verified'] is True):
                 phase = 'UNKNOWN · inconsistent completion receipt'
             mode = 'RAM burst' if receipt['recording_mode'] == 'ram_burst' else 'Continuous recording'
-            readable = receipt['readable_frames'] if receipt['readable_frames'] is not None else 'not checked'
+            readable = receipt['readable_frames'] if receipt['readable_frames'] is not None else 'unconfirmed'
             text = (f"{mode}: {phase} · admitted {receipt['admitted_frames']} / {receipt['max_frames']}"
                     f" · durable {receipt['durable_frames']} · reopened {readable}")
             if receipt['retained_frames']:
@@ -926,6 +930,12 @@ class Workbench(W.QMainWindow):
             'completed_right_plot':completed(self.right_spec),
             'profile':self.profile, 'session':self.last_status,
             'ui_stage_timings':self.timings.snapshot()}))
+        self._last_details_identity = self._details_identity()
+
+    def _details_identity(self):
+        display = getattr(self, 'effective_display', {})
+        return (id(self.cube), id(self.plot_spec), id(self.map_spec), id(self.right_spec), self.display_mode,
+                display.get('requested'), display.get('effective'), display.get('fallback_reason'))
 
     def update_source_label(self):
         from hyperlab.ui.presentation import observation_label, viewing_label
@@ -933,6 +943,10 @@ class Workbench(W.QMainWindow):
         meta = self.cube.metadata if self.cube else {}
         self.source_label.setText('Viewed data: ' + observation_label(meta, compact=True) if self.cube else 'Viewed data: none')
         self.source_label.setToolTip(json_text(source_identity(self.cube)) if self.cube else '')
+        # Live Details use the existing status poll; offline identities update without per-tick serialization.
+        if (self.diagnostics.isVisible() and (not self.session or not self.follow_camera) and
+                self._details_identity() != getattr(self, '_last_details_identity', None)):
+            self.refresh_details()
 
     def set_cube(self, cube, *, live=False, reset_axis=True):
         old_shape = self.cube.shape if self.cube is not None else None
