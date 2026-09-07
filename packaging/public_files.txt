@@ -69,6 +69,7 @@ src/hyperlab/sharing.py
 src/hyperlab/spectroscopy/__init__.py
 src/hyperlab/spectroscopy/cli.py
 src/hyperlab/spectroscopy/diagnostics.py
+src/hyperlab/spectroscopy/external_bands.py
 src/hyperlab/spectroscopy/example.py
 src/hyperlab/spectroscopy/reflectance.py
 src/hyperlab/spectroscopy/response.py
@@ -102,6 +103,7 @@ tests/test_color_frame.py
 tests/test_compact_analysis_ui.py
 tests/test_controller_diagnostics.py
 tests/test_corrected_reflectance.py
+tests/test_external_bands.py
 tests/test_display_limits_preserve_selection.py
 tests/test_experiment_metadata.py
 tests/test_experiments.py

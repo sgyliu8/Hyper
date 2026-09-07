@@ -9,6 +9,15 @@ def configure_parser(parser):
     commands = parser.add_subparsers(dest='spectroscopy_command', required=True)
     demo = commands.add_parser('demo', help='Run a clearly synthetic scan-to-reflectance example without hardware')
     demo.add_argument('--output', type=Path, required=True)
+    for name, help_text in (('external-bands','Calculate measured finite-band reference ratios from a saved manifest'),
+                            ('pack-bands','Import confirmed manual band frames; preserve actual exposure identities')):
+        command = commands.add_parser(name,help=help_text)
+        command.add_argument('--manifest',type=Path,required=True)
+        command.add_argument('--output',type=Path,required=True)
+    select = commands.add_parser('select-steps',help='Select explicit visits in response-state order; never average repeats')
+    select.add_argument('scan',type=Path)
+    select.add_argument('--steps',nargs='+',required=True)
+    select.add_argument('--output',type=Path,required=True)
     inspect = commands.add_parser('inspect-response', help='Validate and summarize a response bundle')
     inspect.add_argument('path', type=Path)
     characterize = commands.add_parser('characterize', help='Fit measured Y = A H using known finite-band inputs')
@@ -37,6 +46,13 @@ def execute(args):
     from .response import load_response, save_response, characterize_response, reconstruct_scan
     from hyperlab.io import load_cube
     operation = args.spectroscopy_command
+    if operation == 'select-steps':
+        from .scan import select_scan_steps
+        with load_cube(args.scan) as cube:
+            return select_scan_steps(cube,args.steps,args.output)
+    if operation in ('external-bands','pack-bands'):
+        from .external_bands import process_external_bands,pack_band_observation
+        return (process_external_bands if operation=='external-bands' else pack_band_observation)(args.manifest,args.output)
     if operation == 'demo':
         from .example import generate_example
         return generate_example(args.output)
@@ -71,7 +87,7 @@ def execute(args):
     if operation == 'roi':
         from hyperlab.analysis import roi_statistics, export_roi_csv
         with load_cube(args.cube) as cube:
-            if cube.wavelengths is None:
+            if cube.wavelengths is None and cube.metadata['data_level'] != 'band_ratio_cube':
                 raise ValueError('Spectral ROI export requires actual wavelengths; raw imaging remains available in Analysis')
             result = roi_statistics(cube, args.roi, policy='quantitative', support=args.support)
             export_roi_csv(result, args.output)

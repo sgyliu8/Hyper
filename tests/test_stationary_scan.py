@@ -144,6 +144,62 @@ def test_no_controller_cannot_start_or_invent_wavelengths(tmp_path):
             validate_recipe(dict(RECIPE, **updates))
 
 
+def test_repeated_physical_state_retains_steps_and_explicit_row_selection(tmp_path):
+    from hyperlab.spectroscopy.scan import select_scan_steps
+    recipe = dict(id='SYNTHETIC-ABA',gain=0,gain_units='dB',steps=[
+        dict(step_id=step,state_id=state,role='sample',exposure_us=10000,expected_source_band=None)
+        for step,state in [('A1','A'),('B1','B'),('A2','A')]])
+    result=stationary_scan(Adapter(),recipe,tmp_path/'original')
+    with load_cube(result['raw_path']) as cube:
+        cube.valid_mask=np.ones(cube.shape,bool);cube.valid_mask[0,0,2]=False
+        assert cube.metadata['scan_states']==['A','B','A']
+        assert [r['step_id'] for r in cube.metadata['frames']]==['A1','B1','A2']
+        selected=select_scan_steps(cube,['B1','A2'],tmp_path/'selected')
+        with pytest.raises(ValueError,match='one selected observation'):
+            select_scan_steps(cube,['A1','A2'],tmp_path/'invalid')
+        assert cube.shape[2]==3
+    with load_cube(selected['raw_path']) as cube:
+        assert cube.metadata['scan_states']==['B','A']
+        np.testing.assert_array_equal(cube.data,np.broadcast_to([2,3],(2,3,2)))
+        assert cube.metadata['step_selection']['source_indices']==[1,2]
+        assert not cube.valid_mask[0,0,1] and cube.valid_mask[0,0,0]
+
+
+def test_repeated_partial_step_vectors_match_durable_prefix(tmp_path):
+    recipe=dict(RECIPE,steps=[dict(step_id=f'visit-{i}',state_id=state,role='sample',
+        exposure_us=exposure,expected_source_band=None) for i,(state,exposure) in enumerate(zip(RECIPE['states'],RECIPE['exposure_us']))])
+    result=stationary_scan(Adapter('stale'),recipe,tmp_path/'partial-steps')
+    with load_cube(result['raw_path']) as cube:
+        assert len(cube.metadata['scan_steps'])==len(cube.metadata['exposure_s'])==cube.shape[2]==1
+
+
+def test_live_contract_accepts_engineer_evidence_and_distinguishes_transport(tmp_path):
+    import hashlib
+    class RecordedContractAdapter(Adapter):
+        def preflight(self,recipe):
+            return dict(super().preflight(recipe),source='LIVE',verified=self.verified,transport=self.transport,control_evidence=self.evidence)
+    adapter=RecordedContractAdapter()
+    adapter.verified=False
+    adapter.transport={'present':False};adapter.evidence={}
+    with pytest.raises(ValueError,match='not detected'):scan_preflight(adapter,RECIPE,tmp_path/'none')
+    adapter.transport={'present':True,'driver_ready':False}
+    with pytest.raises(ValueError,match='driver'):scan_preflight(adapter,RECIPE,tmp_path/'driver')
+    adapter.transport['driver_ready']=True
+    with pytest.raises(ValueError,match='Unverified command'):scan_preflight(adapter,RECIPE,tmp_path/'semantics')
+    adapter.verified=True
+    with pytest.raises(ValueError,match='recorded protocol'):scan_preflight(adapter,RECIPE,tmp_path/'missing-record')
+    contract=dict(identity='SYNTHETIC adapter',kind='engineer_characterized',**{key:'SYNTHETIC test evidence only' for key in
+        ('transport_line_behavior','commands_and_ranges','readback','settling','exposure_freshness','cleanup','observations')})
+    path=tmp_path/'fixture-contract.json';path.write_text(json.dumps(contract))
+    adapter.evidence=dict(path=str(path),sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+    assert scan_preflight(adapter,RECIPE,tmp_path/'eligible')['evidence_check'].startswith('Recorded contract')
+    # Host-only ACK from the boundary fixture must still be refused as live proof.
+    result=stationary_scan(adapter,RECIPE,tmp_path/'host-token')
+    assert 'host operation token' in result['error'] and result['captured']==0
+    path.write_text('{}')
+    with pytest.raises(ValueError,match='matching hash'):scan_preflight(adapter,RECIPE,tmp_path/'changed')
+
+
 def test_preflight_grid_is_pinned_before_adapter_configuration(tmp_path):
     class MutableGridAdapter(Adapter):
         def preflight(self, recipe):

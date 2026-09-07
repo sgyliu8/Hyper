@@ -1,5 +1,18 @@
 # Changes
 
+## 0.6.1.dev2 — independent finite-band measurements
+
+- Separate unique scan steps from repeatable physical states; retain A–B–A visits
+  and select response rows explicitly without averaging the original observations.
+- Accept recorded engineer-characterized control contracts and distinguish
+  endpoint absence, driver failure and unsupported command semantics.
+- Add matched raw-background finite-band reference ratios, manual-frame imports,
+  repeat/check diagnostics and source-band ROI exports without inventing native A.
+- Show source peaks/support as discrete English plots; keep detector wavelengths
+  and unavailable wavelength-specific inference distinct. Preserve upstream masks.
+- These are software capabilities; a connected sensor alone does not supply
+  characterized spectral inputs or independently validated reflectance.
+
 ## 0.6.1.dev1 — stationary spectroscopy tools
 
 - Add state-by-state optical scan orchestration for an explicitly supplied,

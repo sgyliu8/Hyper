@@ -1122,6 +1122,9 @@ class Workbench(W.QMainWindow):
             self.axis_label.setText(f'Time frame T={self.band.value()} / {self.sequence.frame_count - 1} · time axis, not spectral')
         elif is_color:
             self.axis_label.setText(' / '.join(self.cube.metadata['channel_labels']) + ' channels · not spectral')
+        elif self.cube.metadata.get('spectral_bands'):
+            source_band = self.cube.metadata['spectral_bands'][band]
+            self.axis_label.setText(f"{self.cube.metadata['measurement_step_ids'][band]} · Source peak {source_band['source_peak_nm']:g} nm · support {source_band['support_nm']} nm · {self.cube.metadata['units']}")
         elif self.cube.wavelengths is not None:
             self.axis_label.setText(f"λ[{band}] = {self.cube.wavelengths[band]:g} {self.cube.metadata.get('wavelength_units') or 'unknown unit'} · {self.cube.metadata.get('wavelength_evidence', 'declared')}")
         else:
@@ -1524,12 +1527,18 @@ class Workbench(W.QMainWindow):
         for item in spec.series:
             pen = pg.mkPen(item['color'], width=2.5,
                            style=QtCore.Qt.PenStyle.SolidLine if item.get('style','-') == '-' else QtCore.Qt.PenStyle.DashLine)
-            categorical_points = bool(spec.categories and spec.metadata.get('categorical_style') == 'points')
+            categorical_points = bool(spec.categories and spec.metadata.get('categorical_style') == 'points') or spec.metadata.get('discrete_bands',False)
             curve = self.chart.plot(item['x'], item['y'], pen=None if categorical_points else pen, name=item['name'], connect='finite',
-                                    symbol='o' if spec.categories or len(item['x'])<5 else None,
+                                    symbol='o' if categorical_points or spec.categories or len(item['x'])<5 else None,
                                     symbolSize=8,symbolBrush=item['color'],symbolPen='w',antialias=True)
             curve.setZValue(2)
             self.curves.append(curve)
+            if item.get('x_support') is not None:
+                support = np.asarray(item['x_support'])
+                error = pg.ErrorBarItem(x=np.asarray(item['x']),y=np.asarray(item['y']),
+                    left=np.asarray(item['x'])-support[:,0],right=support[:,1]-np.asarray(item['x']),
+                    pen=pg.mkPen(item['color'],width=1.5))
+                self.chart.addItem(error); self.error_bars.append(error)
             if item.get('sd') is not None:
                 if len(item['x']) == 1 or categorical_points:
                     error = pg.ErrorBarItem(x=np.asarray(item['x']),y=np.asarray(item['y']),
@@ -1588,8 +1597,9 @@ class Workbench(W.QMainWindow):
                 y = item['distribution']['y'] if distributions else item['normalized']
                 pen = pg.mkPen(item['color'],width=2.5,
                     style=QtCore.Qt.PenStyle.SolidLine if item.get('style','-')=='-' else QtCore.Qt.PenStyle.DashLine)
-                self.shape_curves.append(self.shape_chart.plot(x,y,pen=pen,name=item['name'],connect='finite',
-                    antialias=True,symbol='o' if len(x)<5 else None,symbolSize=7,symbolBrush=item['color']))
+                discrete = spec.metadata.get('discrete_bands',False) and not distributions
+                self.shape_curves.append(self.shape_chart.plot(x,y,pen=None if discrete else pen,name=item['name'],connect='finite',
+                    antialias=True,symbol='o' if discrete or len(x)<5 else None,symbolSize=7,symbolBrush=item['color']))
             self.shape_chart.enableAutoRange()
         if spec.metadata.get('roi_comparison') and not was_comparison:
             self.chart_row.setSizes([1,1])
@@ -1889,6 +1899,8 @@ class Workbench(W.QMainWindow):
                 labels = result.get('channel_labels')
                 label = labels[i] if labels else (f"{result['wavelengths'][i]:g} {result['wavelength_units']}"
                     if result.get('wavelengths') is not None else str(i))
+                if result.get('spectral_bands'):
+                    label = f"{result['measurement_step_ids'][i]} · source peak {result['spectral_bands'][i]['source_peak_nm']:g} nm"
                 rows.append([name, label, *[result.get(key, np.full(len(result['mean']), np.nan))[i]
                     for key in ('mean','std','median','q25','q75','iqr','mad','min','max')], result['count'][i],
                     *[result['counts'][key][i] for key in ('valid','total','saturated')], result.get('used_fraction', [np.nan]*len(result['mean']))[i]])
@@ -2044,16 +2056,22 @@ class Workbench(W.QMainWindow):
             elif item.get('drawstyle') == 'steps-mid' and item.get('histogram'):
                 x = np.repeat(item['histogram']['bin_edges'],2)[1:-1]
                 y = np.repeat(item['histogram']['counts'],2)
+            points_only = (spec.categories and spec.metadata.get('categorical_style') == 'points') or spec.metadata.get('discrete_bands',False)
             if item.get('sd') is not None:
                 sd = np.asarray(item['sd'])
-                lower = chart.plot(x,y-sd,pen=None,connect='finite')
-                upper = chart.plot(x,y+sd,pen=None,connect='finite')
-                shade = pg.mkColor(item['color']); shade.setAlpha(43)
-                chart.addItem(pg.FillBetweenItem(lower,upper,brush=shade))
-            points_only = spec.categories and spec.metadata.get('categorical_style') == 'points'
+                if points_only:
+                    chart.addItem(pg.ErrorBarItem(x=x,y=y,top=sd,bottom=sd,pen=pg.mkPen(item['color'],width=1.5)))
+                else:
+                    lower = chart.plot(x,y-sd,pen=None,connect='finite')
+                    upper = chart.plot(x,y+sd,pen=None,connect='finite')
+                    shade = pg.mkColor(item['color']); shade.setAlpha(43)
+                    chart.addItem(pg.FillBetweenItem(lower,upper,brush=shade))
+            if item.get('x_support') is not None:
+                support = np.asarray(item['x_support'])
+                chart.addItem(pg.ErrorBarItem(x=x,y=y,left=x-support[:,0],right=support[:,1]-x,pen=pg.mkPen(item['color'],width=1.5)))
             chart.plot(x,y,pen=None if points_only else pg.mkPen(item['color'],width=2.5,
                 style=QtCore.Qt.PenStyle.DashLine if item.get('style') == '--' else QtCore.Qt.PenStyle.SolidLine),
-                name=item['name'],connect='finite',symbol='o' if spec.categories else None,symbolSize=7,
+                name=item['name'],connect='finite',symbol='o' if points_only or spec.categories else None,symbolSize=7,
                 symbolBrush=item['color'],symbolPen='w')
         if brush and spec.series:
             values = np.concatenate([np.asarray(item.get('ecdf',{}).get('values',item['x'])) for item in spec.series])

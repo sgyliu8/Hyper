@@ -58,6 +58,11 @@ class Cube:
         }.items():
             self.metadata.setdefault(key, default)
         wave = self.metadata["wavelengths"]
+        external_band = self.metadata['data_level'] == 'band_ratio_cube'
+        if external_band:
+            bands = self.metadata.get('spectral_bands')
+            if wave is not None or not isinstance(bands, list) or len(bands) != self.data.shape[2]:
+                raise ValueError('External band ratios retain source bands separately from a detector wavelength axis')
         _normalize_units(self.metadata)
         channels = self.metadata.get("channel_labels")
         if channels is not None:
@@ -90,7 +95,7 @@ class Cube:
                 raise ValueError("valid_mask must have HW or HWK shape")
         plane = self.metadata["data_level"] in {"raw_frame", "derived_frame"} and self.data.shape[2] == 1
         self.metadata.update(shape=list(self.data.shape), axis_order="HWK",
-                             axis_names=["y", "x", "color_channel" if channels is not None else "wavelength" if wave is not None
+                             axis_names=["y", "x", "illumination_band" if external_band else "color_channel" if channels is not None else "wavelength" if wave is not None
                                          else "sensor_plane" if plane else "state"],
                              dtype=str(self.data.dtype), estimated_bytes=int(self.data.nbytes))
 
@@ -219,7 +224,7 @@ def load_cube(path, axis_order=None, *, dataset=None, binary_path=None):
             mask = mask[:, :, :count]
         if meta.get("wavelengths") is not None:
             meta["wavelengths"] = meta["wavelengths"][:count]
-        for field in ("band_validity", "fwhm", "scan_states", "frame_ids", "timestamps"):
+        for field in ("band_validity", "fwhm", "scan_states", "scan_steps", "frame_ids", "timestamps", "exposure", "exposure_us", "exposure_s"):
             if isinstance(meta.get(field), list):
                 meta[field] = meta[field][:count]
     _record_loaded_source(meta, path)

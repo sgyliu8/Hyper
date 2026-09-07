@@ -91,6 +91,10 @@ def test_finite_band_fit_and_withheld_are_not_delta_sources():
         region_map=bundle['region_map'], validation_H=np.eye(2), validation_Y=A)
     np.testing.assert_allclose(checked['metadata']['characterization']['validation_residuals'], 0, atol=1e-14)
     assert checked['metadata']['characterization']['validation_status'] == 'NUMERIC_RESIDUAL_ONLY'
+    repeated_brightness=np.array([[1.,2.,3.],[2.,4.,6.]])
+    with pytest.raises(ValueError,match='H rank 1'):
+        characterize_response(A @ repeated_brightness,repeated_brightness,wavelengths=[500,600],
+            metadata=bundle['metadata'],region_map=bundle['region_map'])
 
 
 @pytest.mark.parametrize('normalized', [False, True])

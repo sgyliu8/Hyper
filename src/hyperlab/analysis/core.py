@@ -179,6 +179,8 @@ def roi_statistics(cube, rect, *, policy="diagnostic", bands=None, support="per_
             "policy": policy, "saturation_value": saturation, "rect": region['bbox'],
             "wavelengths": cube.wavelengths, "axis_label": _axis(cube),
             "channel_labels": cube.metadata.get("channel_labels"),
+            "spectral_bands": deepcopy(cube.metadata.get('spectral_bands')),
+            "measurement_step_ids": deepcopy(cube.metadata.get('measurement_step_ids')),
             "wavelength_units": cube.metadata["wavelength_units"], "units": cube.metadata["units"],
             "metadata": {"std_ddof": 0, "std_interpretation": "spatial SD; not temporal noise",
                 "support": support, "feature_indices": features, "requested_features": [int(i) for i in requested],
@@ -240,10 +242,14 @@ def export_roi_csv(stats, path, wavelengths=None):
         writer.writerow(["index", "wavelength", "wavelength_units", "mean", "std_ddof0", "valid_count", "signal_units",
                          "axis_label", "channel_label", "policy", "total_count", "saturated_count", "ignored_count", "invalid_count",
                          "median", "q25", "q75", "iqr", "mad_unscaled", "min", "max", "policy_valid_count",
-                         "support_excluded_count", "selection_excluded_count", "policy_valid_fraction", "used_fraction", "support", "geometry_excluded_count"])
+                         "support_excluded_count", "selection_excluded_count", "policy_valid_fraction", "used_fraction", "support", "geometry_excluded_count"] +
+                         (["measurement_step_id", "source_band_id", "source_peak_nm", "source_support_low_nm", "source_support_high_nm", "source_fwhm_nm"]
+                          if stats.get('spectral_bands') else []))
         for i, (mean, std, count) in enumerate(zip(stats["mean"], stats["std"], stats["count"])):
             labels = stats.get("channel_labels")
             quality = stats.get("counts", {})
+            band = (stats.get('spectral_bands') or [{}]*len(stats['mean']))[i]
+            support = band.get('support_nm',['',''])
             writer.writerow([i, "" if wave is None else wave[i], stats.get("wavelength_units") or "",
                 mean, std, int(count), stats.get("units", "unknown"), stats.get("axis_label", "index"),
                 labels[i] if labels else "", stats.get("policy", "diagnostic"),
@@ -253,7 +259,9 @@ def export_roi_csv(stats, path, wavelengths=None):
                 *[stats[key][i] if key in stats else "" for key in ("support_excluded_count", "selection_excluded_count",
                                                                 "valid_fraction", "used_fraction")],
                 stats.get("support", "per_band"),
-                stats["geometry_excluded_count"][i] if "geometry_excluded_count" in stats else 0])
+                stats["geometry_excluded_count"][i] if "geometry_excluded_count" in stats else 0] +
+                ([stats['measurement_step_ids'][i],band['band_id'],band['source_peak_nm'],*support,band['source_fwhm_nm']]
+                 if stats.get('spectral_bands') else []))
     from hyperlab.io.cube import _dumps
     sidecar.write_text(_dumps({"schema_version": 2, "rect": stats["rect"],
         "count_columns": {"valid_count": "actual samples used by mean, SD and robust statistics",

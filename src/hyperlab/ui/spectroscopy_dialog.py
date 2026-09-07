@@ -18,6 +18,7 @@ class SpectroscopyDialog(W.QDialog):
         self.resize(800, 630)
         self.setModal(False)
         self._busy = False
+        self._external_summary = 'Not checked'
         self._progress = queue.Queue(maxsize=1)
         self.fields = {}
         layout = W.QVBoxLayout(self)
@@ -28,6 +29,7 @@ class SpectroscopyDialog(W.QDialog):
         self.input_kind = W.QComboBox()
         self.input_kind.addItem('Raw optical states → reconstructed signal → reference ratio', 'raw')
         self.input_kind.addItem('Already reconstructed linear signals → reference ratio', 'signal')
+        self.input_kind.addItem('External illumination bands → finite-band reference ratio', 'external')
         self.input_kind.currentIndexChanged.connect(self._mode)
         layout.addWidget(self.input_kind)
         self.form = W.QFormLayout()
@@ -35,7 +37,7 @@ class SpectroscopyDialog(W.QDialog):
         for key, label in [('response', 'Response bundle'), ('sample', 'Sample scan / signal'),
                            ('dark_sample', 'Sample dark scan'), ('white', 'White scan / signal'),
                            ('dark_white', 'White dark scan'), ('reference', 'Reference factors CSV'),
-                           ('recipe', 'Acquisition recipe')]:
+                           ('recipe', 'Acquisition recipe'), ('external', 'Band measurement manifest')]:
             row = W.QWidget()
             box = W.QHBoxLayout(row); box.setContentsMargins(0,0,0,0)
             field = W.QLineEdit(); field.setObjectName('spectroscopy_' + key)
@@ -73,6 +75,14 @@ class SpectroscopyDialog(W.QDialog):
         self.details = W.QPlainTextEdit(); self.details.setReadOnly(True)
         self.details.setMaximumHeight(145); self.details.setPlaceholderText('Input checks and processing details')
         layout.addWidget(self.details)
+        self.band_table = W.QTableWidget(0,6)
+        self.band_table.setHorizontalHeaderLabels(['Step','Source peak (nm)','Support (nm)','White mean (DN)','Invalid ratio','ROI mean'])
+        self.band_table.horizontalHeader().setSectionResizeMode(W.QHeaderView.ResizeMode.Stretch)
+        self.band_table.setEditTriggers(W.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.band_table.setMaximumHeight(165); self.band_table.hide(); layout.addWidget(self.band_table)
+        for field in self.fields.values():
+            field.textChanged.connect(self._inputs_changed)
+        self.minimum.valueChanged.connect(self._inputs_changed)
         self.timer = QtCore.QTimer(self); self.timer.timeout.connect(self._poll); self.timer.start(150)
         if workbench.cube is not None:
             source = workbench.cube.metadata.get('source_file')
@@ -83,18 +93,19 @@ class SpectroscopyDialog(W.QDialog):
         if workbench.response_path:
             self.fields['response'].setText(str(workbench.response_path))
         setup = workbench.config.get('ui', {}).get('spectroscopy_setup', {})
-        for key in ('response', 'dark_sample', 'white', 'dark_white', 'reference', 'recipe'):
+        for key in ('response', 'dark_sample', 'white', 'dark_white', 'reference', 'recipe', 'external'):
             if setup.get(key):
                 self.fields[key].setText(setup[key])
-        if setup.get('mode') == 'signal':
-            self.input_kind.setCurrentIndex(1)
+        index = self.input_kind.findData(setup.get('mode'))
+        if index >= 0:
+            self.input_kind.setCurrentIndex(index)
         if setup.get('minimum_denominator') is not None:
             self.minimum.setValue(setup['minimum_denominator'])
         self._mode()
 
     def setup_values(self):
         return {**{key: self.fields[key].text().strip() for key in
-                   ('response', 'dark_sample', 'white', 'dark_white', 'reference', 'recipe')},
+                   ('response', 'dark_sample', 'white', 'dark_white', 'reference', 'recipe', 'external')},
                 'mode': self.input_kind.currentData(), 'minimum_denominator': self.minimum.value()}
 
     def _response_changed(self):
@@ -103,7 +114,7 @@ class SpectroscopyDialog(W.QDialog):
         self.workbench.response_summary = None
 
     def _browse(self, key):
-        filters = 'Response / recipe JSON (*.json)' if key in ('response', 'recipe') else (
+        filters = 'Measurement / response JSON (*.json)' if key in ('response', 'recipe', 'external') else (
             'Reference CSV (*.csv)' if key == 'reference' else 'Cube files (*.npy *.npz *.hdr)')
         name, _ = W.QFileDialog.getOpenFileName(self, 'Select ' + key.replace('_', ' '), str(self.workbench.workspace), filters)
         if name:
@@ -111,23 +122,40 @@ class SpectroscopyDialog(W.QDialog):
 
     def _mode(self):
         raw = self.input_kind.currentData() == 'raw'
-        for key in ('response', 'dark_sample', 'dark_white', 'recipe'):
-            self.form.setRowVisible(self.fields[key].parentWidget(), raw)
+        external = self.input_kind.currentData() == 'external'
+        for key in self.fields:
+            visible = external if key == 'external' else (raw if key in ('response','dark_sample','dark_white','recipe') else not external)
+            self.form.setRowVisible(self.fields[key].parentWidget(), visible)
+        self.form.setRowVisible(self.minimum,not external)
         self.acquire_button.setVisible(raw)
+        self.note.setText('Use the saved band manifest with matched sample, white and background observations. '
+            'Its minimum white DN, measured source profiles and reference weighting are checked. Manual placement stays labelled manual.' if external else
+            'Use matching spatial grids, instrument conditions and reference factors. Raw optical states require a response and matched blocked-light dark scans. '
+            'Spatial SD describes pixel variation, not measurement uncertainty.')
+        self._inputs_changed()
+        self._poll()
+
+    def _inputs_changed(self):
+        self._external_summary = 'Not checked'
+        self.band_table.hide()
+        self.details.clear()
+        self.status.setText('Choose inputs, then check or process. Results are saved as new products.')
 
     def _poll(self):
         wb = self.workbench
         sensor = wb.session.state if wb.session else 'disconnected'
         selector = 'Configured adapter; check its current preflight' if wb.spectral_adapter is not None else 'Not configured'
         response = wb.response_summary or 'Not checked'
-        self.capabilities.setText(f'Sensor: {sensor}   |   Spectral selector: {selector}\nResponse: {response}')
+        self.capabilities.setText(f'Sensor: {sensor}   |   Acquisition: saved external-band observations\nSource bands / reference: {self._external_summary}'
+            if self.input_kind.currentData() == 'external' else f'Sensor: {sensor}   |   Spectral selector: {selector}\nResponse: {response}')
         if wb.spectral_adapter is None:
-            self.acquire_button.setToolTip('Install the matching HinaLea API, controller documentation and device recipe. The dependency pack alone does not provide a selector API.')
+            self.acquire_button.setToolTip('Identify and characterize a physical selector, or use measured external illumination bands. Sensor connection alone does not establish spectral control.')
         ready = not self._busy and not wb.task_busy and not wb.closing
         self.inspect_button.setEnabled(ready); self.run_button.setEnabled(ready)
         self.acquire_button.setEnabled(ready and wb.spectral_adapter is not None)
         self.stop_button.setEnabled(self._busy)
         self.input_kind.setEnabled(ready)
+        self.minimum.setEnabled(ready)
         for field in self.fields.values():
             field.setEnabled(ready)
             for button in field.parentWidget().findChildren(W.QPushButton):
@@ -142,6 +170,10 @@ class SpectroscopyDialog(W.QDialog):
 
     def _values(self, *, acquiring=False):
         values = {key: field.text().strip() or None for key, field in self.fields.items()}
+        if self.input_kind.currentData() == 'external':
+            if not values['external']:
+                raise ValueError('Choose the external-band measurement manifest')
+            return {'external':values['external']}
         if (not acquiring and not values['sample']) or not values['white']:
             raise ValueError('Choose sample and white files')
         if self.input_kind.currentData() == 'raw' and any(not values[key] for key in ('response', 'dark_sample', 'dark_white')):
@@ -190,6 +222,9 @@ class SpectroscopyDialog(W.QDialog):
             self.status.setText(str(error)); return
         minimum = self.minimum.value()
         def inspect():
+            if values.get('external') and len(values)==1:
+                from hyperlab.spectroscopy.external_bands import process_external_bands
+                return process_external_bands(values['external'], self.workbench.workspace, inspect_only=True)
             from contextlib import ExitStack
             from hyperlab.spectroscopy.response import load_response, validate_reconstruction
             from hyperlab.spectroscopy.reflectance import validate_reflectance_corrected
@@ -219,6 +254,8 @@ class SpectroscopyDialog(W.QDialog):
                         reference_reflectance=factors, reference_source=values['reference'])
                 return result
         def checked(result):
+            if values.get('external') and len(values)==1:
+                self._external_summary = f"{len(result['source_bands'])} observations · recorded compatibility checked"
             self.details.setPlainText(json.dumps(result, indent=2, default=str))
             self.status.setText('Inputs are incompatible; see the mismatched fields below.' if result.get('allowed') is False
                                 else 'Raw reconstruction checks passed. Reference compatibility is checked after reconstruction.' if 'response' in result
@@ -236,15 +273,32 @@ class SpectroscopyDialog(W.QDialog):
         directory = self.workbench.workspace/'experiments'/('spectroscopy_' + stamp())
         minimum = self.minimum.value()
         def process():
+            if values.get('external') and len(values)==1:
+                from hyperlab.spectroscopy.external_bands import process_external_bands
+                return process_external_bands(values['external'],directory,stop=self.workbench.spectral_stop,progress=self._notify_progress)
             from hyperlab.spectroscopy.workflow import process_spectroscopy
             return process_spectroscopy(values['sample'], values['white'], directory,
                 response_path=values['response'], dark_sample_path=values['dark_sample'], dark_white_path=values['dark_white'],
                 reference_csv=values['reference'], minimum_denominator=minimum,
                 stop=self.workbench.spectral_stop, progress=self._notify_progress)
-        self._run(process, self._completed, 'Reconstructing and calculating pixelwise reference ratios…')
+        self._run(process, self._completed, 'Calculating finite-band pixelwise reference ratios…' if values.get('external') and len(values)==1 else
+                  'Reconstructing and calculating pixelwise reference ratios…')
 
     def _completed(self, result):
-        self.details.setPlainText(json.dumps(result, indent=2, default=str))
+        diagnostics = result.get('diagnostics')
+        self.band_table.setVisible(bool(diagnostics))
+        if diagnostics:
+            self._external_summary = f"{len(diagnostics['bands'])} observations · product saved; see diagnostics"
+            self.band_table.setRowCount(len(diagnostics['bands']))
+            roi = diagnostics.get('roi',{}).get('mean',[])
+            for i,band in enumerate(diagnostics['bands']):
+                values = [band['step_id'],band['source_peak_nm'],str(band['source_support_nm']),band['white_mean_dn'],
+                          f"{100*band['invalid_ratio_fraction']:.1f}%",roi[i] if i<len(roi) else 'Select ROI']
+                for j,value in enumerate(values):
+                    self.band_table.setItem(i,j,W.QTableWidgetItem(f'{value:.5g}' if isinstance(value,float) else str(value)))
+            self.details.setPlainText(json.dumps({k:v for k,v in diagnostics.items() if k!='bands'},indent=2,default=str))
+        else:
+            self.details.setPlainText(json.dumps(result, indent=2, default=str))
         wb = self.workbench
         if result.get('completed') and result.get('product') and not wb.closing:
             wb.follow_camera = False
@@ -258,7 +312,9 @@ class SpectroscopyDialog(W.QDialog):
             wb.set_cube(cube)
             wb.add_recent(Path(result['product']))
             wb.tabs.setCurrentIndex(1)
-            self.status.setText('Product saved. Select pixels or ROIs in Analysis to read the actual wavelength spectrum.')
+            origin = 'SYNTHETIC' if cube.metadata.get('synthetic') else cube.metadata['acquisition_source']
+            self.status.setText(f'Product saved ({origin}). Select pixels or ROIs in Analysis to read the finite-band response.' if diagnostics else
+                f'Product saved ({origin}). Select pixels or ROIs in Analysis to read the wavelength spectrum.')
         else:
             self.status.setText('Partial acquisition retained. The previous complete result remains available.')
 

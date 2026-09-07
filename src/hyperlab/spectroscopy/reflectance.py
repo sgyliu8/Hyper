@@ -204,6 +204,26 @@ def reflectance_corrected(sample, white, *, reference_reflectance=None, referenc
         quality_counts={key: 0 for key in ('processed_values', 'input_invalid', 'low_denominator', 'nonfinite_result', 'valid', 'negative', 'above_one')},
         valid_count_by_band=[0] * k)
     _dumps(meta)
+    return _calculate_ratio(sample, white, meta, reference, output_path=output_path,
+        minimum_denominator=minimum_denominator, chunk_pixels=chunk_pixels, stop=stop, progress=progress)
+
+
+def _calculate_ratio(sample, white, meta, reference, *, output_path, minimum_denominator,
+                     chunk_pixels, stop, progress, backgrounds=()):
+    """Shared bounded numeric engine after route-specific applicability checks.
+
+    Optional backgrounds are raw matched on/off inputs. Their validity is checked
+    before subtraction. Without them, inputs already own all raw corrections.
+    """
+    k = sample.shape[2]
+    dtype = np.dtype(meta['calculation_dtype'])
+    fingerprints = meta['source_fingerprints']
+    sources = [('sample', sample), ('white', white)]
+    sources += list(zip(('background_sample', 'background_white'), backgrounds))
+    def cancelled():
+        if stop is not None and stop.is_set():
+            raise InterruptedError('Reference ratio cancelled; any saved prefix remains partial')
+    cancelled()
     checkpoint = None
     output = validity = None
     if output_path is not None:
@@ -237,13 +257,32 @@ def reflectance_corrected(sample, white, *, reference_reflectance=None, referenc
         flat_out, flat_valid = output.reshape(-1, k), validity.reshape(-1, k)
         # Validity was propagated in the raw domain. Reconstructed values must
         # not be reinterpreted using any inherited ADC/ignore-value thresholds.
-        numeric = [Cube(c.data, {'band_validity': c.metadata.get('band_validity')}, c.valid_mask)
-                   for c in (sample, white)]
+        numeric = ([sample, white] if backgrounds else
+                   [Cube(c.data, {'band_validity': c.metadata.get('band_validity')}, c.valid_mask)
+                    for c in (sample, white)])
+        policy = 'quantitative' if backgrounds else 'diagnostic'
         persist()
-        for indices, selection, numerator, good in _blocks(numeric[0], chunk_pixels):
+        for indices, selection, numerator, good in _blocks(numeric[0], chunk_pixels, policy):
             cancelled()
             denominator = _floating(white.data[selection], dtype=dtype)
-            good &= _valid(numeric[1], white.data[selection], selection)
+            white_good = _valid(numeric[1], white.data[selection], selection, policy)
+            if backgrounds:
+                numerator = _floating(numerator, dtype=dtype).copy()
+                numerator -= _floating(backgrounds[0].data[selection], dtype=dtype)
+                denominator = denominator - _floating(backgrounds[1].data[selection], dtype=dtype)
+                good &= _valid(backgrounds[0], backgrounds[0].data[selection], selection, policy)
+                white_good &= _valid(backgrounds[1], backgrounds[1].data[selection], selection, policy)
+                good &= np.isfinite(numerator)
+                white_good &= np.isfinite(denominator)
+                bounds = meta.get('qualified_raw_dn_range')
+                if bounds is not None:
+                    for source, validity_part in ((sample,good),(backgrounds[0],good),(white,white_good),(backgrounds[1],white_good)):
+                        raw = source.data[selection]
+                        validity_part &= (raw >= bounds[0]) & (raw <= bounds[1])
+                summary = meta['white_signal']
+                summary['sum_dn'] = (np.asarray(summary['sum_dn']) + np.where(white_good, denominator, 0).sum(axis=0)).tolist()
+                summary['count'] = (np.asarray(summary['count']) + white_good.sum(axis=0)).tolist()
+            good &= white_good
             counts = meta['quality_counts']
             counts['processed_values'] += int(good.size)
             counts['input_invalid'] += int(np.count_nonzero(~good))
@@ -268,7 +307,7 @@ def reflectance_corrected(sample, white, *, reference_reflectance=None, referenc
             if progress:
                 progress(deepcopy({key: meta[key] for key in ('phase', 'completed_pixels', 'total_pixels', 'quality_counts')}))
         cancelled()
-        if any(source_fingerprint(cube) != fingerprints[role] for role, cube in (('sample', sample), ('white', white))):
+        if any(source_fingerprint(cube) != fingerprints[role] for role, cube in sources):
             validity[:] = False
             meta['quality_counts']['source_invalidated'] = meta['quality_counts']['valid']
             meta['invalidated_quality_counts'] = {key: meta['quality_counts'][key] for key in ('negative', 'above_one')}

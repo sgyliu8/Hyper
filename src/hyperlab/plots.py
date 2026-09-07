@@ -117,7 +117,8 @@ def roi_plot(results, names, colors, *, source, normalized=False, spatial_sd=Tru
     labels = first.get('channel_labels')
     wave = first.get('wavelengths')
     units = first.get('wavelength_units')
-    single_plane = len(first['mean']) == 1
+    external_bands = first.get('spectral_bands')
+    single_plane = len(first['mean']) == 1 and not external_bands
     if single_plane:
         normalized = False
     x = np.arange(len(first['mean'])) if wave is None or not units else np.asarray(wave)
@@ -137,6 +138,13 @@ def roi_plot(results, names, colors, *, source, normalized=False, spatial_sd=Tru
                     caption='Mean ± 1 spatial SD when enabled; pixel dispersion, not a confidence interval.')
     if summary == 'median':
         spec.caption = 'Median with Q25–Q75 spatial interval when enabled; pixel dispersion, not a confidence interval.'
+    if external_bands:
+        x = np.asarray([band['source_peak_nm'] for band in external_bands])
+        spec.xlabel = 'Illumination peak (nm); detector bandpass uncharacterized'
+        spec.title = 'ROI finite-band reference response'
+        spec.metadata.update(discrete_bands=True, source_bands=deepcopy(external_bands),
+                             measurement_step_ids=first.get('measurement_step_ids'))
+        spec.caption += ' Horizontal bars: source support, not wavelength uncertainty. Repeated observations are retained.'
     spec.caption += (' Common pixels across enabled features.' if first.get('support') == 'common'
                      else ' Per-feature valid pixels.')
     if single_plane:
@@ -155,6 +163,8 @@ def roi_plot(results, names, colors, *, source, normalized=False, spatial_sd=Tru
                  'saturation_value':result.get('saturation_value'),
                  'saturation_units':result.get('units', 'unknown'),
                  'rect': result['rect'], 'feature_indices': list(range(len(x)))}
+        if external_bands:
+            curve['x_support'] = np.asarray([b['support_nm'] for b in external_bands])
         curve.update({key: plain(result.get('metadata', {}).get(key)) for key in
             ('roi_definition', 'exclusion_definitions', 'geometry_counts', 'geometry_semantics', 'membership_rule')})
         curve.update({key: np.array(result[key], copy=True) for key in
@@ -518,17 +528,20 @@ def render_figure(spec, *, width_mm=180, height_mm=115, dpi=300):
             ax.legend(handles=[Patch(facecolor='#dce1e5', label='Invalid / masked')], loc='lower right', fontsize=7)
         for item in spec.series:
             x, y = np.asarray(item['x']), np.asarray(item['y'])
-            categorical_points = bool(spec.categories) and spec.metadata.get('categorical_style') == 'points'
+            categorical_points = (bool(spec.categories) and spec.metadata.get('categorical_style') == 'points') or spec.metadata.get('discrete_bands',False)
             if spec.metadata.get('distribution_mode') == 'histogram':
                 ax.stairs(item['histogram']['counts'], item['histogram']['bin_edges'],
                           color=item['color'], label=item['name'], linestyle=item.get('style', '-'), linewidth=1.3)
             else:
                 ax.plot(x, y, linestyle='none' if categorical_points else item.get('style', '-'),
                         drawstyle=item.get('drawstyle', 'default'), color=item['color'], label=item['name'],
-                        marker=item.get('marker', 'o' if spec.categories or len(x) < 5 else None),
+                        marker=item.get('marker', 'o' if categorical_points or spec.categories or len(x) < 5 else None),
                         markersize=item.get('markersize',3), linewidth=1.3)
                 if spec.metadata.get('distribution_mode') == 'ecdf' and len(x):
                     ax.vlines(x[0], 0., y[0], colors=item['color'], linewidth=1.3)
+            if item.get('x_support') is not None:
+                support = np.asarray(item['x_support'])
+                ax.errorbar(x,y,xerr=np.stack((x-support[:,0],support[:,1]-x)),fmt='none',ecolor=item['color'],capsize=2,linewidth=1)
             if item.get('sd') is not None:
                 sd = np.asarray(item['sd'])
                 if len(x) == 1 or categorical_points:

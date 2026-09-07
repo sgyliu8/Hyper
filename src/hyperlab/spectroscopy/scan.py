@@ -6,7 +6,9 @@ Its methods are synchronous and bounded; run this function on a worker thread.
 from copy import deepcopy
 from pathlib import Path
 import json
+import hashlib
 import math
+import os
 import shutil
 import threading
 import time
@@ -21,11 +23,24 @@ from hyperlab.acquisition.session import ScanWriter, utc_now
 
 
 def validate_recipe(recipe):
-    """State identifiers are ordered commands, never inferred wavelengths."""
+    """Unique measurement steps may revisit a physical state; never infer nm."""
     recipe = deepcopy(recipe)
+    steps = recipe.get('steps')
+    if steps is not None:
+        if (not isinstance(steps, list) or not steps or any(not isinstance(s, dict) for s in steps)
+                or any(not isinstance(s.get(key), str) or not s[key].strip()
+                       for s in steps for key in ('step_id', 'state_id', 'role'))
+                or len({s['step_id'] for s in steps}) != len(steps)
+                or any('expected_source_band' not in s or 'exposure_us' not in s for s in steps)):
+            raise ValueError('Steps need unique step_id, physical state_id, role, exposure_us and expected_source_band (null when unknown)')
+        states = [s['state_id'] for s in steps]
+        exposure = [s['exposure_us'] for s in steps]
+        if any(key in recipe and recipe[key] != value for key, value in (('states', states), ('exposure_us', exposure))):
+            raise ValueError('Legacy vectors conflict with the explicit step records')
+        recipe.update(states=states, exposure_us=exposure)
     states = recipe.get('states')
     if (not recipe.get('id') or not isinstance(states, list) or not states or
-            any(not isinstance(s, str) or not s.strip() for s in states) or len(set(states)) != len(states)):
+            any(not isinstance(s, str) or not s.strip() for s in states) or steps is None and len(set(states)) != len(states)):
         raise ValueError('Recipe needs an id and ordered, distinct, nonempty state identifiers')
     supplied = recipe.get('exposure_us')
     if not isinstance(supplied, list) or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in supplied):
@@ -37,6 +52,13 @@ def validate_recipe(recipe):
         raise ValueError('Recipe needs fixed gain in recorded device units; zero dB is allowed')
     if not recipe.get('gain_units'):
         raise ValueError('Recipe needs explicit gain_units')
+    if steps is None:
+        recipe['steps'] = [dict(step_id=f'step-{i}', state_id=state,
+            role=recipe.get('measurement_context', {}).get('role', 'unspecified'),
+            exposure_us=recipe['exposure_us'][i], expected_source_band=None) for i, state in enumerate(states)]
+    recipe.setdefault('acquisition_mode', 'native_fp_state_scan')
+    if recipe['acquisition_mode'] not in ('native_fp_state_scan', 'external_illumination_band_scan'):
+        raise ValueError('Unsupported physical acquisition mode')
     json.dumps(recipe, allow_nan=False)
     return recipe
 
@@ -44,13 +66,32 @@ def validate_recipe(recipe):
 def scan_preflight(adapter, recipe, directory):
     recipe = validate_recipe(recipe)
     if adapter is None:
-        raise ValueError('Spectral selector is not configured. Supply the matching HinaLea API, '
-                         'controller documentation and device recipe; a dependency pack alone cannot control the selector.')
+        raise ValueError('Spectral selector is not configured. Identify the physical endpoint and establish its '
+                         'command/settling behavior, or prepare characterized external illumination bands.')
     facts = deepcopy(adapter.preflight(deepcopy(recipe)))
-    if facts.get('verified') is not True or not facts.get('identity') or not facts.get('documentation'):
-        raise ValueError('Adapter needs verified identity and command/settling/freshness documentation')
     if facts.get('source') not in ('LIVE', 'REPLAY', 'SYNTHETIC'):
         raise ValueError('Adapter must declare LIVE, REPLAY or SYNTHETIC')
+    if facts['source'] == 'LIVE':
+        transport = facts.get('transport', {})
+        if transport.get('present') is not True:
+            raise ValueError('Selector endpoint is not detected')
+        if transport.get('driver_ready') is not True:
+            raise ValueError('Selector endpoint is detected but its driver is not ready')
+    if facts.get('verified') is not True or not facts.get('identity') or not facts.get('documentation'):
+        raise ValueError('Unverified command semantics: adapter needs verified identity and command/settling/freshness documentation')
+    if facts['source'] == 'LIVE':
+        # A caller flag or host UUID alone is not evidence of device semantics.
+        evidence = facts.get('control_evidence', {})
+        path = Path(evidence.get('path', ''))
+        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != evidence.get('sha256'):
+            raise ValueError('Unverified command semantics: requires the recorded protocol evidence and matching hash')
+        contract = json.loads(path.read_text(encoding='utf8'))
+        if (contract.get('identity') != facts['identity']
+                or contract.get('kind') not in ('engineer_characterized', 'manufacturer_documented')
+                or any(not contract.get(key) for key in ('transport_line_behavior', 'commands_and_ranges',
+                    'readback', 'settling', 'exposure_freshness', 'cleanup', 'observations'))):
+            raise ValueError('Protocol evidence must bind identity, observed behavior, ranges, readback and fresh exposures')
+        facts['evidence_check'] = 'Recorded contract consistency; this check does not certify physical behavior'
     if facts.get('exclusive') is not True:
         raise ValueError('Release the previous controller/camera owner before acquisition')
     shape = facts.get('shape')
@@ -116,6 +157,57 @@ def _frame_association(frame, state, acknowledgement, settling, previous):
                 raise ValueError('Repeated or backwards camera frame identifier')
 
 
+def select_scan_steps(cube, step_ids, directory):
+    """Explicitly select one visit per physical state in response-row order.
+
+    Repeats are never silently averaged. The complete original remains the source
+    for drift analysis; selection creates a separate scan with retained mapping.
+    """
+    from hyperlab.experiment_metadata import source_fingerprint
+    if cube.metadata['data_level'] != 'raw_scan' or cube.metadata.get('completed') is not True or cube.metadata.get('partial') is not False:
+        raise ValueError('Step selection requires a complete raw scan')
+    steps = cube.metadata.get('scan_steps') or [dict(step_id=f'step-{i}',state_id=state)
+        for i,state in enumerate(cube.metadata['scan_states'])]
+    mapping = {s['step_id']:i for i,s in enumerate(steps)}
+    if not step_ids or len(set(step_ids)) != len(step_ids) or any(s not in mapping for s in step_ids):
+        raise ValueError('Choose explicit unique available step IDs in response-state order')
+    indices = [mapping[s] for s in step_ids]
+    states = [cube.metadata['scan_states'][i] for i in indices]
+    if len(set(states)) != len(states):
+        raise ValueError('Response rows need one selected observation per physical state; retain other visits separately')
+    fingerprint = source_fingerprint(cube)
+    meta = deepcopy(cube.metadata)
+    for key in ('scan_states','scan_steps','exposure','exposure_us','exposure_s','band_validity'):
+        if isinstance(meta.get(key),list):
+            meta[key] = [meta[key][i] for i in indices]
+    meta['step_selection'] = dict(source_fingerprint=fingerprint,original_step_ids=[s['step_id'] for s in steps],
+        selected_step_ids=list(step_ids),source_indices=indices,aggregation='none; original repeats retained')
+    mask = None
+    if cube.valid_mask is not None:
+        meta['valid_mask_file']='cube.npy.valid.npy'
+    try:
+        with ScanWriter(directory,(*cube.shape[:2],len(indices)),cube.data.dtype,
+                        source=meta['acquisition_source'],metadata=meta,checkpoint_frames=1) as writer:
+            if cube.valid_mask is not None:
+                mask_path=Path(directory)/meta['valid_mask_file']
+                mask=np.lib.format.open_memmap(mask_path,mode='w+',dtype=bool,shape=(len(indices),*cube.shape[:2]))
+                mask[:]=False
+            for output_index,i in enumerate(indices):
+                record = deepcopy(cube.metadata['frames'][i])
+                record.update(source_index=i,step_id=steps[i]['step_id'])
+                if mask is not None:
+                    mask[output_index]=cube.valid_mask if cube.valid_mask.ndim==2 else cube.valid_mask[:,:,i]
+                    mask.flush()
+                    with mask_path.open('r+b') as stream:os.fsync(stream.fileno())
+                writer.append(cube.data[:,:,i],record)
+            if source_fingerprint(cube) != fingerprint:
+                raise ValueError('Original scan changed during explicit step selection')
+    finally:
+        if mask is not None:
+            mask._mmap.close()
+    return {'raw_path':str(writer.path.resolve()),'selected_step_ids':list(step_ids),'aggregation':'none'}
+
+
 def stationary_scan(adapter, recipe, directory, *, stop=None, progress=None, writer_factory=ScanWriter):
     """Persist every accepted optical state; return a complete or explicit partial receipt.
 
@@ -161,6 +253,7 @@ def stationary_scan(adapter, recipe, directory, *, stop=None, progress=None, wri
                 exposure_units='us', gain=recipe['gain'], gain_units=recipe['gain_units'],
                 settings=recipe.get('settings', {}), recipe_id=recipe['id'], attempt_id=run_id,
                 measurement_context=recipe.get('measurement_context', {}),
+                scan_steps=recipe['steps'], acquisition_mode=recipe['acquisition_mode'],
                 scan_association='verified state and exposure identities', optical_configuration=recipe.get('optical_configuration')))
         manifest['raw_path'] = str(writer.path.resolve())
         event('EXCLUSIVE')
@@ -171,13 +264,17 @@ def stationary_scan(adapter, recipe, directory, *, stop=None, progress=None, wri
         adapter.configure(deepcopy(recipe))
         for index, state in enumerate(recipe['states']):
             cancelled()
-            event('SET_STATE', index=index, state=state)
+            step = recipe['steps'][index]
+            event('SET_STATE', index=index, state=state, step_id=step['step_id'])
             ack = deepcopy(adapter.set_state(state, f'{run_id}:{index}'))
             if (ack.get('state_id') != state or ack.get('acknowledged') is not True or
                     not isinstance(ack.get('token'), str) or not ack['token'] or
                     ack['token'] in state_tokens or not ack.get('readback_source')):
                 raise ValueError('Selector did not acknowledge the requested state')
             state_tokens.add(ack['token'])
+            if facts['source'] == 'LIVE' and (ack.get('readback_kind') not in ('device_response', 'measured_position')
+                    or not ack.get('readback_record') or not ack.get('readback_identity')):
+                raise ValueError('A host operation token is not physical state readback')
             event('ACKNOWLEDGE', index=index, acknowledgement=ack)
             cancelled()
             settled = deepcopy(adapter.wait_settled(deepcopy(ack), stop))
@@ -202,7 +299,8 @@ def stationary_scan(adapter, recipe, directory, *, stop=None, progress=None, wri
             manifest['owned'] += 1
             manifest['accepted'] += 1
             event('COPY_VALIDATE', index=index)
-            record = dict(frame.metadata, target_state=state, returned_state=state, acknowledgement=ack, settling=settled)
+            record = dict(frame.metadata, target_state=state, returned_state=state, acknowledgement=ack, settling=settled,
+                          step_id=step['step_id'], measurement_role=step['role'], expected_source_band=step['expected_source_band'])
             writer.append(frame.data, record)
             manifest['durable'] = writer.meta['frame_count']
             previous = frame.metadata

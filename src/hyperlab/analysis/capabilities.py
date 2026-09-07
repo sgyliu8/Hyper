@@ -10,13 +10,14 @@ def capabilities(cube):
     k = cube.shape[2]
     indices = np.flatnonzero(np.asarray(meta.get("band_validity", [True] * k), bool)).tolist()
     color = bool(meta.get("channel_labels"))
+    external_band = level == 'band_ratio_cube'
     bayer = "bayer" in str(meta.get("pixel_format", "")).lower()
     spectral = (level in {"spectral_cube", "reflectance_cube"} and cube.wavelengths is not None
                 and wavelength_unit_scale(meta.get("wavelength_units")) is not None
                 and bool(meta.get("wavelength_source"))
                 and meta.get("wavelength_order") not in {"nonmonotonic", "duplicate"})
     state = level == "raw_scan" and cube.wavelengths is None and not color
-    axis = "color_channel" if color else "wavelength" if cube.wavelengths is not None else "state" if state else "sensor_plane"
+    axis = "illumination_band" if external_band else "color_channel" if color else "wavelength" if cube.wavelengths is not None else "state" if state else "sensor_plane"
     vector = (state or spectral) and not (bayer and k == 1) and len(indices) >= 2
     wavelength_features = spectral and len(indices) >= 2 and bool(np.all(cube.wavelengths > 0))
     operations = {"roi": True, "histogram": True, "export": True,
@@ -57,6 +58,7 @@ def capabilities(cube):
         else:
             reasons[operation] = "Requires scan states or an ordered wavelength axis with known units and source."
     return {"axis_kind": axis, "axis_label": {"color_channel": "color_channel_index",
+                "illumination_band": "source_band_observation",
                 "state": "state_index", "wavelength": "wavelength", "sensor_plane": "sensor_plane"}[axis],
             "feature_indices": indices, "effective_dimensions": len(indices),
             "operations": operations, "reasons": reasons,
