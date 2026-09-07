@@ -31,3 +31,17 @@ def test_right_categorical_plot_uses_requested_connection_style(qtbot, task, sty
         assert mkColor(actual.opts['symbolBrush']).name() == mkColor(expected['color']).name()
         np.testing.assert_equal(actual.getData()[0], expected['x'])
         np.testing.assert_equal(actual.getData()[1], expected['y'])
+
+
+def test_relative_single_plane_has_category_padding_without_redundant_legend(qtbot):
+    from hyperlab.plots import roi_relative_plot
+    window = Workbench(); qtbot.addWidget(window)
+    cube = Cube(np.array([[[10.],[20.],[30.]]]),
+                {'data_level':'raw_frame','units':'DN','data_source':'SYNTHETIC'})
+    statistics = roi_comparison(cube, [(0,0,1,1),(1,0,2,1),(2,0,3,1)])
+    amplitude = roi_plot(statistics,['Reference','Target B','Target C'],COLORS,source=source_identity(cube))
+    relative = roi_relative_plot(amplitude,amplitude.series[0])
+    window.draw_right_plot(relative)
+    assert not window.shape_chart.plotItem.legend.isVisible()
+    np.testing.assert_allclose(window.shape_chart.viewRange()[0],[-.5,2.5])
+    assert window.shape_chart.getAxis('bottom')._tickLevels == [[(0,'Reference'),(1,'Target B'),(2,'Target C')]]

@@ -2088,6 +2088,7 @@ class Workbench(W.QMainWindow):
     def draw_right_plot(self, spec, *, brush=False):
         self.right_spec = spec
         chart = self.shape_chart; chart.clear(); chart.plotItem.legend.clear(); chart.show()
+        chart.plotItem.legend.setVisible(not spec.metadata.get('single_sensor_plane'))
         for axis in ('left','bottom'):
             chart.showAxis(axis)
         chart.setTitle(self.chart_title(spec),color='#17212b',size='12pt'); chart.setToolTip(spec.caption)
@@ -2096,8 +2097,8 @@ class Workbench(W.QMainWindow):
             self.brush_note.setText('No selected map range. Profile uses per-feature mean / spatial SD; '
                 + ', '.join(f"{item['name']}: {count}/{len(item['x'])} empty bins" for item,count in zip(spec.series,empty))
                 + '. Hover for counts and reasons; gaps retain their original distance.')
-        chart.setLabel('bottom',spec.xlabel,**{'color':'#26313d','siPrefixEnableRanges':()})
-        chart.setLabel('left',spec.ylabel,**{'color':'#26313d','siPrefixEnableRanges':()})
+        chart.setLabel('bottom',spec.xlabel,**{'color':'#26313d','font-size':'11pt','siPrefixEnableRanges':()})
+        chart.setLabel('left',spec.ylabel,**{'color':'#26313d','font-size':'11pt','siPrefixEnableRanges':()})
         chart.getAxis('bottom').setTicks([list(enumerate(spec.categories))] if spec.categories else None)
         if spec.metadata.get('reference_baseline') is not None:
             chart.addItem(pg.InfiniteLine(spec.metadata['reference_baseline'], angle=0,
@@ -2143,6 +2144,8 @@ class Workbench(W.QMainWindow):
                     self.brush_low.setValue(low); self.brush_high.setValue(high); self.apply_map_brush()
                 self.brush_region.sigRegionChangeFinished.connect(changed)
         chart.enableAutoRange(); self.chart_row.setSizes([1,1]); self.vertical.setSizes([440,300])
+        if spec.categories:
+            chart.setXRange(-.5,len(spec.categories)-.5,padding=0)
         if spec.metadata.get('operation') == 'strip_profile':
             chart.setXRange(*[spec.metadata['bin_edges_px'][i] for i in (0,-1)], padding=0)
         self.notify(f'Right plot ready: {spec.title}')
