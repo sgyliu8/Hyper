@@ -1014,8 +1014,8 @@ class Workbench(W.QMainWindow):
                 new_coordinates = bool(self.rois)
                 self.reset_rois(force=True, new_coordinates=new_coordinates)
                 if new_coordinates:
-                    self.roi_source_notice = ('Image dimensions or spatial grid changed; new default ROIs created. '
-                                              'Review placement and choose the reference.')
+                    reason = 'Spatial grid changed' if grid_changed else 'Raw image dimensions changed'
+                    self.roi_source_notice = f'{reason}; new default ROIs created. Review placement and choose the reference.'
             elif live and old_shape is None:
                 self.roi_source_notice = ('ROI coordinates retained for matching raw dimensions; '
                                           'verify placement in the current scene.')

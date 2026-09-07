@@ -84,7 +84,7 @@ def test_start_preview_rejects_known_to_unknown_grid_roi_reuse(window):
     window.tick()
     assert window.cube.metadata.get('spatial_grid') is None
     assert old_ids.isdisjoint(record['roi_id'] for record in window.regions())
-    assert 'spatial grid changed' in window.message.text()
+    assert 'spatial grid changed' in window.message.text().lower()
 
 
 def test_raw_input_check_defers_reference_pair_compatibility(window, qtbot, signals, tmp_path):
