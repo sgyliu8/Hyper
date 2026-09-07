@@ -239,6 +239,7 @@ def test_external_ui_uses_manifest_compact_table_and_band_points(qtbot,tmp_path)
     window.analyze('roi');qtbot.waitUntil(lambda:not window.task_busy,timeout=10000)
     assert window.plot_spec.metadata['discrete_bands']
     assert window.curves[0].opts['pen'] is None
+    assert window.chart.viewRange()[0][0] <= 500 and window.chart.viewRange()[0][1] >= 635
     dialog.input_kind.setCurrentIndex(0)
     assert dialog.band_table.isHidden() and dialog.details.toPlainText()==''
 

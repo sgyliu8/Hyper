@@ -166,6 +166,11 @@ constancy across the entire supported band, or effective factors integrated with
 the applicable measured kernel. A reference value at the nominal peak alone is
 insufficient. Fluorescence requires a different measurement model.
 
+The current reference-factor vector has one factor per observation. Kernel evidence
+must establish that each factor applies throughout the accepted pixel region.
+Spatially varying effective reference factors require a spatial calibration model;
+do not apply a single ROI-derived factor to an unqualified Bayer field.
+
 Outputs use `band_ratio_cube`, with `spectral_bands` and unique observation IDs;
 `wavelengths` stays null. Plots show discrete source peaks with horizontal source
 support bars, and retain duplicate observations. The source peak is not an asserted

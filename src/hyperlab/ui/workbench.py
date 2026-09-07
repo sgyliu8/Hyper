@@ -1568,7 +1568,7 @@ class Workbench(W.QMainWindow):
         # Preserve the two default curve handles for existing integrations.
         while len(self.curves) < 2:
             self.curves.append(self.chart.plot([],[],pen=None))
-        xs = np.concatenate([np.asarray(item['x']) for item in spec.series]) if spec.series else np.array([])
+        xs = np.concatenate([np.asarray(item.get('x_support',item['x'])).ravel() for item in spec.series]) if spec.series else np.array([])
         xs = xs[np.isfinite(xs)]
         if spec.categories:
             self.chart.setXRange(-.5,len(spec.categories)-.5,padding=0)
