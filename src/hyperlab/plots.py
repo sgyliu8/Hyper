@@ -554,7 +554,8 @@ def render_figure(spec, *, width_mm=180, height_mm=115, dpi=300):
         for brush in spec.brushes:
             ax.axvspan(*brush['metadata']['value_range'], color=brush['metadata']['roi'].get('color') or COLORS[0], alpha=.08)
         if spec.series:
-            ax.legend(fontsize=7, frameon=False)
+            if not spec.metadata.get('single_sensor_plane'):
+                ax.legend(fontsize=7, frameon=False)
         elif spec.image is None:
             ax.text(.5, .5, 'No valid samples', ha='center', transform=ax.transAxes)
         for a in axes:

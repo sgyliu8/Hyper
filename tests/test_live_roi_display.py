@@ -85,6 +85,21 @@ def test_repeated_distribution_plot_keeps_actual_density_tick_units(qtbot):
         assert float(axis.tickStrings([.005],axis.autoSIPrefixScale,.005)[0]) == pytest.approx(.005)
 
 
+def test_single_plane_roi_labels_do_not_need_an_overlapping_legend(qtbot):
+    from hyperlab.plots import render_figure
+
+    window = Workbench(); qtbot.addWidget(window)
+    for color in (False, True, False):
+        _, cube = live_frame(color)
+        results = roi_comparison(cube, [(0,0,5,12),(5,0,10,12),(10,0,16,12)])
+        spec = roi_plot(results, ['Reference','Target','Profile'], COLORS, source=source_identity(cube))
+        window.draw_plot(spec)
+        assert window.chart.plotItem.legend.isVisible() == color
+        assert len(window.curves) == 3
+        figure = render_figure(spec)
+        assert (figure.axes[0].get_legend() is not None) == color
+
+
 def test_multiband_spatial_sd_has_renderable_fill_path(qtbot):
     import pyqtgraph as pg
     from PySide6.QtCore import QPointF

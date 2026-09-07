@@ -1507,6 +1507,7 @@ class Workbench(W.QMainWindow):
         self.chart.clear()
         legend = self.chart.plotItem.legend
         legend.clear()
+        legend.setVisible(not spec.metadata.get('single_sensor_plane'))
         legend.setColumnCount(1 if len(spec.series)<=4 else 2)
         self.curves = []
         self.error_bars = []
