@@ -1,5 +1,14 @@
 # Changes
 
+## 0.6.1.dev3 — relative ROI intensity
+
+- Compare ROI mean or median with one selected reference in the same image;
+  retain the original amplitude/spread plot and show relative values beside it.
+- Preserve reference identity, input summaries, units, counts and unavailable
+  values in Results and CSV/figure exports, including hidden reference regions.
+- Image ratios describe observed camera signal; they do not add dark correction,
+  measured wavelengths or a reflectance calibration.
+
 ## 0.6.1.dev2 — independent finite-band measurements
 
 - Separate unique scan steps from repeatable physical states; retain A–B–A visits

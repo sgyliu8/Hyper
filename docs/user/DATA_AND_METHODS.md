@@ -61,6 +61,7 @@ raw exceptions, file paths, full identifiers and images; preview it before shari
 | Question | Summary/calculation | Figure and interpretation |
 |---|---|---|
 | How bright and variable is each region? | Mean, population spatial SD, min/max and valid counts | Mean with spatial SD ribbon; intensity distribution for one sensor plane. Spatial dispersion is not a confidence interval. |
+| How strong is a region relative to a chosen region in the same image? | Selected ROI mean or median divided by the same statistic of an included reference, per stored feature | Original amplitude beside relative intensity; reference = 1 with a positive finite denominator. Counts, raw summaries and reference identity are retained. Observed signal ratio without dark/flat-field or reflectance correction; no propagated uncertainty. |
 | Does a small bright/glare patch dominate the mean? | Median, Q25, Q75, IQR and unscaled MAD | Median with asymmetric Q25–Q75 ribbon, compared with mean/SD and quality fractions. Neither automatically removes glare from raw evidence. |
 | Do curves average the same pixels at every band? | Per-band support versus common valid pixels over selected bands | Used/quality-valid counts and support exclusions. Empty common support stays unavailable. |
 | Is a difference amplitude, offset or spectral shape? | Target-minus-reference bias, RMSE, descriptive correlation, admissible SAM | Pair table and residual curves with original amplitudes. Different metrics have different invariances. |

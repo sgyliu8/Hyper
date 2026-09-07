@@ -23,6 +23,57 @@ def run_rois(window,qtbot):
     window.roi_timer.stop()
 
 
+def test_relative_roi_workflow_keeps_hidden_reference_and_exports_pinned_numbers(window, qtbot):
+    import csv
+    from hyperlab.plots import export_figure_bundle
+    window.apply_roi_bounds(0,(0,0,4,4)); window.apply_roi_bounds(1,(4,0,8,4))
+    reference = window.regions()[0]['roi_id']
+    window.analysis_method.setCurrentIndex(window.analysis_method.findData('relative_intensity'))
+    assert window.run_button.isEnabled() and not window.reference_roi.isHidden()
+    window.roi_visible[0].setChecked(False)
+    run_rois(window,qtbot)
+    expected = 23.5/19.5
+    np.testing.assert_allclose(window.right_spec.series[0]['y'], [expected])
+    assert len(window.roi_results) == 2 and len(window.right_spec.series) == 1
+    assert window.right_spec.categories == [window.roi_names[1].text()]
+    assert window.right_spec.metadata['reference']['roi_definition']['roi_id'] == reference
+    choices, sources = window.completed_figures()
+    assert sources['Right task plot + selections'][0] is window.roi_source
+    output = export_figure_bundle(choices['Right task plot + selections'], window.output_dir/'relative-figure',
+                                 source_cube=sources['Right task plot + selections'][0], dpi=72)
+    assert (output/'analysis_manifest.json').is_file()
+    window.science_results_dialog()
+    tabs = window._science_results_dialog.findChild(W.QTabWidget)
+    assert tabs.tabText(tabs.currentIndex()) == 'Relative intensity'
+    assert tabs.currentWidget().rowCount() == 2
+    window._science_results_dialog.close()
+    window.export_rois(); qtbot.waitUntil(lambda:not window.task_busy, timeout=10000)
+    csv_path = next(window.output_dir.glob('roi_*/relative_intensity.csv'))
+    rows = list(csv.DictReader(csv_path.open()))
+    assert float(rows[0]['Relative intensity']) == 1.
+    np.testing.assert_allclose(float(rows[1]['Relative intensity']), expected)
+    assert rows[1]['Reference ROI ID'] == reference
+    window.roi_visible[1].setChecked(False)
+    run_rois(window,qtbot)
+    assert window.right_spec is None and len(window.science_result['relative_intensity']['series']) == 2
+    window.roi_visible[1].setChecked(True)
+    window.roi_names[0].setText('Renamed reference'); window.reorder_roi(0,1)
+    run_rois(window,qtbot)
+    assert window.right_spec.metadata['reference']['name'] == 'Renamed reference'
+    np.testing.assert_allclose(window.right_spec.series[0]['y'], [expected])
+    window.roi_included[1].setChecked(False)
+    from hyperlab.plots import PlotSpec
+    window.right_spec = PlotSpec('lines','Old residual','Feature','DN')
+    run_rois(window,qtbot)
+    assert window.right_spec is None and 'included reference' in window.message.text()
+    window.roi_included[1].setChecked(True)
+    run_rois(window,qtbot)
+    assert window.right_spec is not None
+    window.analysis_method.setCurrentIndex(window.analysis_method.findData('roi'))
+    run_rois(window,qtbot)
+    assert window.right_spec is None and 'Right task plot + selections' not in window.completed_figures()[0]
+
+
 def test_visibility_does_not_change_inclusion_and_reference_survives_reorder(window,qtbot):
     window.apply_roi_bounds(0,(0,0,4,4)); window.apply_roi_bounds(1,(4,0,8,4))
     reference=window.regions()[0]['roi_id']

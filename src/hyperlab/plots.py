@@ -236,6 +236,64 @@ def profile_bin_text(spec, distance):
     return text
 
 
+def roi_relative_plot(amplitude_spec, reference):
+    """Ratio of ROI summaries to one included reference, on the stored feature axis."""
+    spec = deepcopy(amplitude_spec)
+    denominator = np.asarray(reference['y'], np.float64)
+    if not spec.series or any(np.shape(item['y']) != denominator.shape for item in spec.series):
+        raise ValueError('Reference must match the ROI summary feature axis')
+    reference_valid = np.isfinite(denominator) & (denominator > 0)
+    for item in spec.series:
+        for key in ('sd', 'lower', 'upper', 'normalized', 'distribution'):
+            item.pop(key, None)
+        numerator = np.asarray(item['y'], np.float64)
+        item['source_summary'] = numerator.copy()
+        valid = np.isfinite(numerator) & reference_valid
+        ratio = np.full(numerator.shape, np.nan)
+        with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
+            np.divide(numerator, denominator, out=ratio, where=valid)
+        item['ratio_status'] = np.where(~reference_valid, 'Reference unavailable',
+            np.where(~np.isfinite(numerator), 'Target unavailable',
+                     np.where(~np.isfinite(ratio), 'Ratio overflow', 'OK'))).tolist()
+        item['y'] = np.where(np.isfinite(ratio), ratio, np.nan)
+    summary = spec.metadata.get('summary', 'mean')
+    spec.title = 'Relative ROI intensity'
+    spec.ylabel = f'{summary.title()} / reference (ratio)'
+    spec.caption = (f"ROI {summary} / {reference['name']} {summary}; reference = 1 for a positive finite signal. "
+                    'Observed signal ratio; no dark correction or reflectance calibration. No propagated uncertainty.')
+    spec.brushes = []
+    for key in ('distribution', 'common_feature_indices', 'excluded_indices'):
+        spec.metadata.pop(key, None)
+    spec.metadata.update(right_task='relative_intensity', roi_comparison=False,
+        source_units=amplitude_spec.metadata.get('units', 'unknown'), units='dimensionless',
+        spatial_sd=False, normalization=None, aggregation_order='summary_then_ratio',
+        finite_support='finite target summary and positive finite reference summary, per feature',
+        reference=plain(deepcopy(reference)), reference_baseline=1.,
+        correction='none; observed input signal', reference_invalid_features=np.flatnonzero(~reference_valid).tolist())
+    return spec
+
+
+def relative_intensity_table(spec):
+    """The same completed numbers for the Results table and private CSV exports."""
+    reference = spec.metadata['reference']
+    definition = reference.get('roi_definition') or {}
+    headers = ['ROI', 'Feature', 'Relative intensity', 'Source summary', 'Reference summary',
+               'Source units', 'Summary', 'Used', 'Reference used', 'Reference', 'Status',
+               'ROI ID', 'ROI revision', 'Reference ROI ID', 'Reference ROI revision']
+    rows = []
+    for item in spec.series:
+        roi = item.get('roi_definition') or {}
+        for i, value in enumerate(item['y']):
+            feature = ('Sensor plane' if spec.metadata.get('single_sensor_plane') else
+                       spec.categories[i] if spec.categories else item['x'][i])
+            rows.append([item['name'], feature, value, item['source_summary'][i], reference['y'][i],
+                spec.metadata['source_units'], spec.metadata.get('summary', 'mean'),
+                item.get('used_counts', ['']*len(item['y']))[i],
+                reference.get('used_counts', ['']*len(item['y']))[i], reference['name'], item['ratio_status'][i],
+                roi.get('roi_id', ''), roi.get('revision', ''), definition.get('roi_id', ''), definition.get('revision', '')])
+    return headers, rows
+
+
 def roi_transform_plot(amplitude_spec, task, *, reference=None, common=None, reference_roi_id=None):
     """One right-task summary transform; the amplitude plot stays unchanged."""
     if task not in ('shape', 'residual') or not amplitude_spec.series:
@@ -519,6 +577,8 @@ def render_figure(spec, *, width_mm=180, height_mm=115, dpi=300):
         axes = figure.subplots(1, 2 if shape_branch else 1, squeeze=False)[0]
         ax = axes[0]
         ax.set(title=spec.title, xlabel=spec.xlabel, ylabel=spec.ylabel)
+        if spec.metadata.get('reference_baseline') is not None:
+            ax.axhline(spec.metadata['reference_baseline'], color='#7e8b94', linestyle='--', linewidth=.8)
         if spec.image is not None:
             cmap = mpl.colormaps[spec.colormap].with_extremes(bad='#dce1e5')
             image = ax.imshow(np.ma.masked_invalid(spec.image), cmap=cmap,
@@ -715,6 +775,10 @@ def export_figure_bundle(spec, directory, *, width_mm=180, height_mm=115, dpi=30
                                  sample(quality['saturated'], i) if saturation_known else '',
                                  spec.metadata.get('units', ''), saturation_assessment,
                                  saturation if saturation_known else '', saturation_units if saturation_assessment else ''])
+    if spec.metadata.get('right_task') == 'relative_intensity':
+        headers, rows = relative_intensity_table(spec)
+        with (directory/'relative_intensity.csv').open('x', newline='', encoding='utf-8') as stream:
+            writer = csv.writer(stream); writer.writerow(headers); writer.writerows(rows)
     if any('distribution' in item for item in spec.series):
         with (directory/'distributions.csv').open('x',newline='',encoding='utf-8') as stream:
             writer = csv.writer(stream)

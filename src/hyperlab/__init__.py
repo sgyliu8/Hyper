@@ -1,2 +1,2 @@
 """Local instrument recovery; offline results never establish hardware recovery."""
-__version__ = "0.6.1.dev2"
+__version__ = "0.6.1.dev3"

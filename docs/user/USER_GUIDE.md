@@ -58,6 +58,30 @@ zero. For a profile, choose a line/strip ROI and inspect per-bin used counts and
 reasons. Empty bins stay gaps at their original pixel distances. Profile mean/SD
 is separate from a median/quartile amplitude panel. No mm calibration is assumed.
 
+## Relative intensity in a real image
+
+Save a camera frame and stop acquisition to compare a fixed observation. In
+Analysis, define at least two ROIs, choose **Relative ROI intensity**, select the
+reference in the dropdown and **Run analysis**. Use mean/spatial SD for average
+signal or median/quartiles to inspect a less tail-sensitive summary.
+
+The left plot retains original intensity and spatial spread. The right plot is
+each ROI summary divided by the selected reference summary; the dashed baseline
+is 1. **Results → Relative intensity** shows ratios, original values, reference
+values and both used-pixel counts. Show controls plot visibility; an included
+reference remains the denominator when hidden. Uncheck Use to exclude a region.
+
+**Export → ROI tables** writes `relative_intensity.csv` alongside the original
+ROI statistics. Figure export of the right task plot saves the same numbers,
+reference recipe and source hashes with PNG/SVG/PDF. A zero, negative or missing
+reference is unavailable for that feature; missing target values and overflow
+are also retained as unavailable. No zero filling or ratio uncertainty is invented.
+
+This is an observed signal ratio from one image. Detector offset, automatic
+processing, spatial shading and illumination can affect it. A Bayer sensor plane
+produces one sensor-DN ratio per ROI; stored RGB produces three categorical
+channel ratios. Neither supplies a wavelength-resolved reflectance spectrum.
+
 ## Spectral and derived operations
 
 Use **Reflectance…** for response bundles, matched raw scans and reference-ratio

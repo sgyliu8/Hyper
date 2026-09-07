@@ -1487,6 +1487,8 @@ class Workbench(W.QMainWindow):
                         brush=pg.mkBrush(255,255,255,225),pen=None)
 
     def draw_plot(self, spec):
+        if self.right_spec and self.right_spec.metadata.get('right_task') == 'relative_intensity':
+            self.right_spec = None
         previous = self.plot_spec
         was_comparison = bool(self.plot_spec and self.plot_spec.metadata.get('roi_comparison'))
         self.plot_spec = spec
@@ -1636,7 +1638,7 @@ class Workbench(W.QMainWindow):
         cap = capabilities(self.cube)
         self.shape_normalize.setVisible(self.cube is None or self.cube.shape[2]>1)
         for op, button in self.analysis_buttons.items():
-            button.setEnabled(cap['operations'].get(op, False))
+            button.setEnabled(cap['operations'].get('roi' if op == 'relative_intensity' else op, False))
             button.setToolTip(cap.get('reasons', {}).get(op, ''))
         self.method_changed()
 
@@ -1693,7 +1695,7 @@ class Workbench(W.QMainWindow):
         self.plot_mode.blockSignals(False)
         included = list(context.get('analyzed_roi_indices', range(len(results))))
         enabled = [i for i, original in enumerate(included) if context['visible'][original]]
-        if not enabled:
+        if not enabled and context.get('method') != 'relative_intensity':
             self.draw_plot(PlotSpec('lines','No visible ROI','Index','Mean'))
             self.notify('ROI results ready; all included ROIs are hidden. Numeric results remain available in Results and Export.')
             return
@@ -1701,17 +1703,49 @@ class Workbench(W.QMainWindow):
                         [context['colors'][i] for i in included], source=context['source'],
                         normalized=context['normalized'], spatial_sd=context['spatial_sd'], summary=context['summary'],
                         categorical_style=context.get('categorical_style','connected'))
+        spec.metadata.update(analysis_version=context['version'], analysis_context=context,
+                             source_fingerprint=context.get('source_fingerprint'))
+        relative = None
+        if context.get('method') == 'relative_intensity':
+            self.right_spec = None
+            self._right_task_pending = False
+            from hyperlab.plots import roi_relative_plot
+            reference_index = next((i for i, original in enumerate(included)
+                if context['regions'][original]['roi_id'] == context['reference_roi_id']), None)
+            if reference_index is not None:
+                relative = roi_relative_plot(spec, spec.series[reference_index])
+                self.science_result = {'relative_intensity': relative.record()}
+        if not enabled:
+            self.draw_plot(PlotSpec('lines','No visible ROI','Index','Mean'))
+            self.map_tools.hide()
+            self.notify('All included ROIs are hidden; completed relative intensities remain in Results and Export.'
+                        if relative is not None else 'Select an included reference ROI to compute relative intensities.')
+            return
         spec.series = [spec.series[i] for i in enabled]
         if self.roi_source.shape[2] == 1:
             spec.categories = [context['names'][included[i]] for i in enabled]
             for position,item in enumerate(spec.series):
                 item['x'] = np.array([position])
-        spec.metadata['analysis_version'] = context['version']
-        spec.metadata['analysis_context'] = context
-        spec.metadata['source_fingerprint'] = context.get('source_fingerprint')
         self._completed_source = self.roi_source
         self.draw_plot(spec)
         self._completed_source = None
+        if context.get('method') == 'relative_intensity':
+            self.map_tools.hide()
+            if relative is None:
+                self.shape_chart.hide()
+                self.notify('Select an included reference ROI, then run Relative ROI intensity. Raw summaries are retained.')
+            else:
+                relative.series = [relative.series[i] for i in enabled]
+                if relative.metadata.get('single_sensor_plane'):
+                    relative.categories = spec.categories.copy()
+                    for position, item in enumerate(relative.series):
+                        item['x'] = np.array([position])
+                self.draw_right_plot(relative)
+                unavailable = sum(status != 'OK' for item in relative.series for status in item['ratio_status'])
+                total = sum(len(item['y']) for item in relative.series)
+                self.notify(f'Relative ROI intensity ready: {total-unavailable}/{total} values available. '
+                            f"Reference: {relative.metadata['reference']['name']} = 1; Results includes raw values and counts.")
+            return
         self.notify('Shape comparison unavailable for a zero norm or missing common features; raw amplitude is retained.'
                     if any('normalized' in item and not np.any(np.isfinite(item['normalized'])) for item in spec.series)
                     else 'ROI results ready. Summary, spatial spread and sample counts are available in Results and Export.')
@@ -1753,7 +1787,7 @@ class Workbench(W.QMainWindow):
             payload = {'source':cube.metadata, 'analysis_context':context, 'feature_result':feature_result,
                        'shape_branch':branch}
             (directory / 'comparison.json').write_text(json.dumps(plain(payload), indent=2, allow_nan=False), encoding='utf-8')
-            if feature_result:
+            if feature_result and ('pairs' in feature_result or 'curves' in feature_result):
                 import csv
                 with (directory / 'features.csv').open('x', newline='', encoding='utf-8') as stream:
                     writer = csv.writer(stream)
@@ -1762,11 +1796,18 @@ class Workbench(W.QMainWindow):
                         writer.writerow(keys)
                         for pair in feature_result['pairs']:
                             writer.writerow([json.dumps(plain(pair[key])) if key == 'unavailable' else pair[key] for key in keys])
-                    else:
+                    elif 'curves' in feature_result:
                         writer.writerow(['roi','feature','value'])
                         for curve in feature_result['curves']:
                             for key,value in curve['features'].items():
                                 writer.writerow([names[curve['roi_index']], key, value])
+            if feature_result and 'relative_intensity' in feature_result:
+                import csv
+                from hyperlab.plots import relative_intensity_table
+                record = feature_result['relative_intensity']
+                headers, rows = relative_intensity_table(PlotSpec(**record))
+                with (directory/'relative_intensity.csv').open('x', newline='', encoding='utf-8') as stream:
+                    writer = csv.writer(stream); writer.writerow(headers); writer.writerows(rows)
             write_analysis_manifest(directory, fingerprint, payload, annotation=context['annotation'])
             return directory
         self.background(run, lambda path: self.notify(f'Completed ROI tables and manifest saved: {path}'),
@@ -1774,6 +1815,10 @@ class Workbench(W.QMainWindow):
 
     def analyze(self, operation):
         if self.cube is None:
+            return
+        if operation == 'relative_intensity':
+            self.analysis_method.setCurrentIndex(self.analysis_method.findData(operation))
+            self.analyze_rois()
             return
         from hyperlab.analysis import capabilities, pca, spectral_angle, difference, ratio, roi_statistics
         cap = capabilities(self.cube)
@@ -1914,6 +1959,11 @@ class Workbench(W.QMainWindow):
                     widget.setItem(row, col, W.QTableWidgetItem(text))
             widget.resizeColumnsToContents(); tabs.addTab(widget, label)
         table('ROI summary', columns, rows)
+        if self.science_result and 'relative_intensity' in self.science_result:
+            from hyperlab.plots import relative_intensity_table
+            headers, values = relative_intensity_table(PlotSpec(**self.science_result['relative_intensity']))
+            table('Relative intensity', headers, values)
+            tabs.setCurrentIndex(1)
         if self.science_result and 'pairs' in self.science_result:
             table('Pair metrics', ['Target','Reference','Bias','RMSE','Correlation','Angle (rad)','Features','Unavailable reasons'],
                 [[p['target'],p['reference'],p['bias'],p['rmse'],p['correlation'],p['angle'],p['feature_count'],
@@ -2049,6 +2099,9 @@ class Workbench(W.QMainWindow):
         chart.setLabel('bottom',spec.xlabel,**{'color':'#26313d','siPrefixEnableRanges':()})
         chart.setLabel('left',spec.ylabel,**{'color':'#26313d','siPrefixEnableRanges':()})
         chart.getAxis('bottom').setTicks([list(enumerate(spec.categories))] if spec.categories else None)
+        if spec.metadata.get('reference_baseline') is not None:
+            chart.addItem(pg.InfiniteLine(spec.metadata['reference_baseline'], angle=0,
+                pen=pg.mkPen('#7e8b94', width=1, style=QtCore.Qt.PenStyle.DashLine)))
         for item in spec.series:
             x,y = np.asarray(item['x']),np.asarray(item['y'])
             if item.get('drawstyle') == 'steps-post' and x.size:
@@ -2302,7 +2355,7 @@ class Workbench(W.QMainWindow):
         sources = {'Current chart': (self.plot_source, self.plot_annotation)}
         if self.right_spec is not None:
             choices['Right task plot + selections'] = self.right_spec
-            sources['Right task plot + selections'] = (self.product_source,
+            sources['Right task plot + selections'] = (self.roi_source if self.right_spec.metadata.get('right_task') == 'relative_intensity' else self.product_source,
                 self.right_spec.metadata.get('analysis_context',{}).get('annotation'))
         if self.map_spec:
             choices['Derived map'] = self.map_spec
@@ -2892,7 +2945,7 @@ class Workbench(W.QMainWindow):
         self.policy.currentIndexChanged.connect(lambda: self.render_current())
         self.analysis_method = W.QComboBox()
         self.analysis_buttons = {}
-        methods = [('ROI summary', 'roi'), ('ROI pair comparison', 'pairs'),
+        methods = [('ROI summary', 'roi'), ('Relative ROI intensity', 'relative_intensity'), ('ROI pair comparison', 'pairs'),
                    ('Reference ROI RMSE map', 'reference_rmse'), ('Normalized difference map', 'normalized_difference'),
                    ('Difference map', 'difference'), ('Ratio map', 'ratio'),
                    ('Local polynomial smoothing', 'smooth'), ('First derivative', 'derivative1'),
@@ -3049,7 +3102,7 @@ class Workbench(W.QMainWindow):
             return
         from hyperlab.analysis import capabilities
         operation = self.analysis_method.currentData()
-        self.reference_roi.setVisible(operation in ('reference_rmse', 'spectral_angle'))
+        self.reference_roi.setVisible(operation in ('relative_intensity', 'reference_rmse', 'spectral_angle'))
         spectral = operation in ('smooth', 'derivative1', 'derivative2', 'integral', 'continuum','interval_map','interval_mean_map')
         self.pair_controls.setVisible(operation in ('difference', 'ratio', 'normalized_difference'))
         self.low_signal_controls.setVisible(operation == 'normalized_difference')
@@ -3064,7 +3117,7 @@ class Workbench(W.QMainWindow):
             return
         cap = capabilities(self.cube)
         self.low_signal_threshold.setSuffix(' ' + self.cube.metadata['units'])
-        gate = {'pairs':'roi', 'reference_rmse':'roi', 'normalized_difference':'ratio',
+        gate = {'pairs':'roi', 'relative_intensity':'roi', 'reference_rmse':'roi', 'normalized_difference':'ratio',
                 'smooth':'spectral_features', 'derivative1':'spectral_features',
                 'derivative2':'spectral_features', 'integral':'spectral_features',
                 'interval_map':'spectral_features','interval_mean_map':'spectral_features'}.get(operation, operation)
@@ -3072,6 +3125,8 @@ class Workbench(W.QMainWindow):
         self.run_button.setEnabled(allowed and not self.task_busy)
         if spectral:
             note = 'Common pixel support; measured wavelengths only.'
+        elif operation == 'relative_intensity':
+            note = 'ROI summary / selected reference; observed signal ratio. Reference must be positive.'
         elif operation in ('reference_rmse', 'spectral_angle'):
             note = 'Selected reference ROI; all enabled features must be valid.'
         else:
@@ -3085,7 +3140,7 @@ class Workbench(W.QMainWindow):
 
     def run_analysis(self):
         operation = self.analysis_method.currentData()
-        if operation == 'roi':
+        if operation in ('roi', 'relative_intensity'):
             self.analyze_rois()
         elif operation == 'recorded':
             self.plot_recorded_rois()

@@ -193,3 +193,55 @@ def test_ambiguous_right_task_inputs_are_rejected(task,options):
         series=[{'x':[0,1],'y':[1.,2.],'name':'A','color':COLORS[0]}])
     with pytest.raises(ValueError):
         roi_transform_plot(original,task,**options)
+
+
+@pytest.mark.parametrize('summary,expected', [('mean', 1.5), ('median', 2.)])
+def test_relative_intensity_preserves_input_and_exports_denominator(summary, expected, tmp_path):
+    from hyperlab.plots import roi_relative_plot
+    cube = Cube(np.array([2., 4., 6., 8., 10., 0.]).reshape(1,6,1),
+                {'data_level':'raw_frame','data_source':'SYNTHETIC','units':'DN'})
+    # Different medians exercise summary selection independently of mean ratios.
+    stats = roi_comparison(cube, [(0,0,3,1),(3,0,6,1)])
+    amplitude = roi_plot(stats, ['Reference','Target'], COLORS, source=source_identity(cube), summary=summary)
+    before = amplitude.record()
+    relative = roi_relative_plot(amplitude, amplitude.series[0])
+    np.testing.assert_allclose([s['y'][0] for s in relative.series], [1., expected])
+    assert relative.categories == ['Reference','Target'] and relative.xlabel == 'Region of interest'
+    assert amplitude.record() == before
+    assert relative.metadata['source_units'] == 'DN' and relative.metadata['units'] == 'dimensionless'
+    assert all(not any(k in s for k in ('sd','lower','upper','normalized','distribution')) for s in relative.series)
+    output = export_figure_bundle(relative, tmp_path/summary, dpi=72)
+    rows = list(csv.DictReader((output/'relative_intensity.csv').open()))
+    assert float(rows[0]['Relative intensity']) == 1.
+    assert float(rows[1]['Source summary'])/float(rows[1]['Reference summary']) == expected
+    assert rows[1]['Used'] == rows[1]['Reference used'] == '3'
+    assert rows[1]['Source units'] == 'DN' and rows[1]['Summary'] == summary
+    assert rows[1]['Feature'] == 'Sensor plane' and rows[1]['Status'] == 'OK'
+    saved = json.loads((output/'plot.json').read_text())
+    assert saved['metadata']['reference']['name'] == 'Reference'
+    figure = render_figure(relative, dpi=72)
+    assert len(figure.axes) == 1 and len(figure.axes[0].lines) == 3
+
+
+def test_relative_intensity_masks_pairs_without_dropping_other_rois_or_inventing_wavelengths():
+    from hyperlab.plots import roi_relative_plot
+    original = PlotSpec('lines','Amplitude','Colour channel','Mean (DN)',categories=['R','G','B'],
+        metadata={'units':'DN','summary':'mean'},
+        series=[{'x':[0,1,2],'y':[2.,4.,8.],'name':'Reference','color':COLORS[0]},
+                {'x':[0,1,2],'y':[4.,np.nan,-4.],'name':'A','color':COLORS[1]},
+                {'x':[0,1,2],'y':[6.,8.,16.],'name':'B','color':COLORS[2]}])
+    relative = roi_relative_plot(original, original.series[0])
+    np.testing.assert_equal(relative.series[1]['y'], [2.,np.nan,-.5])
+    np.testing.assert_equal(relative.series[2]['y'], [3.,2.,2.])
+    assert relative.series[1]['ratio_status'] == ['OK','Target unavailable','OK']
+    assert relative.categories == ['R','G','B'] and relative.xlabel == 'Colour channel'
+    original.series[0]['y'] = [0.,-1.,np.nan]
+    relative = roi_relative_plot(original, original.series[0])
+    assert all(np.isnan(item['y']).all() for item in relative.series)
+    assert relative.metadata['reference_invalid_features'] == [0,1,2]
+    original.series[0]['y'] = [1e-308,1.,1.]
+    original.series[1]['y'] = [1e308,2.,3.]
+    relative = roi_relative_plot(original, original.series[0])
+    assert np.isnan(relative.series[1]['y'][0]) and relative.series[1]['ratio_status'][0] == 'Ratio overflow'
+    with pytest.raises(ValueError, match='feature axis'):
+        roi_relative_plot(original, {'y':[1.]})
