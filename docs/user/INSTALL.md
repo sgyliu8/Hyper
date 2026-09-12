@@ -58,6 +58,50 @@ Run `Start-HyperLab.cmd` or `HyperLab.exe app`. No Python installation is requir
 Python/Qt libraries and their notices, but no Balluff driver, CTI or private data.
 The console build retains startup errors for troubleshooting.
 
+### Move the camera to another Windows computer
+
+1. Extract/copy the **complete** supplied desktop folder. A CMD file alone does
+   not contain the application; HyperLab.exe requires its adjacent _internal
+   directory. Do not copy a Python virtual environment or old device settings.
+2. On the destination PC, install the official **Impact Acquire x64** package
+   with **USB3 Vision support**. Version 3.7.2 was used on the development host;
+   a different release requires checking on that PC. The runtime, its native
+   dependencies and the Windows camera driver are separate from HyperLab.
+   Use [Balluff downloads](https://www.balluff.com/en-de/downloads/software).
+3. Close/reopen HyperLab after installation. Connect the camera's imaging data
+   cable to a suitable USB data port. Port shape alone does not establish USB
+   speed or a data-capable cable. Close other applications that own the camera.
+4. Run **Check-Camera.cmd**, or **Hardware setup… → Check this computer**.
+   Both inspect current Windows devices, x64 CTI architecture and OEM signature
+   without loading a producer or opening any camera/serial port.
+5. If automatic discovery misses a custom installation, use **Browse CTI…** and
+   select its mvGenTLProducer.cti, usually under bin/x64. Check this computer
+   saves the choice for this user. Clear the path to restore automatic discovery.
+6. When a supported candidate is available, close setup, click **Connect camera**,
+   then **Start preview**. This is the explicit native-device test.
+
+The imaging module uses USB3 Vision. The separate NXP COM port is listed as an
+unverified control lead; its number may change between computers or USB ports.
+It is not used for image acquisition, and does not need to be COM4. Each Connect
+reads current PnP identity and uses the camera serial, never a saved USB socket
+location or a camera index. Multiple cameras require explicit selection.
+
+For Windows error 28, install the USB3 Vision driver. If another vendor's driver
+owns the imaging interface, follow [Balluff's driver-binding instructions](https://assets.balluff.com/documents/DRF_957356_AA_000/Troubleshooting_Windows_USB3VisionDeviceIsNotShownOrCannotBeUsed.html)
+for that imaging interface. Do not bind the controller COM port to a camera driver.
+The official package supplies the [native runtime and driver components](https://assets.balluff.com/documents/DRF_957353_AA_000/InstallationFromPrivateSetupRoutines_Windows_NonMSI_GEV_U3V_PCIe.html);
+copying a CTI file alone is not a complete installation.
+
+Reports contain connection-report.txt, connection-report.json and the underlying
+PnP snapshot. Their private location is shown in setup and the console. Failed
+connections also save a connection-error JSON alongside session phase evidence
+in the data workspace. Keep these files when reporting a failure; nothing is
+uploaded automatically. READY_TO_CONNECT is static readiness, not a verified frame.
+
+CLI equivalent: HyperLab.exe hardware-check (exit 0 for a candidate, 2 when setup
+needs attention). Add --output NEW_DIRECTORY for an explicit report destination
+or --cti PATH for a one-time runtime check.
+
 The local acceptance distinguishes same-machine independent installation from a
 new Windows machine. A successful offline installation does not qualify a camera, driver or clean
 physical Windows machine. Check the supplied artifact hash and BUILD.json;

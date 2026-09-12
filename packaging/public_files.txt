@@ -16,6 +16,8 @@ docs/user/USER_GUIDE.md
 examples/README.md
 examples/generate_synthetic.py
 packaging/build_windows.py
+packaging/Start-HyperLab.cmd
+packaging/Check-Camera.cmd
 packaging/frozen_members.txt
 packaging/launch.py
 packaging/public_files.py
@@ -26,6 +28,10 @@ scripts/Install-ReviewedRuntime.ps1
 scripts/Probe-Devices.ps1
 scripts/Start-HyperLab.ps1
 src/hyperlab/__init__.py
+src/hyperlab/camera_runtime.py
+src/hyperlab/connection_diagnostics.py
+src/hyperlab/ui/hardware_dialog.py
+tests/test_camera_portability.py
 src/hyperlab/__main__.py
 src/hyperlab/acquisition/__init__.py
 src/hyperlab/acquisition/camera.py

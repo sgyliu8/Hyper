@@ -1,6 +1,7 @@
 # Windows x64 Python 3.11 and the versioned dependency set in BUILD.json.
 # Exact application, dependency, license and launcher members; additions require review.
 BUILD.json
+Check-Camera.cmd
 HyperLab.exe
 Start-HyperLab.cmd
 THIRD_PARTY_NOTICES.md

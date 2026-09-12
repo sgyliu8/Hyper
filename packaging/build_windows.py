@@ -125,7 +125,8 @@ def main():
     if forbidden:
         raise RuntimeError('Vendor runtime/driver unexpectedly entered the package')
     shutil.copy2(checkout/'THIRD_PARTY_NOTICES.md',desktop/'THIRD_PARTY_NOTICES.md')
-    (desktop/'Start-HyperLab.cmd').write_text('@echo off\ncd /d "%~dp0"\nstart "" "%~dp0HyperLab.exe" app\n',encoding='utf-8')
+    for name in ('Start-HyperLab.cmd', 'Check-Camera.cmd'):
+        shutil.copy2(checkout/'packaging'/name, desktop/name)
     record = {'commit':commit,'version':app_version,'python':platform.python_version(),'pyinstaller':version('pyinstaller'),
               'dependencies':dependencies,'hardware':'NOT_TESTED','public_release':'PENDING_LICENSE_AND_REVIEW',
               'archived_source_modules_verified':len(modules),

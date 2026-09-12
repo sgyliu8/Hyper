@@ -110,7 +110,7 @@ $devices = @(foreach ($device in $pnp) {
     }
 })
 
-$related = '(?i)HinaLea|TruTag|TruScope|MATRIX VISION|mvIMPACT|mvBlueFOX|GenICam|GenTL|Pleora|eBUS|Basler|Point Grey|Spinnaker|Allied Vision|Vimba'
+$related = '(?i)HinaLea|TruTag|TruScope|Balluff|Impact\s*Acquire|MATRIX VISION|mvIMPACT|mvBlueFOX|GenICam|GenTL|Pleora|eBUS|Basler|Point Grey|Spinnaker|Allied Vision|Vimba'
 $uninstallRoots = @(
     'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
     'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',

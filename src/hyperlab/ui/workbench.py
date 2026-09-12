@@ -198,6 +198,7 @@ class Workbench(W.QMainWindow):
         header.addWidget(self.connect_button)
         self.disconnect_button = self.button('Disconnect', self.disconnect, 'disconnect')
         header.addWidget(self.disconnect_button)
+        header.addWidget(self.button('Hardware setup…', self.hardware_help, 'hardware_setup'))
         header.addWidget(self.button('Open data…', self.open_dialog, 'open'))
         header.addWidget(self.button('Workspace…', self.choose_output, 'workspace'))
         header.addWidget(self.button('Details', self.toggle_details, 'source_details'))
@@ -494,10 +495,12 @@ class Workbench(W.QMainWindow):
 
     def choose_profile(self, report):
         self.discovering = False
+        self.detail_text.setPlainText(json_text(report))
         profiles = report['profiles']
         if not profiles:
             self.device_label.setText(report['issues'][0]['code'].replace('_',' ').title() if report['issues'] else 'No camera')
-            self.notify('\n'.join(item['message'] for item in report['issues']))
+            self.notify('\n'.join(item['message'] for item in report['issues']) +
+                        '\nHardware setup can check this computer. Report: ' + report.get('report_path', 'not saved'))
             return
         if len(profiles) == 1:
             selected = profiles[0]
@@ -732,7 +735,16 @@ class Workbench(W.QMainWindow):
                     if event.get('kind') == 'error' and self.session.state == 'error':
                         from hyperlab.devices import connection_error_kind
                         self.connection_issue = connection_error_kind(event.get('error') or event)
-                    self.notify(str(event.get('error') or event))
+                    error_text = str(event.get('error') or event)
+                    if event.get('kind') == 'error' and self.session.state == 'error':
+                        path = self.output_dir/('connection-error_'+stamp()+'.json')
+                        try:
+                            path.write_text(json_text({'profile': self.profile, 'event': event,
+                                'kind': self.connection_issue, 'hardware_validation': 'FAILED_CONNECTION'}), encoding='utf-8')
+                            error_text += f'\nLocal error saved: {path}. Use Hardware setup for runtime and USB driver checks.'
+                        except OSError as log_error:
+                            error_text += f'\nCould not save error report: {log_error}'
+                    self.notify(error_text)
                 if event.get('kind') == 'state':
                     self.notify(f"Device state: {event.get('state', self.session.state)}")
             self.last_status = self.session.status()
@@ -2742,21 +2754,8 @@ class Workbench(W.QMainWindow):
             self.notify(f'Redacted report saved locally: {path}. Nothing was transmitted.')
 
     def hardware_help(self):
-        from hyperlab import __version__
-        dialog = W.QDialog(self); dialog.setWindowTitle('HyperLab setup and support scope')
-        dialog.resize(680,540); layout = W.QVBoxLayout(dialog)
-        text = W.QTextBrowser(); text.setOpenExternalLinks(True)
-        text.setHtml(f'<h2>HyperLab {__version__}</h2><p>Research preview. Original-code license and public release are pending.</p>'
-            '<h3>1. Offline</h3><p>Open data or Load synthetic example. No camera or vendor runtime is needed.</p>'
-            '<h3>2. Image acquisition</h3><p>Windows x64, supported mvBlueFOX3 module, official USB3 Vision driver, '
-            'Balluff Impact Acquire 3.7.2 and Harvester 1.4.3. Install the vendor runtime from its official source; '
-            'an administrator approves driver installation. HyperLab does not bundle or silently install drivers.</p>'
-            '<p>Connect discovers candidates; choose the intended device when more than one is present. '
-            'A missing Python package, runtime, OS driver or device is distinct from a communication fault.</p>'
-            '<h3>3. Spectroscopy</h3><p>Requires verified FP state control and device-specific calibration. '
-            'USB-A / USB-C are connector shapes, not proof of image/control roles.</p>'
-            '<p><a href="https://assets.balluff.com/documents/DRF_957356_AA_000/Troubleshooting_Windows_USB3VisionDeviceIsNotShownOrCannotBeUsed.html">Official Balluff USB3 Vision setup guidance</a></p>')
-        layout.addWidget(text); button=self.button('Close',dialog.accept); layout.addWidget(button); dialog.exec()
+        from hyperlab.ui.hardware_dialog import HardwareSetupDialog
+        HardwareSetupDialog(self).exec()
 
     def plot_recorded_rois(self):
         if not self.sequence:

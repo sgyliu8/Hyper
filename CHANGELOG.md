@@ -1,5 +1,17 @@
 # Changes
 
+## 0.6.1.dev4 — camera setup on another computer
+
+- Discover current x64 runtimes from GenTL paths, user/machine settings and
+  installer locations; validate the selected OEM signature without requiring
+  one installation directory or environment variable.
+- Refresh USB identity on each connection, recognize Windows parent-name
+  variations, distinguish missing/wrong driver bindings and list control COM
+  ports separately. Multiple SDK versions no longer duplicate a camera.
+- Add English Hardware setup and a standalone Check-Camera.cmd with persistent
+  private diagnostics. Startup errors remain visible; startup and checks do not
+  load a producer or open hardware.
+
 ## 0.6.1.dev3 — relative ROI intensity
 
 - Compare ROI mean or median with one selected reference in the same image;

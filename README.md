@@ -37,6 +37,8 @@ py -3.11 -m venv .venv
 Startup does not connect a camera. Use a supplied authorized desktop ZIP when
 available; keep its complete folder together. [Installation](docs/user/INSTALL.md)
 covers independent wheels, workspaces, drivers and process-scoped PowerShell launch.
+Moving to another PC requires that PC's official camera runtime and driver.
+Use the supplied Check-Camera.cmd or Hardware setup to save a local setup report.
 
 ## Use and interpret
 

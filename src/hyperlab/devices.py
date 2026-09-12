@@ -1,75 +1,56 @@
 """Fast static discovery for the supported OEM imaging family; no native open."""
-import os
-from pathlib import Path
-import struct
-from hyperlab.probe import load_snapshot, run_inventory
+import re
 from hyperlab.paths import load_config, save_config
-
-
-def runtime_candidates(configured=None):
-    roots = [Path(configured)] if configured else []
-    for name in ('GENICAM_GENTL64_PATH', 'MVIMPACT_ACQUIRE_DIR'):
-        roots.extend(Path(item) for item in os.environ.get(name, '').split(os.pathsep) if item)
-    if os.name == 'nt':
-        import winreg
-        try:
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                    r'SYSTEM\CurrentControlSet\Control\Session Manager\Environment') as key:
-                roots.append(Path(winreg.QueryValueEx(key, 'MVIMPACT_ACQUIRE_DIR')[0]))
-        except OSError:
-            pass
-        roots.append(Path(os.environ.get('ProgramFiles', r'C:\Program Files'))/'Balluff/ImpactAcquire')
-    found = []
-    for root in roots:
-        paths = [root] if root.suffix.casefold() == '.cti' else [root/'mvGenTLProducer.cti', root/'bin/x64/mvGenTLProducer.cti']
-        for path in paths:
-            if path.name != 'mvGenTLProducer.cti' or not path.is_file():
-                continue
-            path = path.resolve()
-            if path in found:
-                continue
-            # Signature/installed-root verification occurs once at connection.
-            with path.open('rb') as stream:
-                stream.seek(0x3c)
-                offset = stream.read(4)
-                if len(offset) != 4:
-                    continue
-                stream.seek(struct.unpack('<I', offset)[0])
-                if stream.read(6) != b'PE\0\0\x64\x86':
-                    continue
-            found.append(path)
-    return found
+from hyperlab.camera_runtime import runtime_candidates
 
 
 def profiles_from_snapshot(snapshot, runtimes, *, snapshot_path=None):
     profiles, issues = [], []
-    targets = [d for d in snapshot['devices'] if d.get('present', True)
-               and d['instance_id'].upper().startswith('USB\\VID_164C&PID_5533&MI_00\\')]
-    if not targets:
-        issues.append({'code':'NO_CAMERA', 'message':'No supported mvBlueFOX3 imaging interface is present. Offline tools remain available.'})
+    imaging = [d for d in snapshot['devices'] if d.get('present', True)
+               and re.match(r'USB\\VID_164C&PID_5533(?:&|\\)', d['instance_id'], re.I)]
+    targets = [d for d in imaging if re.match(r'USB\\VID_164C&PID_5533&MI_00\\', d['instance_id'], re.I)]
+    if not imaging:
+        issues.append({'code':'NO_CAMERA', 'message':'Windows does not see the supported imaging module. Check camera power and the USB imaging data cable; a COM port alone is not the image connection.'})
+    for device in imaging:
+        if device.get('problem_code') != 0:
+            code = device.get('problem_code')
+            issues.append({'code':'DRIVER_MISSING' if str(code) == '28' else 'DEVICE_PROBLEM',
+                'message':f'Windows imaging device problem code {code}. Check the official Balluff USB3 Vision driver on this computer.'})
+    if imaging and not targets and not issues:
+        issues.append({'code':'INTERFACE_MISSING', 'message':'The camera USB parent is present, but the image interface is absent. Check the official USB3 Vision driver and imaging data cable.'})
     if not runtimes:
-        issues.append({'code':'RUNTIME_MISSING', 'message':'The supported Balluff x64 imaging runtime was not found. See Hardware setup.'})
+        issues.append({'code':'RUNTIME_MISSING', 'message':'The Balluff x64 runtime was not found. Install Impact Acquire with USB3 Vision support on this computer, or choose its mvGenTLProducer.cti in Hardware setup.'})
     for device in targets:
         if device.get('problem_code') != 0:
-            issues.append({'code':'DRIVER_MISSING' if device.get('problem_code') == 28 else 'DEVICE_PROBLEM',
-                           'message':f"Windows imaging interface problem code {device.get('problem_code')}."})
             continue
-        parent = next((d for d in snapshot['devices'] if d['instance_id'].casefold() == str(device.get('parent','')).casefold()), None)
-        if parent is None or 'mvBlueFOX3' not in parent.get('bus_reported_description',''):
-            issues.append({'code':'IDENTITY_UNCONFIRMED', 'message':'Imaging module parent identity needs confirmation.'})
+        service = (device.get('driver') or {}).get('service', 'unknown')
+        if service.casefold() not in ('libusbk', 'unknown'):
+            issues.append({'code':'DRIVER_BINDING', 'message':f'The imaging interface uses {service}. The supported Balluff USB3 Vision path uses libusbK; check its driver binding in Device Manager.'})
             continue
-        for runtime in runtimes:
-            profiles.append({'schema_version':1, 'name':parent['bus_reported_description'],
-                'instance_id':device['instance_id'], 'serial':parent['instance_id'].rsplit('\\',1)[-1],
-                'cti':str(runtime), 'snapshot':str(snapshot_path) if snapshot_path else None,
+        parent = next((d for d in imaging if d['instance_id'].casefold() == str(device.get('parent','')).casefold()), None)
+        names = [] if parent is None else [parent.get('bus_reported_description', ''), parent.get('friendly_name', '')]
+        name = next((n for n in names if 'mvbluefox3' in str(n).casefold()), None)
+        if parent is None or name is None or parent.get('problem_code', 0) != 0:
+            issues.append({'code':'IDENTITY_UNCONFIRMED', 'message':'PnP parent identity is unconfirmed. The current USB parent must identify an mvBlueFOX3 imaging module. Run Hardware setup to save its device properties.'})
+            continue
+        serial = parent.get('serial')
+        if not serial or serial == 'unknown':
+            serial = parent['instance_id'].rsplit('\\', 1)[-1]
+        if not serial or '&' in serial:
+            issues.append({'code':'SERIAL_UNCONFIRMED', 'message':'Windows supplied a location-based ID rather than a camera serial. Check the camera parent properties; no device index was selected.'})
+            continue
+        if runtimes:
+            # Runtime preference is independent of camera count.
+            profiles.append({'schema_version':1, 'name':name,
+                'instance_id':device['instance_id'], 'serial':serial,
+                'cti':str(runtimes[0]), 'snapshot':str(snapshot_path) if snapshot_path else None,
                 'scanner':'UNVERIFIED', 'calibration':'UNCONFIGURED', 'capabilities':'PENDING_CONNECTION_READBACK'})
     return {'profiles':profiles, 'issues':issues}
 
 
 def discover_profiles():
-    saved = load_config().get('device_profile') or {}
-    path = run_inventory()
-    return profiles_from_snapshot(load_snapshot(path), runtime_candidates(saved.get('cti')), snapshot_path=path)
+    from hyperlab.connection_diagnostics import hardware_check
+    return hardware_check()
 
 
 def discover_profile():
@@ -92,6 +73,6 @@ def connection_error_kind(error):
         return 'Communication fault'
     if isinstance(error, ModuleNotFoundError) or 'no module named' in text:
         return 'Python acquisition package missing'
-    if any(token in text for token in ('cti', 'producer', 'runtime')):
+    if any(token in text for token in ('cti', 'producer', 'runtime', 'dll load', 'winerror 126', 'winerror 193')):
         return 'Runtime unavailable or unverified'
     return 'Connection failed'

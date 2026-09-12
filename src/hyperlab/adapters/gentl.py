@@ -7,44 +7,11 @@ import json
 import os
 from pathlib import Path
 import re
-import subprocess
-import shutil
 import time
 import numpy as np
 from hyperlab.acquisition.session import utc_now
 from hyperlab.profiling import StageTimings
-
-
-def _review_producer(cti):
-    if os.name != "nt":
-        raise RuntimeError("This reviewed OEM path targets Windows x64")
-    import winreg
-    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                        r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") as key:
-        root = Path(winreg.QueryValueEx(key, "MVIMPACT_ACQUIRE_DIR")[0]).resolve()
-    if not cti.is_relative_to(root):
-        raise ValueError("CTI must remain under the installed OEM MVIMPACT_ACQUIRE_DIR")
-    import struct
-    with cti.open("rb") as stream:
-        stream.seek(0x3c)
-        offset = struct.unpack("<I", stream.read(4))[0]
-        stream.seek(offset)
-        if stream.read(4) != b"PE\0\0" or struct.unpack("<H", stream.read(2))[0] != 0x8664:
-            raise ValueError("Producer is not Windows AMD64 PE")
-    environment = dict(os.environ, HYPERLAB_CTI_REVIEW_PATH=str(cti))
-    command = ("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); "
-               "$s=Get-AuthenticodeSignature -FilePath $env:HYPERLAB_CTI_REVIEW_PATH; "
-               "@{valid=($s.Status -eq 'Valid'); signer=$s.SignerCertificate.Subject} | ConvertTo-Json")
-    shell = shutil.which("pwsh") or "powershell.exe"
-    if shell == "powershell.exe":
-        environment = {key: value for key, value in environment.items() if key.casefold() != "psmodulepath"}
-    response = subprocess.run([shell, "-NoProfile", "-Command", command],
-                              capture_output=True, text=True, encoding="utf-8", timeout=30, check=True, env=environment,
-                              creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-    signature = json.loads(response.stdout)
-    if not signature["valid"] or not re.search(r"Balluff|MATRIX VISION", signature["signer"], re.I):
-        raise ValueError("Installed producer signature is not valid for the reviewed OEM")
-    return signature
+from hyperlab.camera_runtime import review_producer as _review_producer
 
 
 FEATURES = (
@@ -86,7 +53,7 @@ class GenTLBackend:
         if not serial:
             raise ValueError("An exact device serial is required")
         self.cti = Path(cti).resolve(strict=True)
-        if self.cti.name != "mvGenTLProducer.cti":
+        if self.cti.name.casefold() != "mvgentlproducer.cti":
             raise ValueError("Only the reviewed Balluff mvGenTLProducer.cti is supported")
         self.serial = serial
         self._factory = harvester_factory
@@ -133,7 +100,9 @@ class GenTLBackend:
         self.harvester.update()
         matches = [item for item in self.harvester.device_info_list if item.serial_number == self.serial]
         if len(matches) != 1:
-            raise RuntimeError(f"Expected one exact serial match; found {len(matches)}")
+            raise RuntimeError(f"Expected one exact serial match; found {len(matches)}. "
+                "Check the current USB3 Vision driver binding and close other camera applications. "
+                "Use Hardware setup to inspect this computer's runtime and device report.")
         info = matches[0]
         if "mvBlueFOX3" not in info.model or info.tl_type != "U3V":
             raise RuntimeError("Target is not the investigated mvBlueFOX3 USB3 Vision device")

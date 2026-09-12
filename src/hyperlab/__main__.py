@@ -22,6 +22,9 @@ def main(argv=None):
     parser.add_argument('--workspace', type=Path, help='Writable data directory, saved for later CLI/GUI launches')
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("doctor", help="Python/runtime presence; does not load camera libraries")
+    hardware = commands.add_parser('hardware-check', help='Save a read-only camera/runtime/port setup report; never opens hardware')
+    hardware.add_argument('--cti', type=Path, help='Installed OEM x64 producer to inspect')
+    hardware.add_argument('--output', type=Path, help='New private report directory')
     probe = commands.add_parser("probe", help="Read-only Windows inventory")
     probe.add_argument("--inventory", action="store_true")
     probe.add_argument("--standard-interfaces", action="store_true", help="Static classification only; no CTI loading")
@@ -96,6 +99,11 @@ def main(argv=None):
                   "architecture": platform.machine(), "dependencies": dependencies,
                   "matlab_executable": shutil.which("matlab"), "hardware_validation": "NOT_TESTED",
                   "note": "Library presence does not establish driver or camera readiness"})
+        elif args.command == 'hardware-check':
+            from .connection_diagnostics import hardware_check
+            report = hardware_check(cti=args.cti, output=args.output)
+            print(report['summary'])
+            return 0 if report['status'] == 'READY_TO_CONNECT' else 2
         elif args.command == "probe":
             from hyperlab.probe import run_inventory, load_snapshot, standard_interfaces, candidates
             path = args.snapshot or run_inventory(args.output)
@@ -119,10 +127,13 @@ def main(argv=None):
                 raise RuntimeError(f"BLOCKED: target Windows problem code {device.get('problem_code')}; driver must be repaired before acquisition")
             if args.cti is None:
                 raise ValueError("Explicit --cti is required; use the reviewed installed x64 producer")
-            parent = next((d for d in snapshot["devices"] if d["instance_id"].casefold() == str(device.get("parent", "")).casefold()), None)
-            if parent is None or "mvBlueFOX3" not in parent.get("bus_reported_description", ""):
-                raise RuntimeError("PnP parent identity is unconfirmed")
-            serial = parent["instance_id"].rsplit("\\", 1)[-1]
+            from hyperlab.devices import profiles_from_snapshot
+            report = profiles_from_snapshot(snapshot, [args.cti])
+            matches = [p for p in report['profiles'] if p['instance_id'].casefold() == args.device.casefold()]
+            if len(matches) != 1:
+                raise RuntimeError('; '.join(item['message'] for item in report['issues']) or
+                                   'The selected imaging interface has no unique current identity')
+            serial = matches[0]['serial']
             from hyperlab.adapters.gentl import capture_single
             result = capture_single(args.cti, serial, args.output or run_directory("acquisitions"),
                                     pixel_format=args.pixel_format, exposure_us=args.exposure_us, gain=args.gain)
