@@ -16,6 +16,38 @@ From the project root, using the project virtual environment:
 Use a new output filename on each run; saves do not overwrite existing products.
 Generated arrays belong in `local/` and do not need to be committed.
 
+## Workbench screenshot example
+
+The README shows the real Windows workbench with a deterministic synthetic
+192 × 288 × 61 panel scene. Three analytic spectra, spatial texture and a narrow
+dark stripe illustrate ROI comparison. All wavelengths (450–900 nm, 7.5 nm step)
+and intensities are simulated. This is not a physical coating model, spectral
+resolution claim or measured defect dataset.
+
+```powershell
+.\.venv\Scripts\python.exe examples\generate_coating_demo.py local\coating-demo.npy
+.\.venv\Scripts\python.exe -m hyperlab app local\coating-demo.npy
+```
+
+In **Analysis**, use **Edit…** to set the following rectangle bounds. Add a third
+ROI and keep both **Show** and **Use** selected for all three.
+
+| Name | Bounds (x0, y0, x1, y1), raw pixels | Colour |
+|---|---|---|
+| Panel A | 30, 48, 76, 144 | Orange |
+| Panel B | 120, 48, 166, 144 | Blue |
+| Panel C | 210, 48, 256, 144 | Teal |
+
+Select **Exclude known saturation**, **Mean / spatial SD**, **Common pixels across
+features**, then **PCA → Run analysis**. Set **Right plot → L2 shape** and select
+**PC2 score** under **Plot and view options**. Set the image slider to stored
+feature 30 (675 nm); it changes the displayed sensor plane, not the PCA input.
+For this overview, collapse the extra options, resize the window and adjust the
+horizontal divider to give the image/map and the two curves similar space. Click
+**Fit**, then move the mouse outside the window before capturing it. The screenshot
+is a native window capture, with no pasted-in charts or altered UI. Its camera
+status correctly stays disconnected.
+
 ## Python interface
 
 ```python

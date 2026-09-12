@@ -5,6 +5,13 @@ bounded acquisition and reproducible scientific figures. Offline analysis works
 without a camera. The English Qt interface uses white figures and consistent
 orange, blue and teal region colours.
 
+![HyperLab workbench: three named ROIs, PCA score map, amplitude with spatial SD, and normalized spectral shape](docs/assets/workbench-overview.png)
+
+Actual Windows interface with a reproducible **synthetic** coating-panel example:
+three regions, a PCA score map, mean ± spatial SD and L2-normalized curves.
+The simulated wavelength axis and stripe illustrate analysis; they are not camera
+measurements, calibration or defect ground truth. [Reproduce this view](examples/README.md#workbench-screenshot-example).
+
 - Named rectangle/polygon/mask/strip regions, reference/target/exclude roles and
   separate display/statistical inclusion.
 - Raw mean/SD or median/quartiles, exact map distributions and spatial selections,
@@ -15,18 +22,18 @@ orange, blue and teal region colours.
 - Stationary response characterization, reconstruction and pixel/ROI reference
   ratios; see [spectroscopy](docs/user/SPECTROSCOPY.md) for the executable workflow.
 
-Original-code licensing and public binary release remain pending. The online
-evaluation branch is `feature/materials-science-v040`; the default branch remains
-`recovery/hinalea-local`. A locally supplied candidate may contain later changes;
-use its BUILD.json and exact source revision, not a version label alone.
+The default branch, `recovery/hinalea-local`, contains the current consolidated
+source. For a supplied desktop build, use its BUILD.json and exact source
+revision, not a version label alone. Original-code licensing and public binary
+release remain pending.
 
 ## Install and open
 
 Windows x64 / Python 3.11 is the tested desktop environment. Linux supports
-offline/offscreen checks; macOS is not qualified. For the online evaluation branch:
+offline/offscreen checks; macOS is not qualified. Clone the current default branch:
 
 ```powershell
-git clone --branch feature/materials-science-v040 --single-branch https://github.com/sgyliu8/Hyper.git
+git clone https://github.com/sgyliu8/Hyper.git
 cd Hyper
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install .
@@ -61,10 +68,6 @@ claimed from uncalibrated DN. Recording modes require qualification on the actua
 storage, scene and settings; finite successful runs do not prove sustained rates.
 
 ## Examples and support
-
-![HyperLab 0.6 runtime with an explicitly synthetic example](docs/assets/workbench-060-synthetic-native.jpg)
-
-The illustration uses synthetic data, not a camera or material-validation result.
 
 `python -m hyperlab demo` opens explicitly synthetic data.
 `python -m hyperlab figure-demo --output NEW_DIRECTORY` creates illustrative

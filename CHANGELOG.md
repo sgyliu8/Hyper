@@ -1,5 +1,13 @@
 # Changes
 
+## Source and documentation maintenance
+
+- Replace the README overview with a native Windows PNG showing three ROI
+  spectra and a PC2 map; include the reproducible synthetic panel example.
+- Consolidate installation instructions on the default branch.
+- Keep offline camera-diagnostic tests independent of optional SDK packages;
+  derive the wheel-check version from pyproject.toml instead of a stale constant.
+
 ## 0.6.1.dev4 — camera setup on another computer
 
 - Discover current x64 runtimes from GenTL paths, user/machine settings and

@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import stat
+import sys
 import zipfile
 
 import pytest
@@ -71,3 +72,20 @@ def test_unapproved_empty_disk_directory_is_rejected(tmp_path):
     (tmp_path/'private').mkdir()
     with pytest.raises(ValueError, match='directory'):
         package.check_directory(tmp_path, {'approved'})
+
+
+@pytest.mark.parametrize('explicit_version', [None, '0.1.0'])
+def test_wheel_cli_uses_project_version_unless_overridden(tmp_path, monkeypatch, capsys, explicit_version):
+    from hyperlab import __version__
+    version = explicit_version or __version__
+    source = package.read_allowlist(ROOT/'packaging/public_files.txt')
+    path = tmp_path/'example.whl'
+    with zipfile.ZipFile(path, 'w') as archive:
+        for name in package.wheel_members(source, version):
+            archive.writestr(name, '')
+    args = ['public_files.py', '--wheel', str(path)]
+    if explicit_version:
+        args += ['--version', explicit_version]
+    monkeypatch.setattr(sys, 'argv', args)
+    package.main()
+    assert '"status": "PASS"' in capsys.readouterr().out

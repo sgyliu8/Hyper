@@ -9,16 +9,15 @@
 | Spectroscopy | Verified FP control, synchronization and device-matched reconstruction/calibration | Not recovered |
 
 Original-code licensing is undecided. The following are evaluation installation
-instructions, not a public-release or redistribution authorization. The release
-candidate is `feature/materials-science-v040`; default clone currently
-selects the older `recovery/hinalea-local` branch.
+instructions. The default branch, `recovery/hinalea-local`, contains the
+consolidated current source; a normal clone selects it.
 
 ## Source installation (ordinary user)
 
 Install Python 3.11 x64 and Git, then in PowerShell:
 
 ```powershell
-git clone --branch feature/materials-science-v040 --single-branch https://github.com/sgyliu8/Hyper.git
+git clone https://github.com/sgyliu8/Hyper.git
 cd Hyper
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install .

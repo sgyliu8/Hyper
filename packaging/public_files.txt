@@ -7,7 +7,7 @@ README.md
 Start-HyperLab.cmd
 THIRD_PARTY_NOTICES.md
 docs/assets/roi-synthetic.png
-docs/assets/workbench-060-synthetic-native.jpg
+docs/assets/workbench-overview.png
 docs/user/DATA_AND_METHODS.md
 docs/user/INSTALL.md
 docs/user/SPECTROSCOPY.md
@@ -15,6 +15,7 @@ docs/user/TROUBLESHOOTING.md
 docs/user/USER_GUIDE.md
 examples/README.md
 examples/generate_synthetic.py
+examples/generate_coating_demo.py
 packaging/build_windows.py
 packaging/Start-HyperLab.cmd
 packaging/Check-Camera.cmd

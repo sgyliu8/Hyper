@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import stat
+import tomllib
 import zipfile
 
 
@@ -88,7 +89,7 @@ def main():
     parser.add_argument('--source', type=Path)
     parser.add_argument('--wheel', type=Path)
     parser.add_argument('--frozen', type=Path)
-    parser.add_argument('--version', default='0.6.1.dev1')
+    parser.add_argument('--version', help='Wheel version; defaults to pyproject.toml')
     args = parser.parse_args()
     here = Path(__file__).resolve().parent
     source = read_allowlist(here/'public_files.txt')
@@ -96,7 +97,8 @@ def main():
     if args.source:
         result['source'] = check_zip(args.source, source)
     if args.wheel:
-        result['wheel'] = check_zip(args.wheel, wheel_members(source, args.version))
+        version = args.version or tomllib.loads((here.parent/'pyproject.toml').read_text(encoding='utf-8'))['project']['version']
+        result['wheel'] = check_zip(args.wheel, wheel_members(source, version))
     if args.frozen:
         result['frozen'] = check_zip(args.frozen, read_allowlist(here/'frozen_members.txt'), prefix='HyperLab/')
     print(json.dumps(result, indent=2))

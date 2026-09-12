@@ -96,6 +96,7 @@ def fake_inventory(tmp_path, monkeypatch, data=None):
     path.write_text(json.dumps(data if data is not None else snapshot()), encoding='utf-8')
     monkeypatch.setattr(diagnostics, 'run_inventory', lambda output: path)
     monkeypatch.setattr(diagnostics, 'review_producer', lambda path: {'valid': True, 'signer': 'Balluff'})
+    monkeypatch.setattr(diagnostics, 'version', lambda name: 'example-installed-version')
     return diagnostics
 
 
@@ -130,6 +131,23 @@ def test_stale_saved_profile_uses_current_inventory(tmp_path, monkeypatch):
     assert report['profiles'][0]['serial'] == 'EXAMPLE_SERIAL'
     assert report['profiles'][0]['cti'] == str(path)
     assert report['controllers'][0]['port'] == 'COM17'
+
+
+@pytest.mark.parametrize('missing', ['harvesters', 'genicam'])
+def test_missing_camera_package_prevents_ready_status(tmp_path, monkeypatch, missing):
+    diagnostics = fake_inventory(tmp_path, monkeypatch)
+    path = pe(tmp_path/'installed'/'mvGenTLProducer.cti')
+    monkeypatch.setattr(diagnostics, 'runtime_search', lambda *a, **k: [{'path':str(path), 'architecture':'x64'}])
+    def installed_version(name):
+        if name == missing:
+            raise diagnostics.PackageNotFoundError(name)
+        return 'example-installed-version'
+    monkeypatch.setattr(diagnostics, 'version', installed_version)
+    report = diagnostics.hardware_check(output=tmp_path/'report')
+    assert report['status'] == 'SETUP_REQUIRED'
+    assert not report['profiles']
+    assert report['dependencies'][missing] == 'NOT_INSTALLED'
+    assert 'ACQUISITION_PACKAGE_MISSING' in [i['code'] for i in report['issues']]
 
 
 def test_inventory_failure_is_retained_in_readable_report(tmp_path, monkeypatch):
